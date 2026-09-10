@@ -22,6 +22,7 @@ const SignUp3 = lazy(() => import('@/app/auth/sign-up-3/page'))
 const ForgotPassword = lazy(() => import('@/app/auth/forgot-password/page'))
 const ForgotPassword2 = lazy(() => import('@/app/auth/forgot-password-2/page'))
 const ForgotPassword3 = lazy(() => import('@/app/auth/forgot-password-3/page'))
+const Demo = lazy(() => import('@/components/ui/demo'))
 
 // Error pages
 const Unauthorized = lazy(() => import('@/app/errors/unauthorized/page'))
@@ -97,6 +98,10 @@ export const routes: RouteConfig[] = [
   {
     path: "/pricing",
     element: <Pricing />
+  },
+  {
+    path: "/demo",
+    element: <Demo />
   },
 
   // Authentication Routes
