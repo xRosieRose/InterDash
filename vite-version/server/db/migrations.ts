@@ -113,6 +113,7 @@ export const migrations: Migration[] = [
           port                        INTEGER NOT NULL DEFAULT 8006,
           node_name                   TEXT NOT NULL DEFAULT 'pve',
           region                      TEXT NOT NULL DEFAULT 'default',
+          flag_url                    TEXT,
           auth_token_id               TEXT NOT NULL,
           auth_token_secret_encrypted TEXT NOT NULL,
           allow_insecure_tls          INTEGER NOT NULL DEFAULT 0,
@@ -289,6 +290,18 @@ export const migrations: Migration[] = [
           "INSERT OR IGNORE INTO panel_settings (key, value) VALUES (?, ?);",
           [key, value]
         );
+      }
+    },
+  },
+
+  {
+    version: 8,
+    name: "add_flag_url_to_proxmox_nodes",
+    up: (db: Database) => {
+      try {
+        db.run("ALTER TABLE proxmox_nodes ADD COLUMN flag_url TEXT;");
+      } catch {
+        // column may already exist
       }
     },
   },

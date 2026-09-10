@@ -41,6 +41,7 @@ interface NodeOption {
   name: string
   hostname: string
   region: string
+  flag_url?: string | null
   status: string
 }
 
@@ -339,7 +340,16 @@ export function AdminDeployModal({ open, onOpenChange, onSuccess }: AdminDeployM
                     <SelectContent>
                       {nodes.map((n) => (
                         <SelectItem key={n.id} value={n.id}>
-                          {n.name} ({n.region}) — {n.status}
+                          <span className="flex items-center gap-1.5">
+                            {n.flag_url ? (
+                              <img
+                                src={n.flag_url}
+                                alt=""
+                                className="w-4 h-2.5 object-cover rounded-[1px] border border-border/60 shrink-0"
+                              />
+                            ) : null}
+                            <span>{n.name} ({n.region}) — {n.status}</span>
+                          </span>
                         </SelectItem>
                       ))}
                     </SelectContent>

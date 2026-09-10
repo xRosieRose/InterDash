@@ -358,7 +358,14 @@ export default function InstancesPage() {
                         {/* Hypervisor Node & Region */}
                         <TableCell>
                           <div className="flex flex-col text-xs">
-                            <span className="font-medium text-foreground">
+                            <span className="font-medium text-foreground flex items-center gap-1.5">
+                              {inst.node_flag_url && (
+                                <img
+                                  src={inst.node_flag_url}
+                                  alt={inst.node_region || "region"}
+                                  className="w-4 h-2.5 object-cover rounded-[1px] border border-border/60 shrink-0"
+                                />
+                              )}
                               {inst.node_name || "Proxmox Node"}
                             </span>
                             <span className="text-muted-foreground font-mono">

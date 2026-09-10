@@ -290,4 +290,60 @@ describe("InterDash Control Plane & Ownership Tests", () => {
     assert.ok(body.settings, "Expected settings object");
     assert.ok(body.settings.brand_name, "Expected brand_name in settings");
   });
+
+  // ==========================================================================
+  // SECTION 6: Proxmox Node Flag Image Management
+  // ==========================================================================
+  it("should include flag_url in GET /api/admin/nodes", async () => {
+    const res = await fetch(`${BASE_URL}/api/admin/nodes`, {
+      headers: { Cookie: `interdash_session=${SESSION_ADMIN}` },
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.ok(Array.isArray(body.nodes));
+    const testNode = body.nodes.find((n: any) => n.id === "test-node-1");
+    assert.ok(testNode, "Expected test-node-1 to exist");
+    assert.strictEqual(testNode.flag_url, null);
+  });
+
+  it("should update flag_url via PATCH /api/admin/nodes/:id", async () => {
+    const sampleFlag = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+    const csrfToken = "test-csrf-token-xyz";
+    const res = await fetch(`${BASE_URL}/api/admin/nodes/test-node-1`, {
+      method: "PATCH",
+      headers: {
+        Cookie: `interdash_session=${SESSION_ADMIN}; interdash_csrf=${csrfToken}`,
+        "x-csrf-token": csrfToken,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        flagUrl: sampleFlag,
+        region: "us-east-1",
+      }),
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.success, true);
+
+    // Verify node now has updated flag_url
+    const verifyRes = await fetch(`${BASE_URL}/api/admin/nodes`, {
+      headers: { Cookie: `interdash_session=${SESSION_ADMIN}` },
+    });
+    const verifyBody = await verifyRes.json();
+    const updatedNode = verifyBody.nodes.find((n: any) => n.id === "test-node-1");
+    assert.equal(updatedNode.flag_url, sampleFlag);
+    assert.equal(updatedNode.region, "us-east-1");
+  });
+
+  it("should include node_flag_url in GET /api/vps", async () => {
+    const res = await fetch(`${BASE_URL}/api/vps`, {
+      headers: { Cookie: `interdash_session=${SESSION_USER_A}` },
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.ok(body.instances.length > 0);
+    const instance = body.instances[0];
+    assert.ok(instance.node_flag_url, "Expected node_flag_url to be returned for VPS");
+    assert.match(instance.node_flag_url, /^data:image\/png/);
+  });
 });

@@ -199,7 +199,7 @@ router.patch("/users/:id", (req: Request, res: Response) => {
 router.get("/nodes", (_req: Request, res: Response) => {
   const nodes = queryAll<any>(
     `SELECT n.id, n.cluster_id, n.name, n.hostname, n.api_url, n.port,
-            n.node_name, n.region, n.allow_insecure_tls, n.default_storage,
+            n.node_name, n.region, n.flag_url, n.allow_insecure_tls, n.default_storage,
             n.default_bridge, n.enabled, n.status, n.last_health_check,
             n.health_info, n.created_at, n.updated_at,
             (SELECT COUNT(*) FROM vps WHERE proxmox_node_id = n.id) as vps_count
@@ -221,6 +221,7 @@ router.post("/nodes", async (req: Request, res: Response) => {
     port = 8006,
     nodeName = "pve",
     region = "default",
+    flagUrl = null,
     authTokenId,
     authTokenSecret,
     allowInsecureTls = false,
@@ -243,6 +244,7 @@ router.post("/nodes", async (req: Request, res: Response) => {
     port: parseInt(port, 10) || 8006,
     nodeName,
     region,
+    flagUrl,
     authTokenId,
     authTokenSecret,
     allowInsecureTls: Boolean(allowInsecureTls),
@@ -260,11 +262,11 @@ router.post("/nodes", async (req: Request, res: Response) => {
 
   execute(
     `INSERT INTO proxmox_nodes (
-      id, name, hostname, api_url, port, node_name, region, auth_token_id,
+      id, name, hostname, api_url, port, node_name, region, flag_url, auth_token_id,
       auth_token_secret_encrypted, allow_insecure_tls, default_storage,
       default_bridge, enabled, status, last_health_check, health_info,
       created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, datetime('now'), ?, datetime('now'), datetime('now'))`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, datetime('now'), ?, datetime('now'), datetime('now'))`,
     [
       nodeId,
       name.trim(),
@@ -273,6 +275,7 @@ router.post("/nodes", async (req: Request, res: Response) => {
       parseInt(port, 10) || 8006,
       nodeName.trim(),
       region.trim(),
+      flagUrl ? String(flagUrl).trim() : null,
       authTokenId.trim(),
       encryptedSecret,
       allowInsecureTls ? 1 : 0,
@@ -351,6 +354,78 @@ router.get("/nodes/:id/capabilities", async (req: Request, res: Response) => {
     const msg = err instanceof Error ? err.message : String(err);
     res.status(502).json({ error: `Failed to query node capabilities: ${msg}` });
   }
+});
+
+// ============================================================================
+// PATCH /api/admin/nodes/:id — Update Proxmox Node Metadata & Flag
+// ============================================================================
+router.patch("/nodes/:id", (req: Request, res: Response) => {
+  const { id } = req.params;
+  const targetNode = queryOne<any>("SELECT id, name FROM proxmox_nodes WHERE id = ?", [id]);
+  if (!targetNode) {
+    res.status(404).json({ error: "Proxmox node not found." });
+    return;
+  }
+
+  const {
+    name,
+    region,
+    flagUrl,
+    defaultStorage,
+    defaultBridge,
+    allowInsecureTls,
+    enabled,
+  } = req.body;
+
+  const updates: string[] = [];
+  const params: any[] = [];
+
+  if (name !== undefined) {
+    updates.push("name = ?");
+    params.push(String(name).trim());
+  }
+  if (region !== undefined) {
+    updates.push("region = ?");
+    params.push(String(region).trim());
+  }
+  if (flagUrl !== undefined) {
+    updates.push("flag_url = ?");
+    params.push(flagUrl ? String(flagUrl).trim() : null);
+  }
+  if (defaultStorage !== undefined) {
+    updates.push("default_storage = ?");
+    params.push(String(defaultStorage).trim());
+  }
+  if (defaultBridge !== undefined) {
+    updates.push("default_bridge = ?");
+    params.push(String(defaultBridge).trim());
+  }
+  if (allowInsecureTls !== undefined) {
+    updates.push("allow_insecure_tls = ?");
+    params.push(allowInsecureTls ? 1 : 0);
+  }
+  if (enabled !== undefined) {
+    updates.push("enabled = ?");
+    params.push(enabled ? 1 : 0);
+  }
+
+  if (updates.length === 0) {
+    res.status(400).json({ error: "No fields provided for update." });
+    return;
+  }
+
+  updates.push("updated_at = datetime('now')");
+  params.push(id);
+
+  execute(`UPDATE proxmox_nodes SET ${updates.join(", ")} WHERE id = ?`, params);
+
+  execute(
+    `INSERT INTO audit_logs (user_id, event_type, metadata)
+     VALUES (?, 'proxmox_node_updated', ?)`,
+    [req.user?.id, JSON.stringify({ node_id: id, updated_fields: Object.keys(req.body) })]
+  );
+
+  res.json({ success: true, message: "Node updated successfully." });
 });
 
 // ============================================================================

@@ -33,6 +33,7 @@ export interface VpsRecord {
   node_name?: string;
   node_region?: string;
   node_hostname?: string;
+  node_flag_url?: string;
   owner_username?: string;
   owner_global_name?: string;
 }

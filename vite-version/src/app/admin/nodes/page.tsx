@@ -13,6 +13,9 @@ import {
   Trash2,
   Loader2,
   ShieldAlert,
+  Upload,
+  Globe,
+  Pencil,
 } from "lucide-react"
 import { BaseLayout } from "@/components/layouts/base-layout"
 import { Badge } from "@/components/ui/badge"
@@ -46,6 +49,7 @@ interface ProxmoxNode {
   port: number
   node_name: string
   region: string
+  flag_url?: string | null
   allow_insecure_tls: number
   default_storage: string
   default_bridge: string
@@ -70,12 +74,26 @@ export default function AdminNodesPage() {
   const [port, setPort] = React.useState(8006)
   const [nodeName, setNodeName] = React.useState("pve")
   const [region, setRegion] = React.useState("eu-central-1")
+  const [flagUrl, setFlagUrl] = React.useState("")
   const [authTokenId, setAuthTokenId] = React.useState("")
   const [authTokenSecret, setAuthTokenSecret] = React.useState("")
   const [allowInsecureTls, setAllowInsecureTls] = React.useState(false)
   const [defaultStorage, setDefaultStorage] = React.useState("local-lvm")
   const [defaultBridge, setDefaultBridge] = React.useState("vmbr0")
   const [isTestingAndSaving, setIsTestingAndSaving] = React.useState(false)
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null)
+
+  // Edit node modal
+  const [editNodeOpen, setEditNodeOpen] = React.useState(false)
+  const [editingNodeId, setEditingNodeId] = React.useState<string | null>(null)
+  const [editName, setEditName] = React.useState("")
+  const [editRegion, setEditRegion] = React.useState("")
+  const [editFlagUrl, setEditFlagUrl] = React.useState("")
+  const [editDefaultStorage, setEditDefaultStorage] = React.useState("")
+  const [editDefaultBridge, setEditDefaultBridge] = React.useState("")
+  const [editAllowInsecureTls, setEditAllowInsecureTls] = React.useState(false)
+  const [isSavingEdit, setIsSavingEdit] = React.useState(false)
+  const editFileInputRef = React.useRef<HTMLInputElement | null>(null)
 
   // Capabilities modal
   const [capOpen, setCapOpen] = React.useState(false)
@@ -186,6 +204,118 @@ export default function AdminNodesPage() {
     }
   }
 
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    if (!file.type.startsWith("image/")) {
+      toast.error("Selected file must be an image (PNG, JPG, SVG, WEBP).")
+      return
+    }
+
+    if (file.size > 1.5 * 1024 * 1024) {
+      toast.error("Flag image must be under 1.5 MB.")
+      return
+    }
+
+    const reader = new FileReader()
+    reader.onload = (event) => {
+      const result = event.target?.result as string
+      if (result) {
+        setFlagUrl(result)
+        toast.success("Flag image selected!")
+      }
+    }
+    reader.onerror = () => {
+      toast.error("Failed to read image file.")
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const handleOpenEdit = (node: ProxmoxNode) => {
+    setEditingNodeId(node.id)
+    setEditName(node.name)
+    setEditRegion(node.region)
+    setEditFlagUrl(node.flag_url || "")
+    setEditDefaultStorage(node.default_storage)
+    setEditDefaultBridge(node.default_bridge)
+    setEditAllowInsecureTls(node.allow_insecure_tls === 1)
+    setEditNodeOpen(true)
+  }
+
+  const handleEditFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    if (!file.type.startsWith("image/")) {
+      toast.error("Selected file must be an image (PNG, JPG, SVG, WEBP).")
+      return
+    }
+
+    if (file.size > 1.5 * 1024 * 1024) {
+      toast.error("Flag image must be under 1.5 MB.")
+      return
+    }
+
+    const reader = new FileReader()
+    reader.onload = (event) => {
+      const result = event.target?.result as string
+      if (result) {
+        setEditFlagUrl(result)
+        toast.success("Flag image updated!")
+      }
+    }
+    reader.onerror = () => {
+      toast.error("Failed to read image file.")
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const handleSaveEdit = async () => {
+    if (!editingNodeId) return
+    if (!editName.trim() || !editRegion.trim()) {
+      toast.error("Display Name and Region Code are required.")
+      return
+    }
+
+    setIsSavingEdit(true)
+    try {
+      const csrfRes = await fetch("/api/auth/csrf")
+      let csrfToken = ""
+      if (csrfRes.ok) {
+        const c = await csrfRes.json()
+        csrfToken = c.token
+      }
+
+      const res = await fetch(`/api/admin/nodes/${editingNodeId}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
+        },
+        body: JSON.stringify({
+          name: editName.trim(),
+          region: editRegion.trim(),
+          flagUrl: editFlagUrl.trim() || null,
+          defaultStorage: editDefaultStorage.trim(),
+          defaultBridge: editDefaultBridge.trim(),
+          allowInsecureTls: editAllowInsecureTls,
+        }),
+      })
+
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || "Failed to update node.")
+
+      toast.success("Node configuration updated successfully.")
+      setEditNodeOpen(false)
+      fetchNodes()
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Error updating node")
+    } finally {
+      setIsSavingEdit(false)
+    }
+  }
+
   const handleSaveNode = async () => {
     if (!name.trim() || !hostname.trim() || !apiUrl.trim() || !authTokenId.trim() || !authTokenSecret.trim()) {
       toast.error("Please fill in all required Proxmox credentials.")
@@ -214,6 +344,7 @@ export default function AdminNodesPage() {
           port,
           nodeName: nodeName.trim(),
           region: region.trim(),
+          flagUrl: flagUrl.trim() || null,
           authTokenId: authTokenId.trim(),
           authTokenSecret: authTokenSecret.trim(),
           allowInsecureTls,
@@ -232,6 +363,8 @@ export default function AdminNodesPage() {
       setHostname("")
       setAuthTokenId("")
       setAuthTokenSecret("")
+      setFlagUrl("")
+      if (fileInputRef.current) fileInputRef.current.value = ""
       fetchNodes()
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : "Failed to add node")
@@ -357,9 +490,20 @@ export default function AdminNodesPage() {
 
                     {/* Region */}
                     <TableCell>
-                      <Badge variant="outline" className="text-xs font-mono py-0">
-                        {node.region}
-                      </Badge>
+                      <div className="flex items-center gap-2">
+                        {node.flag_url ? (
+                          <img
+                            src={node.flag_url}
+                            alt={node.region}
+                            className="w-5 h-3.5 object-cover rounded-[2px] border border-border/60 shrink-0 shadow-xs"
+                          />
+                        ) : (
+                          <span className="text-xs">🌐</span>
+                        )}
+                        <Badge variant="outline" className="text-xs font-mono py-0">
+                          {node.region}
+                        </Badge>
+                      </div>
                     </TableCell>
 
                     {/* Status */}
@@ -378,6 +522,14 @@ export default function AdminNodesPage() {
                     {/* Actions */}
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end gap-1.5">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleOpenEdit(node)}
+                          className="h-7 text-[11px] gap-1"
+                        >
+                          <Pencil className="size-3" /> Edit
+                        </Button>
                         <Button
                           variant="outline"
                           size="sm"
@@ -499,6 +651,71 @@ export default function AdminNodesPage() {
                   className="text-xs font-mono"
                 />
               </div>
+            </div>
+
+            {/* Regional Flag Image Option */}
+            <div className="space-y-2 p-3 rounded-lg border bg-muted/20">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs font-semibold flex items-center gap-1.5">
+                  <Globe className="size-3.5 text-primary" /> Regional Flag Image
+                </Label>
+                {flagUrl && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFlagUrl("")
+                      if (fileInputRef.current) fileInputRef.current.value = ""
+                    }}
+                    className="text-[11px] text-destructive hover:underline cursor-pointer"
+                  >
+                    Remove flag
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center gap-3">
+                {/* Live Flag Preview */}
+                <div className="w-12 h-8 rounded border border-border bg-background flex items-center justify-center overflow-hidden shrink-0 shadow-xs">
+                  {flagUrl ? (
+                    <img
+                      src={flagUrl}
+                      alt="Flag Preview"
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <span className="text-xs text-muted-foreground/50">🌐</span>
+                  )}
+                </div>
+
+                {/* Upload Action */}
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  accept="image/png,image/jpeg,image/svg+xml,image/webp,image/gif"
+                  className="hidden"
+                  onChange={handleFileUpload}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8 text-xs gap-1.5 shrink-0"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Upload className="size-3.5" /> Upload Flag
+                </Button>
+
+                {/* URL or Direct Source */}
+                <Input
+                  placeholder="or paste flag image URL..."
+                  value={flagUrl.startsWith("data:") ? "Custom flag uploaded" : flagUrl}
+                  onChange={(e) => setFlagUrl(e.target.value)}
+                  className="text-xs h-8 flex-1 font-mono"
+                />
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                Upload a national or regional flag icon (PNG, SVG, WEBP, or JPG, max 1.5 MB).
+              </p>
             </div>
 
             {/* Token Credentials */}
@@ -623,6 +840,149 @@ export default function AdminNodesPage() {
 
           <DialogFooter>
             <Button onClick={() => setCapOpen(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Proxmox Node Modal */}
+      <Dialog open={editNodeOpen} onOpenChange={setEditNodeOpen}>
+        <DialogContent className="sm:max-w-[540px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Pencil className="size-4 text-primary" /> Edit Proxmox Hypervisor
+            </DialogTitle>
+            <DialogDescription>
+              Update hypervisor configuration, region designation, and regional flag badge.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3.5 py-2 text-sm">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Display Name</Label>
+                <Input
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="text-xs"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Region Code</Label>
+                <Input
+                  value={editRegion}
+                  onChange={(e) => setEditRegion(e.target.value)}
+                  className="text-xs"
+                />
+              </div>
+            </div>
+
+            {/* Regional Flag Image Option */}
+            <div className="space-y-2 p-3 rounded-lg border bg-muted/20">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs font-semibold flex items-center gap-1.5">
+                  <Globe className="size-3.5 text-primary" /> Regional Flag Image
+                </Label>
+                {editFlagUrl && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditFlagUrl("")
+                      if (editFileInputRef.current) editFileInputRef.current.value = ""
+                    }}
+                    className="text-[11px] text-destructive hover:underline cursor-pointer"
+                  >
+                    Remove flag
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center gap-3">
+                {/* Live Flag Preview */}
+                <div className="w-12 h-8 rounded border border-border bg-background flex items-center justify-center overflow-hidden shrink-0 shadow-xs">
+                  {editFlagUrl ? (
+                    <img
+                      src={editFlagUrl}
+                      alt="Flag Preview"
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <span className="text-xs text-muted-foreground/50">🌐</span>
+                  )}
+                </div>
+
+                {/* Upload Action */}
+                <input
+                  type="file"
+                  ref={editFileInputRef}
+                  accept="image/png,image/jpeg,image/svg+xml,image/webp,image/gif"
+                  className="hidden"
+                  onChange={handleEditFileUpload}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8 text-xs gap-1.5 shrink-0"
+                  onClick={() => editFileInputRef.current?.click()}
+                >
+                  <Upload className="size-3.5" /> Upload Flag
+                </Button>
+
+                {/* URL or Direct Source */}
+                <Input
+                  placeholder="or paste flag image URL..."
+                  value={editFlagUrl.startsWith("data:") ? "Custom flag uploaded" : editFlagUrl}
+                  onChange={(e) => setEditFlagUrl(e.target.value)}
+                  className="text-xs h-8 flex-1 font-mono"
+                />
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                Upload a national or regional flag icon (PNG, SVG, WEBP, or JPG, max 1.5 MB).
+              </p>
+            </div>
+
+            {/* Storage & Bridge Defaults */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Default Storage Pool</Label>
+                <Input
+                  value={editDefaultStorage}
+                  onChange={(e) => setEditDefaultStorage(e.target.value)}
+                  className="text-xs font-mono"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Default Network Bridge</Label>
+                <Input
+                  value={editDefaultBridge}
+                  onChange={(e) => setEditDefaultBridge(e.target.value)}
+                  className="text-xs font-mono"
+                />
+              </div>
+            </div>
+
+            {/* Self-signed TLS Toggle */}
+            <div className="flex items-center justify-between p-2.5 rounded-lg border bg-amber-500/5 border-amber-500/20">
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-500">
+                  <ShieldAlert className="size-3.5" /> Allow Self-Signed TLS
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Enable if this Proxmox node uses a default self-signed SSL certificate.
+                </p>
+              </div>
+              <Switch checked={editAllowInsecureTls} onCheckedChange={setEditAllowInsecureTls} />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditNodeOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleSaveEdit} disabled={isSavingEdit}>
+              {isSavingEdit ? <Loader2 className="size-3.5 animate-spin mr-1.5" /> : null}
+              Save Changes
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

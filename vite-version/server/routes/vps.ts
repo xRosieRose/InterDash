@@ -30,7 +30,7 @@ router.get("/", (req: Request, res: Response) => {
             v.name, v.hostname, v.status, v.os_image_id, v.cpu_cores,
             v.memory_mb, v.swap_mb, v.disk_gb, v.ipv4_address, v.ipv6_address,
             v.created_at, v.updated_at,
-            n.name as node_name, n.region as node_region, n.hostname as node_hostname
+            n.name as node_name, n.region as node_region, n.hostname as node_hostname, n.flag_url as node_flag_url
      FROM vps v
      LEFT JOIN proxmox_nodes n ON v.proxmox_node_id = n.id
      WHERE v.owner_user_id = ?
@@ -57,7 +57,7 @@ router.get("/:id", (req: Request, res: Response) => {
             v.name, v.hostname, v.status, v.os_image_id, v.cpu_cores,
             v.memory_mb, v.swap_mb, v.disk_gb, v.ipv4_address, v.ipv6_address,
             v.created_at, v.updated_at,
-            n.name as node_name, n.region as node_region, n.hostname as node_hostname,
+            n.name as node_name, n.region as node_region, n.hostname as node_hostname, n.flag_url as node_flag_url,
             u.username as owner_username, u.global_name as owner_global_name
      FROM vps v
      LEFT JOIN proxmox_nodes n ON v.proxmox_node_id = n.id
