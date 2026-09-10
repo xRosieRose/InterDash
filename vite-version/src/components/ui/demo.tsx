@@ -1,5 +1,1 @@
-import AuthSectionThree from "@/components/ui/auth-section-3";
-
-export default function Demo() {
-  return <AuthSectionThree />;
-}
+export { default } from "@/components/ui/product-tour-demo";

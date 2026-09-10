@@ -13,6 +13,7 @@ import {
   RefreshCw,
   Loader2,
   AlertCircle,
+  HelpCircle,
 } from "lucide-react"
 import { BaseLayout } from "@/components/layouts/base-layout"
 import { Badge } from "@/components/ui/badge"
@@ -37,10 +38,50 @@ import { useAuth } from "@/contexts/auth-context"
 import { AdminDeployModal } from "@/components/vps/admin-deploy-modal"
 import type { VpsRecord } from "@/types/vps"
 import { toast } from "sonner"
+import { Tour, useTour, type TourStep } from "@/components/ui/product-tour"
+
+const INSTANCE_TOUR_STEPS: TourStep[] = [
+  {
+    title: "Welcome to InterDash",
+    content:
+      "Welcome to your Cloud VPS Management Control Plane. Let's take a quick 30-second tour of your cloud infrastructure.",
+    placement: "center",
+  },
+  {
+    target: "#tour-metrics",
+    title: "Fleet & Cluster Telemetry",
+    content:
+      "Monitor your total active KVM virtual machines, dedicated vCPU cores, allocated DDR5 RAM, and high-speed NVMe storage at a glance.",
+    placement: "bottom",
+  },
+  {
+    target: "#tour-search",
+    title: "Instant Search & Filter",
+    content:
+      "Quickly filter your fleet by VM ID, hostname, IP address, OS distribution, or node region.",
+    placement: "bottom",
+  },
+  {
+    target: "#tour-instances-table",
+    title: "VPS Management & Console",
+    content:
+      "Inspect your assigned servers, copy IPv4/IPv6 addresses with one click, and check node uptime status.",
+    placement: "top",
+  },
+  {
+    target: "#tour-replay",
+    title: "Interactive Tour Anytime",
+    content:
+      "You're all set! You can replay this interactive walkthrough at any time by clicking the Tour button.",
+    placement: "bottom",
+  },
+]
 
 export default function InstancesPage() {
   const { user } = useAuth()
   const isAdmin = user?.role === "admin"
+
+  const tour = useTour("interdash_instances_tour_seen")
 
   const [instances, setInstances] = React.useState<VpsRecord[]>([])
   const [isLoading, setIsLoading] = React.useState(true)
@@ -122,6 +163,16 @@ export default function InstancesPage() {
   ).toFixed(1)
   const totalDiskGb = instances.reduce((acc, curr) => acc + (curr.disk_gb || 0), 0)
 
+  // Auto-prompt onboarding tour on first visit
+  React.useEffect(() => {
+    if (!tour.seen() && !isLoading) {
+      const timer = window.setTimeout(() => {
+        tour.start()
+      }, 750)
+      return () => window.clearTimeout(timer)
+    }
+  }, [tour, isLoading])
+
   return (
     <BaseLayout
       title="Cloud VPS Instances"
@@ -129,7 +180,7 @@ export default function InstancesPage() {
     >
       <div className="@container/main px-4 lg:px-6 space-y-6">
         {/* Top Summary Metric Cards - features-8 elevated aesthetic */}
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div id="tour-metrics" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {/* Card 1: Active VPS Instances */}
           <Card className="relative overflow-hidden border-border bg-card/80 backdrop-blur-sm transition-all hover:border-primary/40 hover:shadow-lg group">
             <CardHeader className="pb-3">
@@ -286,10 +337,21 @@ export default function InstancesPage() {
               >
                 <RefreshCw className={`size-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
               </Button>
+              <Button
+                id="tour-replay"
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1 text-xs cursor-pointer"
+                onClick={() => tour.start()}
+                title="Interactive Onboarding Tour"
+              >
+                <HelpCircle className="size-3.5 text-primary" />
+                <span className="hidden sm:inline">Tour</span>
+              </Button>
             </div>
 
             <div className="flex items-center gap-2 w-full sm:w-auto">
-              <div className="relative flex-1 sm:w-64">
+              <div id="tour-search" className="relative flex-1 sm:w-64">
                 <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
                 <Input
                   placeholder="Filter instances..."
@@ -302,6 +364,7 @@ export default function InstancesPage() {
               {/* Admin Provisioning Trigger (Only rendered for Admins) */}
               {isAdmin && (
                 <Button
+                  id="tour-provision"
                   size="sm"
                   className="h-9 gap-1 text-xs shrink-0"
                   onClick={() => setAdminDeployOpen(true)}
@@ -313,7 +376,7 @@ export default function InstancesPage() {
           </div>
 
           {/* Table Content */}
-          <div className="rounded-md border border-border bg-card">
+          <div id="tour-instances-table" className="rounded-md border border-border bg-card">
             {isLoading ? (
               <div className="py-20 flex flex-col items-center justify-center gap-3 text-muted-foreground">
                 <Loader2 className="size-6 animate-spin text-primary" />
@@ -465,6 +528,16 @@ export default function InstancesPage() {
           onSuccess={() => fetchInstances(false)}
         />
       )}
+
+      {/* Interactive Onboarding Tour */}
+      <Tour
+        steps={INSTANCE_TOUR_STEPS}
+        open={tour.open}
+        onOpenChange={tour.setOpen}
+        index={tour.index}
+        onIndexChange={tour.setIndex}
+        onFinish={tour.markSeen}
+      />
     </BaseLayout>
   )
 }

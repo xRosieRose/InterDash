@@ -52,6 +52,7 @@
     "cors": "^2.8.6",
     "date-fns": "^4.1.0",
     "express": "^5.2.1",
+    "framer-motion": "^13.2.0",
     "helmet": "^8.3.0",
     "lucide-react": "^0.562.0",
     "motion": "^13.2.0",

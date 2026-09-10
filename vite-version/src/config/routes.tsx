@@ -5,6 +5,7 @@ import { RoleRedirect } from "@/components/router/role-redirect"
 
 // Public & Landing
 const Landing = lazy(() => import("@/app/landing/page"))
+const ProductTourDemo = lazy(() => import("@/components/ui/product-tour-demo"))
 
 // Compute
 const Instances = lazy(() => import("@/app/instances/page"))
@@ -45,6 +46,10 @@ export const routes: RouteConfig[] = [
   {
     path: "/landing",
     element: <Landing />,
+  },
+  {
+    path: "/demo",
+    element: <ProductTourDemo />,
   },
 
   // Authentication
