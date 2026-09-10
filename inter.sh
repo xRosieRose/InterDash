@@ -57,31 +57,88 @@ if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]:-}" ]; then
 fi
 
 find_project_root() {
-  if [ -d "$SCRIPT_DIR/vite-version" ]; then
-    ROOT_DIR="$SCRIPT_DIR"
-    VITE_DIR="$SCRIPT_DIR/vite-version"
-  elif [ -d "$SCRIPT_DIR/shadcn-dashboard-landing-template/vite-version" ]; then
-    ROOT_DIR="$SCRIPT_DIR/shadcn-dashboard-landing-template"
-    VITE_DIR="$ROOT_DIR/vite-version"
-  elif [ -d "$PWD/vite-version" ]; then
-    ROOT_DIR="$PWD"
-    VITE_DIR="$PWD/vite-version"
-  elif [ -d "$PWD/shadcn-dashboard-landing-template/vite-version" ]; then
-    ROOT_DIR="$PWD/shadcn-dashboard-landing-template"
-    VITE_DIR="$ROOT_DIR/vite-version"
-  elif [ -d "$PWD/interdash/vite-version" ]; then
-    ROOT_DIR="$PWD/interdash"
-    VITE_DIR="$ROOT_DIR/vite-version"
-  elif [ -d "$SCRIPT_DIR/interdash/vite-version" ]; then
-    ROOT_DIR="$SCRIPT_DIR/interdash"
-    VITE_DIR="$ROOT_DIR/vite-version"
-  elif [ -f "$SCRIPT_DIR/package.json" ] && grep -q "shadcn-dashboard-vite" "$SCRIPT_DIR/package.json" 2>/dev/null; then
-    ROOT_DIR="$(dirname "$SCRIPT_DIR")"
-    VITE_DIR="$SCRIPT_DIR"
-  else
-    ROOT_DIR="$PWD/interdash"
-    VITE_DIR="$ROOT_DIR/vite-version"
+  # 1. Discover repo root via git worktree if current or script directory is in a repo
+  local git_root
+  git_root=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)
+  if [ -n "$git_root" ] && [ -d "$git_root/.git" ]; then
+    ROOT_DIR="$git_root"
+    if [ -d "$ROOT_DIR/vite-version" ]; then
+      VITE_DIR="$ROOT_DIR/vite-version"
+      return 0
+    elif [ -d "$ROOT_DIR/shadcn-dashboard-landing-template/vite-version" ]; then
+      ROOT_DIR="$ROOT_DIR/shadcn-dashboard-landing-template"
+      VITE_DIR="$ROOT_DIR/vite-version"
+      return 0
+    elif [ -f "$ROOT_DIR/package.json" ]; then
+      VITE_DIR="$ROOT_DIR"
+      return 0
+    fi
   fi
+
+  # 2. Check running PM2 process working directory
+  if command -v pm2 >/dev/null 2>&1; then
+    local pm2_cwd
+    pm2_cwd=$(pm2 jlist 2>/dev/null | grep -o '"pm_cwd":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+    if [ -n "$pm2_cwd" ] && [ -d "$pm2_cwd" ]; then
+      if [ -d "$pm2_cwd/../.git" ]; then
+        ROOT_DIR="$(cd "$pm2_cwd/.." && pwd)"
+        VITE_DIR="$pm2_cwd"
+        return 0
+      elif [ -d "$pm2_cwd/.git" ]; then
+        ROOT_DIR="$pm2_cwd"
+        VITE_DIR="$pm2_cwd"
+        return 0
+      fi
+    fi
+  fi
+
+  # 3. Check common deployment candidates
+  local candidates=(
+    "$SCRIPT_DIR/InterDash"
+    "$SCRIPT_DIR/interdash"
+    "$PWD/InterDash"
+    "$PWD/interdash"
+    "$HOME/InterDash"
+    "$HOME/interdash"
+    "$SCRIPT_DIR"
+    "$PWD"
+    "$SCRIPT_DIR/shadcn-dashboard-landing-template"
+    "$PWD/shadcn-dashboard-landing-template"
+    "/var/www/InterDash"
+    "/var/www/interdash"
+    "/opt/InterDash"
+    "/opt/interdash"
+  )
+
+  for dir in "${candidates[@]}"; do
+    if [ -d "$dir/.git" ]; then
+      ROOT_DIR="$dir"
+      if [ -d "$dir/vite-version" ]; then
+        VITE_DIR="$dir/vite-version"
+        return 0
+      elif [ -d "$dir/shadcn-dashboard-landing-template/vite-version" ]; then
+        ROOT_DIR="$dir/shadcn-dashboard-landing-template"
+        VITE_DIR="$ROOT_DIR/vite-version"
+        return 0
+      elif [ -f "$dir/package.json" ]; then
+        VITE_DIR="$dir"
+        return 0
+      fi
+    fi
+  done
+
+  # 4. Fallback check for directories that contain vite-version
+  for dir in "${candidates[@]}"; do
+    if [ -d "$dir/vite-version" ]; then
+      ROOT_DIR="$dir"
+      VITE_DIR="$dir/vite-version"
+      return 0
+    fi
+  done
+
+  # Default fallback
+  ROOT_DIR="${PWD}/InterDash"
+  VITE_DIR="$ROOT_DIR/vite-version"
 }
 
 find_project_root
@@ -555,8 +612,18 @@ run_updater() {
   find_project_root
 
   if [ ! -d "$ROOT_DIR/.git" ]; then
-    print_error "Git repository not found in $ROOT_DIR. Cannot auto-update."
-    exit 1
+    print_warn "No existing Git repository found in $ROOT_DIR."
+    TARGET_CLONE="$PWD/InterDash"
+    if [ -d "$TARGET_CLONE/.git" ]; then
+      ROOT_DIR="$TARGET_CLONE"
+      VITE_DIR="$ROOT_DIR/vite-version"
+      print_step "Using repository at: ${GRAY_LIGHT}$ROOT_DIR${NC}"
+    else
+      print_step "Cloning InterDash from ${GRAY_LIGHT}$REPO_URL${NC} into: ${GRAY_LIGHT}$TARGET_CLONE${NC}..."
+      git clone "$REPO_URL" "$TARGET_CLONE"
+      ROOT_DIR="$TARGET_CLONE"
+      VITE_DIR="$ROOT_DIR/vite-version"
+    fi
   fi
 
   cd "$ROOT_DIR"
