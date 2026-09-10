@@ -73,14 +73,16 @@ export function Tour({
   const finish = React.useCallback(() => {
     onFinish?.();
     onOpenChange?.(false);
+    onIndexChange?.(0);
     setIndexState(0);
-  }, [onFinish, onOpenChange]);
+  }, [onFinish, onOpenChange, onIndexChange]);
 
   const skip = React.useCallback(() => {
     onSkip?.();
     onOpenChange?.(false);
+    onIndexChange?.(0);
     setIndexState(0);
-  }, [onSkip, onOpenChange]);
+  }, [onSkip, onOpenChange, onIndexChange]);
 
   const next = React.useCallback(() => {
     if (isLast) finish();
@@ -231,7 +233,16 @@ export function Tour({
           aria-modal="true"
           aria-label={typeof step.title === "string" ? step.title : "Product tour"}
         >
-          <div className="absolute inset-0" onClick={() => clickToNext && next()} />
+          <div
+            className="absolute inset-0 cursor-pointer"
+            onClick={() => {
+              if (clickToNext) {
+                next();
+              } else {
+                skip();
+              }
+            }}
+          />
 
           {spot ? (
             <motion.div
@@ -265,7 +276,7 @@ export function Tour({
 
           <motion.div
             ref={cardRef}
-            className="absolute w-[320px] max-w-[calc(100vw-24px)] rounded-2xl border border-zinc-200 bg-white p-4 shadow-2xl shadow-black/20 dark:border-zinc-800 dark:bg-zinc-900"
+            className="absolute w-[320px] max-w-[calc(100vw-24px)] rounded-2xl border border-zinc-200 bg-white p-4 shadow-2xl shadow-black/20 dark:border-zinc-800 dark:bg-zinc-900 pointer-events-auto z-10"
             initial={reduce ? false : { opacity: 0, scale: 0.96 }}
             animate={{ opacity: 1, scale: 1, left, top }}
             transition={reduce ? { duration: 0 } : SPRING}
@@ -278,7 +289,10 @@ export function Tour({
               </h3>
               <button
                 type="button"
-                onClick={skip}
+                onClick={(e: React.MouseEvent) => {
+                  e.stopPropagation();
+                  skip();
+                }}
                 aria-label="Close tour"
                 className="-mr-1 -mt-1 rounded-md p-1 text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-600 dark:hover:bg-zinc-800 dark:hover:text-zinc-300 cursor-pointer"
               >
@@ -342,7 +356,7 @@ export function Tour({
 
 export function useTour(storageKey?: string) {
   const [open, setOpen] = React.useState(false);
-  const [index, setIndex] = React.useState(0);
+  const [index, setIndexState] = React.useState(0);
 
   const seen = React.useCallback(() => {
     if (!storageKey) return false;
@@ -353,8 +367,12 @@ export function useTour(storageKey?: string) {
     }
   }, [storageKey]);
 
+  const setIndex = React.useCallback((i: number) => {
+    setIndexState(i);
+  }, []);
+
   const start = React.useCallback(() => {
-    setIndex(0);
+    setIndexState(0);
     setOpen(true);
   }, []);
 
@@ -367,5 +385,22 @@ export function useTour(storageKey?: string) {
     }
   }, [storageKey]);
 
-  return { open, setOpen, index, setIndex, start, seen, markSeen };
+  const close = React.useCallback(() => {
+    setOpen(false);
+    markSeen();
+  }, [markSeen]);
+
+  return React.useMemo(
+    () => ({
+      open,
+      setOpen,
+      index,
+      setIndex,
+      start,
+      close,
+      seen,
+      markSeen,
+    }),
+    [open, index, setIndex, start, close, seen, markSeen]
+  );
 }

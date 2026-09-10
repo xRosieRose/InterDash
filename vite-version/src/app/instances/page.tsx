@@ -166,15 +166,20 @@ export default function InstancesPage() {
   ).toFixed(1)
   const totalDiskGb = instances.reduce((acc, curr) => acc + (curr.disk_gb || 0), 0)
 
-  // Auto-prompt onboarding tour on first visit
+  const hasAutoPromptedRef = React.useRef(false)
+
+  // Auto-prompt onboarding tour ONCE on first visit after instances load
   React.useEffect(() => {
-    if (!tour.seen() && !isLoading) {
+    if (isLoading || hasAutoPromptedRef.current) return
+
+    if (!tour.seen()) {
+      hasAutoPromptedRef.current = true
       const timer = window.setTimeout(() => {
         tour.start()
-      }, 750)
+      }, 500)
       return () => window.clearTimeout(timer)
     }
-  }, [tour, isLoading])
+  }, [isLoading, tour])
 
   return (
     <BaseLayout
@@ -556,10 +561,22 @@ export default function InstancesPage() {
       <Tour
         steps={INSTANCE_TOUR_STEPS}
         open={tour.open}
-        onOpenChange={tour.setOpen}
+        onOpenChange={(isOpen) => {
+          tour.setOpen(isOpen)
+          if (!isOpen) {
+            tour.markSeen()
+          }
+        }}
         index={tour.index}
         onIndexChange={tour.setIndex}
-        onFinish={tour.markSeen}
+        onFinish={() => {
+          tour.setOpen(false)
+          tour.markSeen()
+        }}
+        onSkip={() => {
+          tour.setOpen(false)
+          tour.markSeen()
+        }}
       />
     </BaseLayout>
   )
