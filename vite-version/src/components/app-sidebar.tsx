@@ -31,11 +31,6 @@ import {
 } from "@/components/ui/sidebar"
 
 const data = {
-  user: {
-    name: "InterENL Admin",
-    email: "admin@interenl.com",
-    avatar: "",
-  },
   navGroups: [
     {
       label: "Cloud Compute",
@@ -199,8 +194,8 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
     ? {
         name: user.global_name || user.username,
         email: user.email || `@${user.username}`,
-        avatar: user.avatarUrl,
-        isAdmin: user.isAdmin,
+        avatar: user.avatar_url,
+        isAdmin: user.is_admin,
         role: user.role,
       }
     : {

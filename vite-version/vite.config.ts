@@ -13,5 +13,15 @@ export default defineConfig({
   },
   define: {
     'import.meta.env.VITE_BASENAME': JSON.stringify(process.env.VITE_BASENAME || ''),
-  }
+  },
+  server: {
+    // Proxy API requests to the Express server in development
+    // Run `pnpm dev:server` in a separate terminal alongside `pnpm dev`
+    proxy: {
+      '/api': {
+        target: 'http://localhost:5174',
+        changeOrigin: true,
+      },
+    },
+  },
 })

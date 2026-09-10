@@ -1,9 +1,6 @@
-"use client";
-
 import { useState } from "react";
 import { FlutedGlass } from "@paper-design/shaders-react";
 import { motion } from "motion/react";
-import { toast } from "sonner";
 
 interface AuthSectionThreeProps {
   /**
@@ -51,47 +48,11 @@ export default function AuthSectionThree({
 
   const handleDiscordAuth = () => {
     setIsConnecting(true);
-    const clientId =
-      (typeof import.meta !== "undefined" &&
-        (import.meta as unknown as { env?: Record<string, string> }).env
-          ?.VITE_DISCORD_CLIENT_ID) ||
-      (typeof process !== "undefined" &&
-        process.env?.NEXT_PUBLIC_DISCORD_CLIENT_ID);
-
-    const redirectUri =
-      (typeof import.meta !== "undefined" &&
-        (import.meta as unknown as { env?: Record<string, string> }).env
-          ?.VITE_DISCORD_REDIRECT_URI) ||
-      (typeof process !== "undefined" &&
-        process.env?.NEXT_PUBLIC_DISCORD_REDIRECT_URI) ||
-      (typeof window !== "undefined"
-        ? `${window.location.origin}/auth/callback`
-        : "/auth/callback");
-
-    const scopes =
-      (typeof import.meta !== "undefined" &&
-        (import.meta as unknown as { env?: Record<string, string> }).env
-          ?.VITE_DISCORD_SCOPES) || "identify email";
-
-    if (
-      !clientId ||
-      clientId === "your_discord_client_id_here" ||
-      clientId === "123456789012345678"
-    ) {
-      setIsConnecting(false);
-      toast.error("Discord OAuth2 Not Configured", {
-        description:
-          "Please configure VITE_DISCORD_CLIENT_ID in your .env file on the server and rebuild.",
-      });
-      return;
-    }
-
-    // Direct redirect to Discord's official OAuth2 authorization portal
-    const authUrl = `https://discord.com/oauth2/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(
-      redirectUri
-    )}&response_type=token&scope=${encodeURIComponent(scopes)}`;
-
-    window.location.href = authUrl;
+    // Redirect to the server-side OAuth handler.
+    // The server handles the entire Discord authorization code flow,
+    // exchanges the code for tokens, creates the session, and sets
+    // an HTTP-only cookie. NO tokens touch the browser.
+    window.location.href = "/api/auth/discord";
   };
 
   // Resolve base public asset path

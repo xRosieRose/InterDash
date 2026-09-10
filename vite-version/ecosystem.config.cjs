@@ -1,17 +1,23 @@
 /**
  * InterDash - PM2 Production Ecosystem Configuration
- * https://github.com/xRosieRose/InterDash
+ *
+ * Runs the Express.js server (with auth) instead of static file serving.
+ * The Express server handles:
+ * - Server-side authentication enforcement
+ * - Session management with HTTP-only cookies
+ * - Protected API routes
+ * - Static file serving for the Vite SPA
  */
 module.exports = {
   apps: [
     {
       name: 'interdash',
-      script: 'serve',
+      script: 'npx',
+      args: 'tsx server/index.ts',
+      cwd: __dirname,
       env: {
-        PM2_SERVE_PATH: './dist',
-        PM2_SERVE_PORT: process.env.PORT || 5173,
-        PM2_SERVE_SPA: 'true',
-        PM2_SERVE_HOMEPAGE: '/index.html'
+        NODE_ENV: 'production',
+        PORT: process.env.PORT || 5173,
       },
       instances: 1,
       autorestart: true,

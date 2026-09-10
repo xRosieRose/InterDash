@@ -31,7 +31,7 @@ export function DeployVpsModal({
   const [selectedRegion, setSelectedRegion] = React.useState<DatacenterRegion>(availableRegions[0])
   const [selectedOs, setSelectedOs] = React.useState<OsImage>(availableOsImages[0])
   const [authMethod, setAuthMethod] = React.useState<"password" | "ssh-key">("password")
-  const [rootPassword, setRootPassword] = React.useState("InterENL-Root2026!")
+  const [rootPassword, setRootPassword] = React.useState("")
   const [sshKey, setSshKey] = React.useState("")
   const [isDeploying, setIsDeploying] = React.useState(false)
   const [deployStep, setDeployStep] = React.useState("")

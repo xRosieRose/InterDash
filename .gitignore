@@ -21,6 +21,12 @@ dist-ssr/
 .env.test.local
 .env.production.local
 
+# Database
+data/
+*.db
+*.db-journal
+*.db-wal
+
 # IDE files
 .vscode/
 .idea/

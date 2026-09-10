@@ -1,4 +1,14 @@
-"use client"
+/**
+ * InterDash — Protected Route Component
+ *
+ * This component provides a client-side UX guard for protected pages.
+ * It is NOT the security boundary — the server already enforced
+ * authentication before serving the page HTML.
+ *
+ * This prevents:
+ * - Dashboard flash before auth check completes
+ * - Serving authenticated UI when /api/auth/me returns 401
+ */
 
 import * as React from "react"
 import { Navigate, useLocation } from "react-router-dom"
@@ -23,7 +33,7 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   }
 
   if (!user) {
-    // Preserve attempted destination
+    // Preserve attempted destination for post-login redirect
     return <Navigate to="/auth/sign-in" state={{ from: location }} replace />
   }
 
