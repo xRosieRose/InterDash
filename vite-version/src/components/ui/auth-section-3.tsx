@@ -307,23 +307,23 @@ export default function AuthSectionThree({
             </div>
 
             {/* Dashboard Mockup using the landing page image */}
-            <div className="mt-10 w-full translate-y-[24%] overflow-hidden rounded-2xl border border-white/15 bg-black/80 p-2 shadow-[0_30px_90px_rgba(0,0,0,0.7)] backdrop-blur-xl sm:translate-y-[22%] lg:absolute lg:left-[8%] lg:-bottom-20 lg:mt-0 lg:w-[108%] lg:max-w-none lg:origin-bottom-left lg:translate-y-0 lg:-rotate-2 xl:left-[10%] xl:-bottom-[110px] xl:w-[112%]">
+            <div className="mt-8 w-full max-w-[620px] lg:max-w-[700px] xl:max-w-[740px] overflow-hidden rounded-2xl border border-white/15 bg-black/85 p-2 shadow-[0_30px_85px_rgba(0,0,0,0.7)] backdrop-blur-xl lg:absolute lg:left-[6%] lg:-bottom-18 xl:-bottom-24 lg:mt-0 lg:w-[102%] xl:left-[8%] xl:w-[106%] lg:origin-bottom-left lg:-rotate-1">
               <motion.div
-                initial={{ opacity: 0, y: 72, filter: "blur(10px)" }}
+                initial={{ opacity: 0, y: 60, filter: "blur(8px)" }}
                 whileInView={{ opacity: 1, y: 0, filter: "blur(0px)" }}
                 viewport={{ once: true, margin: "-10%" }}
                 transition={{
-                  duration: 1,
-                  delay: 0.22,
+                  duration: 0.9,
+                  delay: 0.2,
                   ease: [0.16, 1, 0.3, 1],
                 }}
                 className="overflow-hidden rounded-xl border border-white/10 bg-black"
               >
-                <div className="flex items-center gap-1.5 border-b border-white/10 bg-zinc-950/90 px-4 py-3 select-none">
+                <div className="flex items-center gap-1.5 border-b border-white/10 bg-zinc-950/90 px-4 py-2.5 select-none">
                   <div className="size-2.5 rounded-full bg-red-500/70" />
                   <div className="size-2.5 rounded-full bg-yellow-500/70" />
                   <div className="size-2.5 rounded-full bg-green-500/70" />
-                  <span className="ml-4 text-[10px] font-mono tracking-wider text-white/50 flex items-center gap-1">
+                  <span className="ml-3 text-[10px] font-mono tracking-wider text-white/60 flex items-center gap-1 bg-white/5 px-2.5 py-1 rounded-full border border-white/5">
                     <span className="text-emerald-400">●</span> interdash.enl/dashboard
                   </span>
                 </div>
@@ -332,7 +332,7 @@ export default function AuthSectionThree({
                 <img
                   src={lightDashboardImg}
                   alt="InterDash Cloud VPS Dashboard Preview - Light Mode"
-                  className="h-auto w-full object-cover object-top block dark:hidden"
+                  className="h-auto max-h-[380px] lg:max-h-[440px] w-full object-cover object-top block dark:hidden"
                   loading="lazy"
                   onError={(e) => {
                     // Fallback to absolute root if relative fails
@@ -344,7 +344,7 @@ export default function AuthSectionThree({
                 <img
                   src={darkDashboardImg}
                   alt="InterDash Cloud VPS Dashboard Preview - Dark Mode"
-                  className="h-auto w-full object-cover object-top hidden dark:block"
+                  className="h-auto max-h-[380px] lg:max-h-[440px] w-full object-cover object-top hidden dark:block"
                   loading="lazy"
                   onError={(e) => {
                     // Fallback to absolute root if relative fails
