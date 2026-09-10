@@ -361,10 +361,11 @@ start_pm2() {
     pm2 delete interdash >/dev/null 2>&1 || true
   fi
 
-  print_step "Starting InterDash SPA daemon on port $app_port with PM2..."
-  if ! pm2 serve "$VITE_DIR/dist" "$app_port" --spa --name "interdash" >/dev/null 2>&1; then
-    print_warn "Direct static serve failed; launching via preview process in PM2..."
-    pm2 start "${PKG_MGR:-npm}" --name "interdash" -- run preview -- --host 0.0.0.0 --port "$app_port" >/dev/null 2>&1
+  print_step "Starting InterDash server on port $app_port with PM2..."
+  if [ -f "$VITE_DIR/ecosystem.config.cjs" ]; then
+    PORT="$app_port" pm2 start "$VITE_DIR/ecosystem.config.cjs" >/dev/null 2>&1
+  else
+    PORT="$app_port" pm2 start "npx" --name "interdash" -- tsx server/index.ts >/dev/null 2>&1
   fi
 
   pm2 save >/dev/null 2>&1 || true
