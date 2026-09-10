@@ -18,10 +18,10 @@ const DEFAULT_SETTINGS: PanelSettings = {
   panel_title: "Cloud VPS Control Panel",
   logo_url: "",
   favicon_url: "",
-  support_url: "https://discord.gg/interenl",
-  website_url: "https://interenl.com",
-  discord_url: "https://discord.gg/interenl",
-  contact_email: "support@interenl.com",
+  support_url: "",
+  website_url: "",
+  discord_url: "",
+  contact_email: "",
 }
 
 interface SettingsContextType {
@@ -36,9 +36,28 @@ const SettingsContext = React.createContext<SettingsContextType>({
   refreshSettings: async () => {},
 })
 
+function getInitialSettings(): PanelSettings {
+  if (typeof window !== "undefined" && (window as any).__INITIAL_SETTINGS__) {
+    const raw = (window as any).__INITIAL_SETTINGS__;
+    return {
+      brand_name: raw.brand_name || DEFAULT_SETTINGS.brand_name,
+      panel_title: raw.panel_title || DEFAULT_SETTINGS.panel_title,
+      logo_url: raw.logo_url || "",
+      favicon_url: raw.favicon_url || "",
+      support_url: raw.support_url || DEFAULT_SETTINGS.support_url,
+      website_url: raw.website_url || DEFAULT_SETTINGS.website_url,
+      discord_url: raw.discord_url || DEFAULT_SETTINGS.discord_url,
+      contact_email: raw.contact_email || DEFAULT_SETTINGS.contact_email,
+    };
+  }
+  return DEFAULT_SETTINGS;
+}
+
 export function SettingsProvider({ children }: { children: React.ReactNode }) {
-  const [settings, setSettings] = React.useState<PanelSettings>(DEFAULT_SETTINGS)
-  const [isLoading, setIsLoading] = React.useState(true)
+  const [settings, setSettings] = React.useState<PanelSettings>(getInitialSettings)
+  const [isLoading, setIsLoading] = React.useState<boolean>(() => {
+    return !(typeof window !== "undefined" && (window as any).__INITIAL_SETTINGS__);
+  })
 
   const refreshSettings = React.useCallback(async () => {
     try {

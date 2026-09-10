@@ -85,7 +85,7 @@ export function LandingNavbar() {
           <a href="#hero" className="flex items-center space-x-2 cursor-pointer">
             <Logo size={32} />
             <span className="font-bold text-xl tracking-tight">
-              {settings.brand_name || "InterENL"}
+              {settings.brand_name || "InterDash"}
             </span>
           </a>
         </div>
@@ -162,7 +162,7 @@ export function LandingNavbar() {
                   <div className="p-2 bg-primary/10 rounded-lg">
                     <Logo size={16} />
                   </div>
-                  <SheetTitle className="text-lg font-semibold">{settings.brand_name || "InterENL"}</SheetTitle>
+                  <SheetTitle className="text-lg font-semibold">{settings.brand_name || "InterDash"}</SheetTitle>
                   <div className="ml-auto flex items-center gap-2">
                     <Button
                       variant="ghost"

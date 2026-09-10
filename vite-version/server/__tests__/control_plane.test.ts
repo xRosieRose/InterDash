@@ -346,4 +346,38 @@ describe("InterDash Control Plane & Ownership Tests", () => {
     assert.ok(instance.node_flag_url, "Expected node_flag_url to be returned for VPS");
     assert.match(instance.node_flag_url, /^data:image\/png/);
   });
+
+  it("should dynamically inject panel branding and __INITIAL_SETTINGS__ into index.html with zero template branding", async () => {
+    // Configure custom title and branding in panel_settings
+    execute(
+      "INSERT INTO panel_settings (key, value) VALUES ('panel_title', 'My Custom Hosting Panel') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+    );
+    execute(
+      "INSERT INTO panel_settings (key, value) VALUES ('brand_name', 'AcmeCloud') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+    );
+    execute(
+      "INSERT INTO panel_settings (key, value) VALUES ('favicon_url', 'https://example.com/custom-favicon.png') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+    );
+
+    const res = await fetch(`${BASE_URL}/`);
+    assert.equal(res.status, 200);
+    const html = await res.text();
+
+    // Verify custom title
+    assert.ok(html.includes("<title>My Custom Hosting Panel</title>"), "Expected custom panel_title in <title>");
+    // Verify custom favicon
+    assert.ok(html.includes('href="https://example.com/custom-favicon.png"'), "Expected custom favicon in <link rel='icon'>");
+    // Verify __INITIAL_SETTINGS__ injection
+    assert.ok(html.includes("window.__INITIAL_SETTINGS__"), "Expected __INITIAL_SETTINGS__ to be injected");
+    assert.ok(html.includes('"brand_name":"AcmeCloud"'), "Expected brand_name in injected settings");
+    // Verify zero hardcoded InterENL template branding
+    assert.ok(!html.includes("InterENL - The Hosting Of Your Dreams"), "Expected zero old InterENL branding in HTML");
+  });
+
+  it("should serve clean SVG or configured favicon on /favicon.ico and /favicon.png", async () => {
+    const res = await fetch(`${BASE_URL}/favicon.ico`, { redirect: "manual" });
+    // Since custom favicon is configured, it redirects to the custom favicon URL
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.get("location"), "https://example.com/custom-favicon.png");
+  });
 });

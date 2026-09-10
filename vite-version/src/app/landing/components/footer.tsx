@@ -113,7 +113,7 @@ export function LandingFooter() {
             <div className="flex items-center space-x-2 mb-4 max-lg:justify-center">
               <a href="#hero" className="flex items-center space-x-2 cursor-pointer">
                 <Logo size={32} />
-                <span className="font-bold text-xl">{settings.brand_name || "InterENL"}</span>
+                <span className="font-bold text-xl">{settings.brand_name || "InterDash"}</span>
               </a>
             </div>
             <p className="text-muted-foreground mb-6 max-lg:text-center max-lg:flex max-lg:justify-center">

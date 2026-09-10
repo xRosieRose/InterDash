@@ -10,12 +10,13 @@
  * The server is authoritative. The browser is NOT.
  */
 
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import cookieParser from "cookie-parser";
 import { config } from "./config.js";
-import { initDatabase, closeDatabase, cleanExpiredSessions } from "./db/index.js";
+import { initDatabase, closeDatabase, cleanExpiredSessions, queryAll } from "./db/index.js";
 import {
   securityHeaders,
   csrfCookieSetter,
@@ -90,11 +91,39 @@ export async function createApp(): Promise<express.Express> {
     res.status(404).json({ error: "API endpoint not found." });
   });
 
+  // Favicon handler: intercept before express.static so no old template icons are served
+  app.get(["/favicon.ico", "/favicon.png", "/favicon-dark.png"], (_req, res) => {
+    try {
+      const rows = queryAll<{ key: string; value: string }>(
+        "SELECT key, value FROM panel_settings WHERE key = 'favicon_url'"
+      );
+      if (rows[0]?.value) {
+        return res.redirect(302, rows[0].value);
+      }
+    } catch {}
+    res.setHeader("Content-Type", "image/svg+xml");
+    const svgPath = path.resolve(__dirname, "..", "public", "favicon.svg");
+    if (fs.existsSync(svgPath)) {
+      return res.sendFile(svgPath);
+    }
+    res.status(204).end();
+  });
+
   // ==========================================================================
   // Static File Serving
   // ==========================================================================
   const distPath = path.resolve(__dirname, "..", "dist");
   app.use(express.static(distPath, { index: false }));
+
+  // Helper to escape HTML characters in dynamic insertions
+  function escapeHtml(str: string): string {
+    return str
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
 
   // ==========================================================================
   // Role-Aware Page Redirects (server-side)
@@ -128,11 +157,60 @@ export async function createApp(): Promise<express.Express> {
     res.redirect(302, "/instances");
   });
 
+  // Dynamic HTML server with injected branding and zero hydration flash
+  const serveIndexHtml = (targetRes: express.Response) => {
+    const indexPath = path.join(distPath, "index.html");
+    if (!fs.existsSync(indexPath)) {
+      return targetRes.status(404).send("Application bundle not built. Please run npm run build.");
+    }
+
+    try {
+      let html = fs.readFileSync(indexPath, "utf8");
+
+      // Load dynamic panel settings from database
+      const rows = queryAll<{ key: string; value: string }>(
+        "SELECT key, value FROM panel_settings"
+      );
+      const settings: Record<string, string> = {};
+      for (const row of rows) {
+        settings[row.key] = row.value;
+      }
+
+      const title = settings.panel_title || settings.brand_name || "Cloud VPS Control Panel";
+      const brand = settings.brand_name || "InterDash";
+      const favicon = settings.favicon_url;
+
+      // Replace Title & Meta tags
+      html = html.replace(/<title>[\s\S]*?<\/title>/i, `<title>${escapeHtml(title)}</title>`);
+      html = html.replace(/<meta\s+name="title"\s+content="[^"]*"\s*\/?>/i, `<meta name="title" content="${escapeHtml(title)}" />`);
+      html = html.replace(/<meta\s+property="og:title"\s+content="[^"]*"\s*\/?>/i, `<meta property="og:title" content="${escapeHtml(title)}" />`);
+      html = html.replace(/<meta\s+name="twitter:title"\s+content="[^"]*"\s*\/?>/i, `<meta name="twitter:title" content="${escapeHtml(title)}" />`);
+      html = html.replace(/<meta\s+property="og:site_name"\s+content="[^"]*"\s*\/?>/i, `<meta property="og:site_name" content="${escapeHtml(brand)}" />`);
+
+      // Replace Favicons
+      html = html.replace(/<link\s+rel="icon"[^>]*>/gi, "");
+      const finalFavicon = favicon || "/favicon.svg";
+      const isSvg = finalFavicon.endsWith(".svg") || finalFavicon.startsWith("data:image/svg+xml");
+      const iconTag = `<link rel="icon" href="${escapeHtml(finalFavicon)}" ${isSvg ? 'type="image/svg+xml"' : ''}>\n`;
+      html = html.replace("</head>", `${iconTag}</head>`);
+
+      // Inject initial settings script to eliminate client-side hydration flash
+      const initScript = `<script>window.__INITIAL_SETTINGS__=${JSON.stringify(settings)};</script>\n`;
+      html = html.replace("</head>", `${initScript}</head>`);
+
+      targetRes.setHeader("Content-Type", "text/html; charset=utf-8");
+      targetRes.send(html);
+    } catch (err) {
+      console.error("[SERVER] Error in serveIndexHtml:", err);
+      targetRes.sendFile(indexPath);
+    }
+  };
+
   // ==========================================================================
   // Admin Page Routes (Require Authenticated Session AND role === 'admin')
   // ==========================================================================
   app.get(["/admin", "/admin/{*splat}"], requireAuth, requireAdminPage, (_req, res) => {
-    res.sendFile(path.join(distPath, "index.html"));
+    serveIndexHtml(res);
   });
 
   // ==========================================================================
@@ -161,7 +239,7 @@ export async function createApp(): Promise<express.Express> {
 
   for (const routePath of protectedPaths) {
     app.get(routePath, requireAuth, (_req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
+      serveIndexHtml(res);
     });
   }
 
@@ -170,6 +248,7 @@ export async function createApp(): Promise<express.Express> {
   // ==========================================================================
   const publicPaths = [
     "/",
+    "/index.html",
     "/landing",
     "/landing/{*splat}",
     "/auth/{*splat}",
@@ -184,7 +263,7 @@ export async function createApp(): Promise<express.Express> {
 
   for (const routePath of publicPaths) {
     app.get(routePath, (_req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
+      serveIndexHtml(res);
     });
   }
 
@@ -194,7 +273,7 @@ export async function createApp(): Promise<express.Express> {
   // This ensures unknown routes go through the React 404 handler
   // ==========================================================================
   app.get("{*splat}", optionalAuth, (_req, res) => {
-    res.sendFile(path.join(distPath, "index.html"));
+    serveIndexHtml(res);
   });
 
   // ==========================================================================
