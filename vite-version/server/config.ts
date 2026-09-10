@@ -58,7 +58,7 @@ export const config = {
 
   /** Discord OAuth2 */
   discord: {
-    clientId: optional("DISCORD_CLIENT_ID", "mock_discord_client_id"),
+    clientId: optional("DISCORD_CLIENT_ID", "123456789012345678"),
     clientSecret: optional("DISCORD_CLIENT_SECRET", "mock_discord_client_secret"),
     redirectUri: optional(
       "DISCORD_REDIRECT_URI",
@@ -68,7 +68,13 @@ export const config = {
     get isConfigured() {
       const id = process.env.DISCORD_CLIENT_ID;
       const secret = process.env.DISCORD_CLIENT_SECRET;
-      return Boolean(id && secret && id !== "mock_discord_client_id");
+      return Boolean(
+        id &&
+        secret &&
+        id !== "123456789012345678" &&
+        id !== "mock_discord_client_id" &&
+        /^\d{17,21}$/.test(id)
+      );
     },
   },
 

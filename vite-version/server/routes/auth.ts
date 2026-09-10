@@ -24,6 +24,25 @@ const router = Router();
 // GET /api/auth/discord — Initiate Discord OAuth2 Authorization Code flow
 // ============================================================================
 router.get("/discord", (req: Request, res: Response) => {
+  const clientId = config.discord.clientId;
+  const isSnowflake = /^\d{17,21}$/.test(clientId);
+
+  // In production, verify that DISCORD_CLIENT_ID is properly set to a real snowflake ID
+  if (config.isProd && (!isSnowflake || clientId === "123456789012345678")) {
+    console.error(
+      `[AUTH] Error: DISCORD_CLIENT_ID is not configured in production! Got: "${clientId}". ` +
+      `Please set a valid 17-21 digit numeric Application ID from Discord Developer Portal in your .env file.`
+    );
+    return res.redirect("/auth/sign-in?error=discord_not_configured");
+  }
+
+  if (!isSnowflake) {
+    console.error(
+      `[AUTH] Error: DISCORD_CLIENT_ID ("${clientId}") is not a valid numeric Discord Application ID.`
+    );
+    return res.redirect("/auth/sign-in?error=discord_not_configured");
+  }
+
   // Generate a random state parameter to prevent CSRF
   const state = crypto.randomBytes(16).toString("hex");
 
