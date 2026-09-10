@@ -6,10 +6,11 @@ import {
   LogOut,
   BellDot,
   CircleUser,
+  ShieldAlert,
 } from "lucide-react"
 import { Link } from "react-router-dom"
+import { useAuth } from "@/contexts/auth-context"
 
-import { Logo } from "@/components/logo"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -33,9 +34,12 @@ export function NavUser({
     name: string
     email: string
     avatar: string
+    isAdmin?: boolean
+    role?: string
   }
 }) {
   const { isMobile } = useSidebar()
+  const { logout } = useAuth()
 
   return (
     <SidebarMenu>
@@ -46,11 +50,26 @@ export function NavUser({
               size="lg"
               className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground cursor-pointer"
             >
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg">
-                < Logo size={28} />
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg overflow-hidden shrink-0 border border-white/10 bg-zinc-900">
+                {user.avatar ? (
+                  <img
+                    src={user.avatar}
+                    alt={user.name}
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  <CircleUser className="size-5 text-white" />
+                )}
               </div>
               <div className="grid flex-1 text-left text-sm leading-tight">
-                <span className="truncate font-medium">{user.name}</span>
+                <div className="flex items-center gap-1.5">
+                  <span className="truncate font-medium">{user.name}</span>
+                  {user.isAdmin && (
+                    <span className="px-1 py-0.2 rounded text-[9px] font-bold bg-white text-black tracking-wider uppercase">
+                      ADMIN
+                    </span>
+                  )}
+                </div>
                 <span className="text-muted-foreground truncate text-xs">
                   {user.email}
                 </span>
@@ -66,11 +85,26 @@ export function NavUser({
           >
             <DropdownMenuLabel className="p-0 font-normal">
               <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
-                <div className="h-8 w-8 rounded-lg">
-                  < Logo size={28} />
+                <div className="h-8 w-8 rounded-lg overflow-hidden shrink-0 border border-white/10 bg-zinc-900">
+                  {user.avatar ? (
+                    <img
+                      src={user.avatar}
+                      alt={user.name}
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    <CircleUser className="size-5 text-white" />
+                  )}
                 </div>
                 <div className="grid flex-1 text-left text-sm leading-tight">
-                  <span className="truncate font-medium">{user.name}</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="truncate font-medium">{user.name}</span>
+                    {user.isAdmin && (
+                      <span className="px-1 py-0.2 rounded text-[9px] font-bold bg-white text-black tracking-wider uppercase">
+                        ADMIN
+                      </span>
+                    )}
+                  </div>
                   <span className="text-muted-foreground truncate text-xs">
                     {user.email}
                   </span>
@@ -81,29 +115,36 @@ export function NavUser({
             <DropdownMenuGroup>
               <DropdownMenuItem asChild className="cursor-pointer">
                 <Link to="/settings/account">
-                  <CircleUser />
-                  Account
+                  <CircleUser className="size-4" />
+                  Account Settings
                 </Link>
               </DropdownMenuItem>
               <DropdownMenuItem asChild className="cursor-pointer">
                 <Link to="/settings/billing">
-                  <CreditCard />
-                  Billing
+                  <CreditCard className="size-4" />
+                  Plan & Limits
                 </Link>
               </DropdownMenuItem>
               <DropdownMenuItem asChild className="cursor-pointer">
                 <Link to="/settings/notifications">
-                  <BellDot />
+                  <BellDot className="size-4" />
                   Notifications
                 </Link>
               </DropdownMenuItem>
+              {user.isAdmin && (
+                <DropdownMenuItem className="cursor-default text-xs text-zinc-400">
+                  <ShieldAlert className="size-4 text-white" />
+                  Superuser Console Active
+                </DropdownMenuItem>
+              )}
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
-            <DropdownMenuItem asChild className="cursor-pointer">
-              <Link to="/sign-in">
-                <LogOut />
-                Log out
-              </Link>
+            <DropdownMenuItem
+              onClick={logout}
+              className="cursor-pointer text-red-400 focus:text-red-300 focus:bg-red-500/10"
+            >
+              <LogOut className="size-4" />
+              Sign out of Discord
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

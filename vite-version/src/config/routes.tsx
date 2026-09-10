@@ -1,4 +1,5 @@
 import { lazy } from 'react'
+import { ProtectedRoute } from '@/components/auth/protected-route'
 
 // Lazy load components for better performance
 const Landing = lazy(() => import('@/app/landing/page'))
@@ -62,35 +63,35 @@ export const routes: RouteConfig[] = [
   // Dashboard Routes
   {
     path: "/dashboard",
-    element: <Dashboard />
+    element: <ProtectedRoute><Dashboard /></ProtectedRoute>
   },
   {
     path: "/dashboard-2",
-    element: <Dashboard2 />
+    element: <ProtectedRoute><Dashboard2 /></ProtectedRoute>
   },
 
   // Application Routes
   {
     path: "/mail",
-    element: <Mail />
+    element: <ProtectedRoute><Mail /></ProtectedRoute>
   },
   {
     path: "/tasks",
-    element: <Tasks />
+    element: <ProtectedRoute><Tasks /></ProtectedRoute>
   },
   {
     path: "/chat",
-    element: <Chat />
+    element: <ProtectedRoute><Chat /></ProtectedRoute>
   },
   {
     path: "/calendar",
-    element: <Calendar />
+    element: <ProtectedRoute><Calendar /></ProtectedRoute>
   },
 
   // Content Pages
   {
     path: "/users",
-    element: <Users />
+    element: <ProtectedRoute><Users /></ProtectedRoute>
   },
   {
     path: "/faqs",
@@ -172,27 +173,27 @@ export const routes: RouteConfig[] = [
   // Settings Routes
   {
     path: "/settings/user",
-    element: <UserSettings />
+    element: <ProtectedRoute><UserSettings /></ProtectedRoute>
   },
   {
     path: "/settings/account",
-    element: <AccountSettings />
+    element: <ProtectedRoute><AccountSettings /></ProtectedRoute>
   },
   {
     path: "/settings/billing",
-    element: <BillingSettings />
+    element: <ProtectedRoute><BillingSettings /></ProtectedRoute>
   },
   {
     path: "/settings/appearance",
-    element: <AppearanceSettings />
+    element: <ProtectedRoute><AppearanceSettings /></ProtectedRoute>
   },
   {
     path: "/settings/notifications",
-    element: <NotificationSettings />
+    element: <ProtectedRoute><NotificationSettings /></ProtectedRoute>
   },
   {
     path: "/settings/connections",
-    element: <ConnectionSettings />
+    element: <ProtectedRoute><ConnectionSettings /></ProtectedRoute>
   },
 
   // Catch-all route for 404

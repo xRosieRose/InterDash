@@ -65,8 +65,8 @@ export default function AuthSectionThree({
       (typeof process !== "undefined" &&
         process.env?.NEXT_PUBLIC_DISCORD_REDIRECT_URI) ||
       (typeof window !== "undefined"
-        ? `${window.location.origin}/dashboard`
-        : "/dashboard");
+        ? `${window.location.origin}/auth/callback`
+        : "/auth/callback");
 
     const scopes =
       (typeof import.meta !== "undefined" &&
@@ -74,23 +74,24 @@ export default function AuthSectionThree({
           ?.VITE_DISCORD_SCOPES) || "identify email";
 
     if (
-      clientId &&
-      clientId !== "your_discord_client_id_here" &&
-      clientId !== "123456789012345678"
+      !clientId ||
+      clientId === "your_discord_client_id_here" ||
+      clientId === "123456789012345678"
     ) {
-      const authUrl = `https://discord.com/oauth2/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(
-        redirectUri
-      )}&response_type=code&scope=${encodeURIComponent(scopes)}`;
-      window.location.href = authUrl;
-    } else {
-      toast.info("Connecting with Discord...", {
+      setIsConnecting(false);
+      toast.error("Discord OAuth2 Not Configured", {
         description:
-          "Authorizing InterENL Cloud VPS access. Redirecting to console...",
+          "Please configure VITE_DISCORD_CLIENT_ID in your .env file on the server and rebuild.",
       });
-      setTimeout(() => {
-        window.location.href = "/dashboard";
-      }, 800);
+      return;
     }
+
+    // Direct redirect to Discord's official OAuth2 authorization portal
+    const authUrl = `https://discord.com/oauth2/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(
+      redirectUri
+    )}&response_type=token&scope=${encodeURIComponent(scopes)}`;
+
+    window.location.href = authUrl;
   };
 
   // Resolve base public asset path

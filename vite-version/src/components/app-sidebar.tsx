@@ -19,6 +19,7 @@ import { SidebarNotification } from "@/components/sidebar-notification"
 
 import { NavMain } from "@/components/nav-main"
 import { NavUser } from "@/components/nav-user"
+import { useAuth } from "@/contexts/auth-context"
 import {
   Sidebar,
   SidebarContent,
@@ -192,6 +193,24 @@ const data = {
 }
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
+  const { user } = useAuth()
+
+  const liveUser = user
+    ? {
+        name: user.global_name || user.username,
+        email: user.email || `@${user.username}`,
+        avatar: user.avatarUrl,
+        isAdmin: user.isAdmin,
+        role: user.role,
+      }
+    : {
+        name: "Connecting...",
+        email: "Discord SSO",
+        avatar: "",
+        isAdmin: false,
+        role: "guest",
+      }
+
   return (
     <Sidebar {...props}>
       <SidebarHeader>
@@ -218,7 +237,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       </SidebarContent>
       <SidebarFooter>
         <SidebarNotification />
-        <NavUser user={data.user} />
+        <NavUser user={liveUser} />
       </SidebarFooter>
     </Sidebar>
   )
