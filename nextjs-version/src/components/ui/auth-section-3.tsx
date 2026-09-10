@@ -4,7 +4,6 @@ import { useState } from "react";
 import { FlutedGlass } from "@paper-design/shaders-react";
 import { motion } from "motion/react";
 import { toast } from "sonner";
-import { ShieldCheck, Zap, Server, Check } from "lucide-react";
 
 interface AuthSectionThreeProps {
   /**
@@ -23,14 +22,14 @@ const termsText = (
     By authenticating with Discord, you agree to the InterENL{" "}
     <a
       href="#"
-      className="font-medium text-foreground underline underline-offset-2 hover:text-primary transition-colors"
+      className="font-medium text-foreground underline underline-offset-2 hover:text-white transition-colors"
     >
       Terms of Service
     </a>{" "}
     and{" "}
     <a
       href="#"
-      className="font-medium text-foreground underline underline-offset-2 hover:text-primary transition-colors"
+      className="font-medium text-foreground underline underline-offset-2 hover:text-white transition-colors"
     >
       Privacy Policy
     </a>
@@ -113,8 +112,8 @@ export default function AuthSectionThree({
                     InterENL Cloud Infrastructure
                   </span>
                 </div>
-                <span className="ml-auto text-xs px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-500 font-medium flex items-center gap-1">
-                  <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="ml-auto text-xs px-2.5 py-1 rounded-full border border-white/10 bg-white/5 text-white font-medium flex items-center gap-1.5">
+                  <span className="size-1.5 rounded-full bg-white animate-pulse" />
                   Free Tier Active
                 </span>
               </div>
@@ -129,21 +128,21 @@ export default function AuthSectionThree({
               </p>
             </div>
 
-            {/* Exclusive Discord Authentication Action */}
+            {/* Exclusive Discord Authentication Action (21st.dev Style) */}
             <div className="mt-8 space-y-4">
               <button
                 type="button"
                 onClick={handleDiscordAuth}
                 disabled={isConnecting}
-                className="group relative flex h-14 w-full min-w-0 items-center justify-center gap-3 rounded-xl border border-[#5865F2]/40 bg-[#5865F2] px-6 text-base font-semibold text-white shadow-lg shadow-[#5865F2]/20 transition-all hover:bg-[#4752C4] hover:shadow-xl hover:shadow-[#5865F2]/30 hover:scale-[1.01] active:scale-[0.99] cursor-pointer disabled:opacity-75"
+                className="group relative flex h-13 w-full min-w-0 items-center justify-center gap-3 rounded-xl border border-white/20 bg-zinc-950 text-white hover:bg-zinc-900 dark:border-white/20 dark:bg-white/10 dark:hover:bg-white/15 px-6 text-sm font-semibold shadow-lg backdrop-blur-md transition-all hover:scale-[1.01] active:scale-[0.99] cursor-pointer disabled:opacity-75"
                 aria-label={
                   mode === "signup"
                     ? "Sign up with Discord"
                     : "Sign in with Discord"
                 }
               >
-                <DiscordIcon className="size-6 shrink-0 transition-transform group-hover:scale-110" />
-                <span className="whitespace-nowrap tracking-wide">
+                <DiscordIcon className="size-5 shrink-0 transition-transform group-hover:scale-110" />
+                <span className="whitespace-nowrap tracking-wide text-white font-medium">
                   {isConnecting
                     ? "Connecting..."
                     : mode === "signup"
@@ -152,9 +151,9 @@ export default function AuthSectionThree({
                 </span>
               </button>
 
-              <div className="rounded-xl border border-border/80 bg-muted/40 p-4 text-xs text-muted-foreground space-y-2">
-                <div className="flex items-center gap-2 font-medium text-foreground">
-                  <ShieldCheck className="size-4 text-emerald-500 shrink-0" />
+              <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-xs text-muted-foreground space-y-2">
+                <div className="flex items-center gap-2 font-medium text-white">
+                  <ShieldIcon className="size-4 shrink-0" />
                   <span>Single Sign-On Security</span>
                 </div>
                 <p className="leading-relaxed">
@@ -163,18 +162,24 @@ export default function AuthSectionThree({
               </div>
             </div>
 
-            {/* Feature Checklist */}
+            {/* Feature Checklist - 21st.dev Pure White Icons */}
             <div className="mt-6 space-y-2.5 pt-2 text-xs text-muted-foreground">
-              <div className="flex items-center gap-2">
-                <Check className="size-3.5 text-emerald-500 shrink-0" />
+              <div className="flex items-center gap-2.5">
+                <span className="flex size-4 items-center justify-center rounded-full bg-white/10 shrink-0">
+                  <CheckIcon className="size-2.5" />
+                </span>
                 <span>1 Dedicated AMD EPYC™ vCPU per instance</span>
               </div>
-              <div className="flex items-center gap-2">
-                <Check className="size-3.5 text-emerald-500 shrink-0" />
+              <div className="flex items-center gap-2.5">
+                <span className="flex size-4 items-center justify-center rounded-full bg-white/10 shrink-0">
+                  <CheckIcon className="size-2.5" />
+                </span>
                 <span>DDR5 4800MHz RAM & PCIe 4.0 NVMe SSD storage</span>
               </div>
-              <div className="flex items-center gap-2">
-                <Check className="size-3.5 text-emerald-500 shrink-0" />
+              <div className="flex items-center gap-2.5">
+                <span className="flex size-4 items-center justify-center rounded-full bg-white/10 shrink-0">
+                  <CheckIcon className="size-2.5" />
+                </span>
                 <span>Zero credit card required — $0/month forever</span>
               </div>
             </div>
@@ -257,7 +262,7 @@ export default function AuthSectionThree({
                 <div>
                   <div className="font-semibold leading-tight text-white flex items-center gap-1.5">
                     Charlotte Vance
-                    <span className="size-1.5 rounded-full bg-emerald-400" />
+                    <span className="size-1.5 rounded-full bg-white/80" />
                   </div>
                   <div className="mt-0.5 text-xs text-white/60">
                     Lead Cloud Infrastructure Architect
@@ -280,19 +285,20 @@ export default function AuthSectionThree({
                 our distributed NVMe Linux instances took under thirty seconds.”
               </motion.blockquote>
 
-              <div className="mt-4 flex items-center gap-4 text-xs text-white/60">
-                <span className="flex items-center gap-1">
-                  <Zap className="size-3.5 text-yellow-400" />
+              <div className="mt-4 flex items-center gap-4 text-xs text-white/70">
+                <span className="flex items-center gap-1.5 text-white">
+                  <ZapIcon className="size-3.5 shrink-0" />
                   <strong>1 vCPU</strong> Dedicated
                 </span>
-                <span>•</span>
-                <span className="flex items-center gap-1">
-                  <Server className="size-3.5 text-blue-400" />
+                <span className="text-white/30">•</span>
+                <span className="flex items-center gap-1.5 text-white">
+                  <ServerIcon className="size-3.5 shrink-0" />
                   <strong>DDR5</strong> 4800MHz
                 </span>
-                <span>•</span>
-                <span className="flex items-center gap-1">
-                  🌐 <strong>1 Gbps</strong> Port
+                <span className="text-white/30">•</span>
+                <span className="flex items-center gap-1.5 text-white">
+                  <GlobeIcon className="size-3.5 shrink-0" />
+                  <strong>1 Gbps</strong> Port
                 </span>
               </div>
             </div>
@@ -310,12 +316,13 @@ export default function AuthSectionThree({
                 }}
                 className="overflow-hidden rounded-xl border border-white/10 bg-black"
               >
+                {/* 21st.dev style monochrome window header */}
                 <div className="flex items-center gap-1.5 border-b border-white/10 bg-zinc-950/90 px-4 py-2.5 select-none">
-                  <div className="size-2.5 rounded-full bg-red-500/70" />
-                  <div className="size-2.5 rounded-full bg-yellow-500/70" />
-                  <div className="size-2.5 rounded-full bg-green-500/70" />
-                  <span className="ml-3 text-[10px] font-mono tracking-wider text-white/60 flex items-center gap-1 bg-white/5 px-2.5 py-1 rounded-full border border-white/5">
-                    <span className="text-emerald-400">●</span> interdash.enl/dashboard
+                  <div className="size-2 rounded-full bg-white/35" />
+                  <div className="size-2 rounded-full bg-white/25" />
+                  <div className="size-2 rounded-full bg-white/15" />
+                  <span className="ml-3 text-[10px] font-mono tracking-wider text-white/60 flex items-center gap-1.5 bg-white/5 px-2.5 py-0.5 rounded-full border border-white/10">
+                    <span className="size-1 rounded-full bg-white/80" /> interdash.enl/dashboard
                   </span>
                 </div>
 
@@ -344,17 +351,108 @@ export default function AuthSectionThree({
 }
 
 /**
- * Official Discord brand vector emblem
+ * 21st.dev pure white SVG icons
  */
 function DiscordIcon({ className = "size-5" }: { className?: string }) {
   return (
     <svg
       viewBox="0 0 127.14 96.36"
-      fill="currentColor"
+      fill="#FFFFFF"
       aria-hidden="true"
       className={className}
     >
       <path d="M107.7,8.07A105.15,105.15,0,0,0,81.47,0a72.06,72.06,0,0,0-3.36,6.83A97.68,97.68,0,0,0,49,6.83,72.37,72.37,0,0,0,45.64,0,105.89,105.89,0,0,0,19.39,8.09C2.79,32.65-1.71,56.6.54,80.21h0A105.73,105.73,0,0,0,32.71,96.36,77.7,77.7,0,0,0,39.6,85.25a68.42,68.42,0,0,1-10.85-5.18c.91-.66,1.8-1.34,2.66-2a75.57,75.57,0,0,0,64.32,0c.87.71,1.76,1.39,2.66,2a68.68,68.68,0,0,1-10.87,5.19,77,77,0,0,0,6.89,11.1A105.25,105.25,0,0,0,126.6,80.22h0C129.24,52.84,122.09,29.11,107.7,8.07ZM42.45,65.69C36.18,65.69,31,60,31,53s5-12.74,11.43-12.74S54,45.91,53.89,53,48.84,65.69,42.45,65.69Zm42.24,0C78.41,65.69,73.25,60,73.25,53s5-12.74,11.44-12.74S96.23,45.91,96.12,53,91.08,65.69,84.69,65.69Z" />
+    </svg>
+  );
+}
+
+function ShieldIcon({ className = "size-4" }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="#FFFFFF"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" />
+      <path d="m9 12 2 2 4-4" />
+    </svg>
+  );
+}
+
+function CheckIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="#FFFFFF"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+function ZapIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="#FFFFFF"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z" />
+    </svg>
+  );
+}
+
+function ServerIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="#FFFFFF"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <rect width="20" height="8" x="2" y="2" rx="2" ry="2" />
+      <rect width="20" height="8" x="2" y="14" rx="2" ry="2" />
+      <line x1="6" x2="6.01" y1="6" y2="6" />
+      <line x1="6" x2="6.01" y1="18" y2="18" />
+    </svg>
+  );
+}
+
+function GlobeIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="#FFFFFF"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <circle cx="12" cy="12" r="10" />
+      <line x1="2" x2="22" y1="12" y2="12" />
+      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
     </svg>
   );
 }
