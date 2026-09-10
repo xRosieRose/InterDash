@@ -22,6 +22,7 @@ const SignUp3 = lazy(() => import('@/app/auth/sign-up-3/page'))
 const ForgotPassword = lazy(() => import('@/app/auth/forgot-password/page'))
 const ForgotPassword2 = lazy(() => import('@/app/auth/forgot-password-2/page'))
 const ForgotPassword3 = lazy(() => import('@/app/auth/forgot-password-3/page'))
+const AuthCallback = lazy(() => import('@/app/auth/callback/page'))
 const Demo = lazy(() => import('@/components/ui/demo'))
 
 // Error pages
@@ -140,6 +141,10 @@ export const routes: RouteConfig[] = [
   {
     path: "/auth/forgot-password-3",
     element: <ForgotPassword3 />
+  },
+  {
+    path: "/auth/callback",
+    element: <AuthCallback />
   },
 
   // Error Pages
