@@ -115,15 +115,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
             <SidebarMenuButton size="lg" asChild>
               <Link to={headerDestination}>
                 <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground overflow-hidden">
-                  {settings.logo_url ? (
-                    <img
-                      src={settings.logo_url}
-                      alt={settings.brand_name}
-                      className="size-6 object-contain rounded"
-                    />
-                  ) : (
-                    <Logo size={24} className="text-current" />
-                  )}
+                  <Logo size={24} className="text-current" />
                 </div>
                 <div className="grid flex-1 text-left text-sm leading-tight">
                   <span className="truncate font-bold tracking-tight">{settings.brand_name || "InterDash"}</span>

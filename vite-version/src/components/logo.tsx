@@ -8,14 +8,35 @@ interface LogoProps extends React.SVGProps<SVGSVGElement> {
 
 export function Logo({ size = 24, className, forceSvg = false, ...props }: LogoProps) {
   const { settings } = useSettings()
+  const [triedProxy, setTriedProxy] = React.useState(false)
+  const [hasError, setHasError] = React.useState(false)
 
-  if (!forceSvg && settings?.logo_url) {
+  React.useEffect(() => {
+    setTriedProxy(false)
+    setHasError(false)
+  }, [settings?.logo_url])
+
+  const rawUrl = settings?.logo_url
+  let displaySrc = rawUrl
+  if (triedProxy && rawUrl && !rawUrl.startsWith("data:")) {
+    displaySrc = `/api/settings/proxy-image?url=${encodeURIComponent(rawUrl)}`
+  }
+
+  if (!forceSvg && displaySrc && !hasError) {
     return (
       <img
-        src={settings.logo_url}
+        src={displaySrc}
         alt={settings.brand_name || "Logo"}
         width={size}
         height={size}
+        referrerPolicy="no-referrer"
+        onError={() => {
+          if (!triedProxy && rawUrl && !rawUrl.startsWith("data:")) {
+            setTriedProxy(true)
+          } else {
+            setHasError(true)
+          }
+        }}
         style={{ width: size, height: size, objectFit: "contain" }}
         className={`rounded shrink-0 ${className || ""}`}
       />

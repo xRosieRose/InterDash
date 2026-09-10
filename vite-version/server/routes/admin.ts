@@ -552,7 +552,20 @@ router.patch("/settings", (req: Request, res: Response) => {
   for (const [key, value] of Object.entries(settings)) {
     if (allowedKeys.includes(key) && typeof value === "string") {
       // Basic sanitization against scripts
-      const cleanValue = value.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "");
+      let cleanValue = value.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "").trim();
+
+      // Normalize Imgur URLs to direct image endpoints if needed
+      if ((key === "logo_url" || key === "favicon_url") && cleanValue) {
+        const imgurPageMatch = cleanValue.match(/^https?:\/\/(?:www\.)?imgur\.com\/([a-zA-Z0-9]+)$/);
+        if (imgurPageMatch) {
+          cleanValue = `https://i.imgur.com/${imgurPageMatch[1]}.png`;
+        }
+        const imgurDirectNoExt = cleanValue.match(/^https?:\/\/i\.imgur\.com\/([a-zA-Z0-9]+)$/);
+        if (imgurDirectNoExt) {
+          cleanValue = `https://i.imgur.com/${imgurDirectNoExt[1]}.png`;
+        }
+      }
+
       execute(
         `INSERT INTO panel_settings (key, value, updated_at)
          VALUES (?, ?, datetime('now'))

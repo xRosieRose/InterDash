@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { FlutedGlass } from "@paper-design/shaders-react";
 import { motion } from "motion/react";
 import { useSettings } from "@/contexts/settings-context";
+import { Logo } from "@/components/logo";
 
 interface AuthSectionThreeProps {
   /**
@@ -112,11 +113,7 @@ export default function AuthSectionThree({
             <div>
               <div className="flex items-center gap-2.5 mb-6">
                 <div className="flex size-9 items-center justify-center rounded-xl bg-primary text-primary-foreground font-bold text-sm shadow-sm overflow-hidden">
-                  {settings.logo_url ? (
-                    <img src={settings.logo_url} alt={settings.brand_name} className="size-6 object-contain" />
-                  ) : (
-                    <span>{settings.brand_name?.substring(0, 2).toUpperCase() || "ID"}</span>
-                  )}
+                  <Logo size={24} className="text-current" />
                 </div>
                 <div>
                   <span className="font-bold tracking-tight text-lg text-foreground block leading-tight">

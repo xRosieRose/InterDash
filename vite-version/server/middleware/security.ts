@@ -22,8 +22,8 @@ export const securityHeaders = helmet({
       imgSrc: [
         "'self'",
         "data:",
-        "https://cdn.discordapp.com",
-        "https://images.unsplash.com",
+        "blob:",
+        "https:",
       ],
       connectSrc: ["'self'", "https://discord.com", "https://cdn.discordapp.com"],
       frameSrc: ["'none'"],
@@ -32,6 +32,7 @@ export const securityHeaders = helmet({
     },
   },
   crossOriginEmbedderPolicy: false, // Required for external images
+  crossOriginResourcePolicy: false, // Allow external image CDNs (e.g. Imgur, Unsplash, Discord)
   hsts: config.isProd
     ? { maxAge: 31536000, includeSubDomains: true }
     : false,

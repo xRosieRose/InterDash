@@ -15,6 +15,74 @@ import {
 import { toast } from "sonner"
 import { useSettings } from "@/contexts/settings-context"
 
+function normalizeImageUrl(url: string): string {
+  if (!url) return url
+  const trimmed = url.trim()
+  const imgurPageMatch = trimmed.match(/^https?:\/\/(?:www\.)?imgur\.com\/([a-zA-Z0-9]+)$/)
+  if (imgurPageMatch) {
+    return `https://i.imgur.com/${imgurPageMatch[1]}.png`
+  }
+  const imgurDirectNoExt = trimmed.match(/^https?:\/\/i\.imgur\.com\/([a-zA-Z0-9]+)$/)
+  if (imgurDirectNoExt) {
+    return `https://i.imgur.com/${imgurDirectNoExt[1]}.png`
+  }
+  return trimmed
+}
+
+function ImagePreview({
+  src,
+  fallbackText,
+  isFavicon = false,
+}: {
+  src: string
+  fallbackText: string
+  isFavicon?: boolean
+}) {
+  const [triedProxy, setTriedProxy] = React.useState(false)
+  const [hasError, setHasError] = React.useState(false)
+
+  React.useEffect(() => {
+    setTriedProxy(false)
+    setHasError(false)
+  }, [src])
+
+  if (!src) {
+    return <span className="text-xs text-muted-foreground/50">{fallbackText}</span>
+  }
+
+  const effectiveSrc =
+    triedProxy && !src.startsWith("data:")
+      ? `/api/settings/proxy-image?url=${encodeURIComponent(src)}`
+      : src
+
+  if (hasError) {
+    return (
+      <div
+        className="flex flex-col items-center justify-center text-amber-500 p-1"
+        title="Image failed to load directly. Try uploading directly or check the URL."
+      >
+        {isFavicon ? <Globe className="size-4" /> : <ImageIcon className="size-4" />}
+      </div>
+    )
+  }
+
+  return (
+    <img
+      src={effectiveSrc}
+      alt="Preview"
+      referrerPolicy="no-referrer"
+      onError={() => {
+        if (!triedProxy && !src.startsWith("data:")) {
+          setTriedProxy(true)
+        } else {
+          setHasError(true)
+        }
+      }}
+      className={isFavicon ? "size-6 object-contain" : "size-full object-contain"}
+    />
+  )
+}
+
 export default function AdminSettingsPage() {
   const { refreshSettings } = useSettings()
   const [brandName, setBrandName] = React.useState("InterDash")
@@ -216,11 +284,7 @@ export default function AdminSettingsPage() {
 
                   <div className="flex items-center gap-3">
                     <div className="size-10 rounded border border-border bg-background flex items-center justify-center overflow-hidden shrink-0 shadow-xs">
-                      {logoUrl ? (
-                        <img src={logoUrl} alt="Logo preview" className="size-full object-contain" />
-                      ) : (
-                        <span className="text-xs text-muted-foreground/50">Logo</span>
-                      )}
+                      <ImagePreview src={logoUrl} fallbackText="Logo" />
                     </div>
 
                     <input
@@ -241,9 +305,9 @@ export default function AdminSettingsPage() {
                     </Button>
 
                     <Input
-                      placeholder="or paste logo URL..."
+                      placeholder="or paste logo URL (e.g. https://i.imgur.com/...)"
                       value={logoUrl.startsWith("data:") ? "Custom logo uploaded" : logoUrl}
-                      onChange={(e) => setLogoUrl(e.target.value)}
+                      onChange={(e) => setLogoUrl(normalizeImageUrl(e.target.value))}
                       className="text-xs h-8 flex-1 font-mono"
                     />
                   </div>
@@ -271,11 +335,7 @@ export default function AdminSettingsPage() {
 
                   <div className="flex items-center gap-3">
                     <div className="size-10 rounded border border-border bg-background flex items-center justify-center overflow-hidden shrink-0 shadow-xs">
-                      {faviconUrl ? (
-                        <img src={faviconUrl} alt="Favicon preview" className="size-6 object-contain" />
-                      ) : (
-                        <span className="text-xs text-muted-foreground/50">Icon</span>
-                      )}
+                      <ImagePreview src={faviconUrl} fallbackText="Icon" isFavicon />
                     </div>
 
                     <input
@@ -296,9 +356,9 @@ export default function AdminSettingsPage() {
                     </Button>
 
                     <Input
-                      placeholder="or paste favicon URL..."
+                      placeholder="or paste favicon URL (e.g. https://.../favicon.ico)"
                       value={faviconUrl.startsWith("data:") ? "Custom favicon uploaded" : faviconUrl}
-                      onChange={(e) => setFaviconUrl(e.target.value)}
+                      onChange={(e) => setFaviconUrl(normalizeImageUrl(e.target.value))}
                       className="text-xs h-8 flex-1 font-mono"
                     />
                   </div>

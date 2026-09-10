@@ -49,8 +49,9 @@ export async function createApp(): Promise<express.Express> {
   // Parse cookies
   app.use(cookieParser());
 
-  // Parse JSON body
-  app.use(express.json({ limit: "1mb" }));
+  // Parse JSON body (10mb to support base64 custom logo/favicon uploads)
+  app.use(express.json({ limit: "10mb" }));
+  app.use(express.urlencoded({ limit: "10mb", extended: true }));
 
   // Security headers
   app.use(securityHeaders);
