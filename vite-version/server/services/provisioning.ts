@@ -1,17 +1,20 @@
 /**
  * InterDash Server — Asynchronous VPS Provisioning Service & Worker
  *
- * Implements an asynchronous job queue for LXC provisioning on Proxmox VE.
+ * Implements a durable asynchronous job queue for LXC provisioning on Proxmox VE.
  * Enforces:
- *   - Idempotency (prevents double provisioning)
+ *   - Idempotency with request hash verification (prevents double provisioning)
  *   - Step-by-step state machine updates
  *   - Network resource reservation & atomic assignment
+ *   - Root password in-memory pass-through (never persisted or logged)
  *   - Automatic rollback and resource cleanup on partial failure
+ *   - Post-restart job reconciliation
  *   - Comprehensive audit logging
  */
 
+import crypto from "node:crypto";
 import { v4 as uuidv4 } from "uuid";
-import { getDb, queryOne, execute } from "../db/index.js";
+import { queryOne, queryAll, execute } from "../db/index.js";
 import { ProxmoxService, type ProxmoxNodeConfig } from "./proxmox.js";
 import { decryptCredential } from "./crypto.js";
 
@@ -21,6 +24,7 @@ export interface ProvisioningJobRequest {
   requestedByUserId: string;
   hostname: string;
   name?: string;
+  description?: string;
   osTemplate: string;
   cpuCores: number;
   memoryMb: number;
@@ -30,8 +34,17 @@ export interface ProvisioningJobRequest {
   bridge?: string;
   ipv4PoolId?: string;
   startAfterCreate?: boolean;
+  rootPassword?: string;
+  sshPublicKey?: string;
   idempotencyKey?: string;
 }
+
+// In-memory store for sensitive credentials during the provisioning lifetime only.
+// Plaintext passwords are NEVER persisted to the database or written to disk.
+const ephemeralJobCredentials = new Map<
+  string,
+  { password?: string; sshKey?: string }
+>();
 
 export class ProvisioningService {
   /**
@@ -72,13 +85,36 @@ export class ProvisioningService {
     status: string;
     isDuplicate?: boolean;
   }> {
+    // Generate request hash for idempotency integrity check
+    const hashData = {
+      ownerUserId: req.ownerUserId,
+      targetNodeId: req.targetNodeId,
+      hostname: req.hostname.trim().toLowerCase(),
+      osTemplate: req.osTemplate,
+      cpuCores: req.cpuCores,
+      memoryMb: req.memoryMb,
+      diskGb: req.diskGb,
+      storage: req.storage,
+      bridge: req.bridge,
+      ipv4PoolId: req.ipv4PoolId,
+    };
+    const requestHash = crypto
+      .createHash("sha256")
+      .update(JSON.stringify(hashData))
+      .digest("hex");
+
     // 1. Idempotency check
     if (req.idempotencyKey) {
-      const existing = queryOne<{ id: string; status: string }>(
-        "SELECT id, status FROM provisioning_jobs WHERE idempotency_key = ? LIMIT 1",
+      const existing = queryOne<{ id: string; status: string; request_hash: string | null }>(
+        "SELECT id, status, request_hash FROM provisioning_jobs WHERE idempotency_key = ? LIMIT 1",
         [req.idempotencyKey]
       );
       if (existing) {
+        if (existing.request_hash && existing.request_hash !== requestHash) {
+          const err = new Error("Idempotency key reused with conflicting parameters.");
+          (err as any).statusCode = 409;
+          throw err;
+        }
         return {
           jobId: existing.id,
           status: existing.status,
@@ -90,7 +126,9 @@ export class ProvisioningService {
     // 2. Validate target node exists & is enabled
     const node = this.getNodeConfig(req.targetNodeId);
     if (!node) {
-      throw new Error(`Target Proxmox node '${req.targetNodeId}' not found.`);
+      const err = new Error(`Target Proxmox node '${req.targetNodeId}' not found.`);
+      (err as any).statusCode = 404;
+      throw err;
     }
 
     // 3. Create job row
@@ -98,6 +136,7 @@ export class ProvisioningService {
     const specsJson = JSON.stringify({
       hostname: req.hostname,
       name: req.name || `${req.hostname} Instance`,
+      description: req.description || null,
       osTemplate: req.osTemplate,
       cpuCores: req.cpuCores,
       memoryMb: req.memoryMb,
@@ -107,13 +146,22 @@ export class ProvisioningService {
       bridge: req.bridge || node.defaultBridge,
       ipv4PoolId: req.ipv4PoolId,
       startAfterCreate: req.startAfterCreate !== false,
+      hasSshKey: Boolean(req.sshPublicKey),
     });
+
+    // Store in-memory credentials for the async worker
+    if (req.rootPassword || req.sshPublicKey) {
+      ephemeralJobCredentials.set(jobId, {
+        password: req.rootPassword,
+        sshKey: req.sshPublicKey,
+      });
+    }
 
     execute(
       `INSERT INTO provisioning_jobs (
         id, idempotency_key, owner_user_id, target_node_id, requested_by_user_id,
-        hostname, specs_json, status, current_step, started_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 'queued', datetime('now'))`,
+        hostname, specs_json, status, current_step, request_hash, started_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 'queued', ?, datetime('now'))`,
       [
         jobId,
         req.idempotencyKey || null,
@@ -122,6 +170,7 @@ export class ProvisioningService {
         req.requestedByUserId,
         req.hostname,
         specsJson,
+        requestHash,
       ]
     );
 
@@ -163,6 +212,10 @@ export class ProvisioningService {
     const specs = JSON.parse(job.specs_json);
     const node = this.getNodeConfig(job.target_node_id);
 
+    // Retrieve ephemeral in-memory credentials and clear them
+    const creds = ephemeralJobCredentials.get(jobId);
+    ephemeralJobCredentials.delete(jobId);
+
     if (!node) {
       this.failJob(jobId, "NODE_NOT_FOUND", "Proxmox node is no longer available.");
       return;
@@ -174,11 +227,19 @@ export class ProvisioningService {
     let gateway: string | undefined;
 
     try {
-      // Step 1: Allocating VMID
+      // Step 1: Validating configuration & node
+      this.updateJobStep(jobId, "allocating", "validating_configuration");
+      const health = await ProxmoxService.healthCheck(node);
+      if (!health.online) {
+        throw new Error(`Target node '${node.name}' is currently offline or unreachable.`);
+      }
+
+      // Step 2: Allocating VMID
       this.updateJobStep(jobId, "allocating", "allocating_vmid");
       allocatedVmid = await ProxmoxService.getNextVmid(node);
+      execute("UPDATE provisioning_jobs SET vmid = ? WHERE id = ?", [allocatedVmid, jobId]);
 
-      // Step 2: Reserving Network / IP
+      // Step 3: Reserving Network / IP
       this.updateJobStep(jobId, "allocating", "reserving_network");
       if (specs.ipv4PoolId) {
         const ipRow = queryOne<any>(
@@ -195,7 +256,6 @@ export class ProvisioningService {
             [reservedIpId]
           );
 
-          // Get pool gateway
           const pool = queryOne<any>("SELECT gateway FROM ip_pools WHERE id = ?", [
             specs.ipv4PoolId,
           ]);
@@ -203,7 +263,7 @@ export class ProvisioningService {
         }
       }
 
-      // Step 3: Creating LXC Container on Proxmox
+      // Step 4: Creating LXC Container on Proxmox
       this.updateJobStep(jobId, "creating", "creating_container");
       const { upid } = await ProxmoxService.createLxc(node, {
         vmid: allocatedVmid,
@@ -217,46 +277,45 @@ export class ProvisioningService {
         bridge: specs.bridge,
         ipv4: reservedIpAddr ? `${reservedIpAddr}/24` : undefined,
         ipv4Gateway: gateway,
+        password: creds?.password,
+        sshPublicKeys: creds?.sshKey,
+        description: specs.description || `Managed by InterDash for ${specs.hostname}`,
         startAfterCreate: specs.startAfterCreate,
       });
 
-      // Step 4: Wait for creation task to finish
-      this.updateJobStep(jobId, "configuring", "waiting_for_proxmox_task");
-      let attempts = 0;
-      let taskSuccess = false;
+      // Step 5: Wait for creation task to complete
+      this.updateJobStep(jobId, "creating", "waiting_for_proxmox_task");
+      await ProxmoxService.waitForProxmoxTask(node, upid, 180_000, 2_000);
 
-      while (attempts < 60) {
-        await new Promise((r) => setTimeout(r, 2000));
-        const taskStatus = await ProxmoxService.getTaskStatus(node, upid);
-        if (taskStatus.status === "stopped") {
-          if (taskStatus.exitstatus === "OK") {
-            taskSuccess = true;
-          } else {
-            throw new Error(`Proxmox task ended with status: ${taskStatus.exitstatus}`);
-          }
-          break;
+      // Step 6: Configuring container
+      this.updateJobStep(jobId, "configuring", "configuring_container");
+
+      // Step 7: Starting container (if requested)
+      if (specs.startAfterCreate) {
+        this.updateJobStep(jobId, "starting", "starting_container");
+        try {
+          const startRes = await ProxmoxService.startLxc(node, allocatedVmid);
+          await ProxmoxService.waitForProxmoxTask(node, startRes.upid, 30_000, 1_500);
+        } catch (startErr) {
+          console.warn(`[PROVISIONING] Container ${allocatedVmid} start had non-fatal warning:`, startErr);
         }
-        attempts++;
       }
 
-      if (!taskSuccess) {
-        throw new Error("Proxmox container creation timed out after 120 seconds.");
-      }
-
-      // Step 5: Verify container status
+      // Step 8: Verify container status
       this.updateJobStep(jobId, "verifying", "verifying_container");
       const lxcStatus = await ProxmoxService.getLxcStatus(node, allocatedVmid);
 
-      // Step 6: Persist VPS to Database
+      // Step 9: Persisting VPS record
+      this.updateJobStep(jobId, "verifying", "persisting_record");
       const vpsId = uuidv4();
       const finalStatus = lxcStatus.status === "running" ? "running" : "stopped";
 
       execute(
         `INSERT INTO vps (
           id, owner_user_id, proxmox_node_id, proxmox_vmid, name, hostname,
-          status, os_image_id, cpu_cores, memory_mb, swap_mb, disk_gb,
-          ipv4_address, ipv6_address, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+          description, status, os_image_id, cpu_cores, memory_mb, swap_mb, disk_gb,
+          ipv4_address, ipv6_address, last_proxmox_sync_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), datetime('now'))`,
         [
           vpsId,
           job.owner_user_id,
@@ -264,6 +323,7 @@ export class ProvisioningService {
           allocatedVmid,
           specs.name,
           specs.hostname,
+          specs.description || null,
           finalStatus,
           specs.osTemplate,
           specs.cpuCores,
@@ -316,13 +376,116 @@ export class ProvisioningService {
 
       // Rollback IP reservation
       if (reservedIpId) {
-        execute(
-          `UPDATE ip_addresses SET status = 'available', reserved_at = null WHERE id = ?`,
-          [reservedIpId]
-        );
+        try {
+          execute(
+            `UPDATE ip_addresses SET status = 'available', reserved_at = null WHERE id = ?`,
+            [reservedIpId]
+          );
+        } catch {}
+      }
+
+      // Rollback Proxmox container if VMID was allocated and container might exist
+      if (allocatedVmid) {
+        try {
+          this.updateJobStep(jobId, "failed", "destroying_container");
+          await ProxmoxService.destroyLxc(node, allocatedVmid, true);
+          execute("UPDATE provisioning_jobs SET cleanup_status = 'cleaned' WHERE id = ?", [jobId]);
+        } catch (cleanupErr) {
+          console.error(`[PROVISIONING] Cleanup of VMID ${allocatedVmid} failed:`, cleanupErr);
+          execute(
+            "UPDATE provisioning_jobs SET cleanup_status = 'cleanup_failed' WHERE id = ?",
+            [jobId]
+          );
+        }
       }
 
       this.failJob(jobId, "PROXMOX_PROVISION_ERROR", errorMsg);
+    }
+  }
+
+  /**
+   * Reconcile interrupted jobs on server restart
+   */
+  public static async reconcileInterruptedJobs(): Promise<void> {
+    const pendingJobs = queryAll<any>(
+      `SELECT * FROM provisioning_jobs
+       WHERE status NOT IN ('completed', 'failed', 'cancelled', 'recovery_required')`
+    );
+
+    if (!pendingJobs.length) return;
+
+    console.log(`[PROVISIONING] Found ${pendingJobs.length} interrupted provisioning job(s) to reconcile...`);
+
+    for (const job of pendingJobs) {
+      const node = this.getNodeConfig(job.target_node_id);
+      if (!node) {
+        this.failJob(job.id, "NODE_UNAVAILABLE", "Target Proxmox node unavailable during reconciliation.");
+        continue;
+      }
+
+      if (!job.vmid) {
+        // Did not reach VMID allocation; safe to fail cleanly
+        this.failJob(job.id, "INTERRUPTED", "Provisioning interrupted prior to resource allocation.");
+        continue;
+      }
+
+      try {
+        const lxcStatus = await ProxmoxService.getLxcStatus(node, job.vmid);
+        if (lxcStatus.status === "running" || lxcStatus.status === "stopped") {
+          // Container was actually created on Proxmox
+          const existingVps = queryOne<any>(
+            "SELECT id FROM vps WHERE proxmox_node_id = ? AND proxmox_vmid = ?",
+            [node.id, job.vmid]
+          );
+
+          if (!existingVps) {
+            const specs = JSON.parse(job.specs_json);
+            const vpsId = uuidv4();
+            execute(
+              `INSERT INTO vps (
+                id, owner_user_id, proxmox_node_id, proxmox_vmid, name, hostname,
+                description, status, os_image_id, cpu_cores, memory_mb, swap_mb, disk_gb,
+                ipv4_address, ipv6_address, last_proxmox_sync_at, created_at, updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), datetime('now'))`,
+              [
+                vpsId,
+                job.owner_user_id,
+                job.target_node_id,
+                job.vmid,
+                specs.name || specs.hostname,
+                specs.hostname,
+                specs.description || null,
+                lxcStatus.status,
+                specs.osTemplate,
+                specs.cpuCores,
+                specs.memoryMb,
+                specs.swapMb || 512,
+                specs.diskGb,
+                "DHCP",
+                null,
+              ]
+            );
+            execute(
+              "UPDATE provisioning_jobs SET vps_id = ?, status = 'completed', current_step = 'completed', completed_at = datetime('now') WHERE id = ?",
+              [vpsId, job.id]
+            );
+          } else {
+            execute(
+              "UPDATE provisioning_jobs SET vps_id = ?, status = 'completed', current_step = 'completed', completed_at = datetime('now') WHERE id = ?",
+              [existingVps.id, job.id]
+            );
+          }
+          console.log(`[PROVISIONING] Reconciled and restored job ${job.id} (VMID ${job.vmid})`);
+        } else {
+          // Container does not exist on Proxmox, clean up and fail
+          this.failJob(job.id, "RECONCILIATION_ABORTED", "Container could not be located on Proxmox during startup reconciliation.");
+        }
+      } catch (err) {
+        execute(
+          "UPDATE provisioning_jobs SET status = 'recovery_required', current_step = 'recovery_required' WHERE id = ?",
+          [job.id]
+        );
+      }
     }
   }
 
@@ -336,8 +499,11 @@ export class ProvisioningService {
   private static failJob(jobId: string, errorCode: string, errorMsg: string): void {
     execute(
       `UPDATE provisioning_jobs SET
-        status = 'failed', current_step = 'failed', error_code = ?,
-        error_message = ?, completed_at = datetime('now')
+        status = CASE WHEN status = 'recovery_required' THEN 'recovery_required' ELSE 'failed' END,
+        current_step = 'failed',
+        error_code = ?,
+        error_message = ?,
+        completed_at = datetime('now')
        WHERE id = ?`,
       [errorCode, errorMsg, jobId]
     );

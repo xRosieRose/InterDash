@@ -9,7 +9,10 @@ export type VpsStatus =
   | "running"
   | "stopped"
   | "provisioning"
+  | "busy"
+  | "reinstalling"
   | "error"
+  | "recovery_required"
   | "unknown"
   | "deleting";
 
@@ -20,6 +23,7 @@ export interface VpsRecord {
   proxmox_vmid: number;
   name: string;
   hostname: string;
+  description?: string | null;
   status: VpsStatus;
   os_image_id: string;
   cpu_cores: number;
@@ -28,6 +32,8 @@ export interface VpsRecord {
   disk_gb: number;
   ipv4_address: string | null;
   ipv6_address: string | null;
+  lock_state?: string | null;
+  last_proxmox_sync_at?: string | null;
   created_at: string;
   updated_at: string;
   node_name?: string;

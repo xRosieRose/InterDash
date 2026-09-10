@@ -179,12 +179,45 @@ export function queryOne<T = Record<string, any>>(sql: string, params: any[] = [
   return all.length ? all[0] : null;
 }
 
+let inTransaction = false;
+
 /**
  * Execute a mutating SQL statement and immediately persist changes to disk.
  */
 export function execute(sql: string, params: any[] = []): void {
   const database = getDb();
   database.run(sql, params);
-  saveToDisk();
+  if (!inTransaction) {
+    saveToDisk();
+  }
 }
+
+/**
+ * Execute a synchronous callback within an atomic transaction.
+ * Automatically rolls back on exception and saves to disk on commit.
+ */
+export function transaction<T>(fn: () => T): T {
+  const database = getDb();
+  if (inTransaction) {
+    return fn();
+  }
+  inTransaction = true;
+  database.run("BEGIN TRANSACTION;");
+  try {
+    const result = fn();
+    database.run("COMMIT;");
+    inTransaction = false;
+    saveToDisk();
+    return result;
+  } catch (err) {
+    inTransaction = false;
+    try {
+      database.run("ROLLBACK;");
+    } catch {
+      // ignore rollback failure if transaction wasn't active
+    }
+    throw err;
+  }
+}
+
 

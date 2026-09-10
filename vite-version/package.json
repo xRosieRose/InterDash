@@ -10,7 +10,7 @@
     "start": "tsx server/index.ts",
     "start:prod": "NODE_ENV=production tsx server/index.ts",
     "create-admin": "tsx server/scripts/create-admin.ts",
-    "test": "tsx --test server/__tests__/auth.test.ts server/__tests__/control_plane.test.ts",
+    "test": "node --import tsx --test --test-force-exit server/__tests__/auth.test.ts server/__tests__/control_plane.test.ts server/__tests__/vps_management.test.ts",
     "lint": "eslint .",
     "preview": "vite preview"
   },
@@ -44,6 +44,8 @@
     "@radix-ui/react-tooltip": "^1.2.8",
     "@tailwindcss/vite": "^4.1.18",
     "@tanstack/react-table": "^8.21.3",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "add": "^2.0.6",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -70,6 +72,7 @@
     "tailwindcss": "^4.1.18",
     "uuid": "^14.0.2",
     "vaul": "^1.1.2",
+    "ws": "^8.21.3",
     "zod": "^4.3.2",
     "zustand": "^5.0.9"
   },
@@ -82,6 +85,7 @@
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@types/uuid": "^11.0.0",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^5.1.2",
     "eslint": "^9.39.2",
     "eslint-plugin-react-hooks": "^7.0.1",

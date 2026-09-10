@@ -14,7 +14,10 @@ import {
   Loader2,
   AlertCircle,
   HelpCircle,
+  ChevronRight,
+  User as UserIcon,
 } from "lucide-react"
+import { Link } from "react-router-dom"
 import { BaseLayout } from "@/components/layouts/base-layout"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -406,18 +409,19 @@ export default function InstancesPage() {
                   <TableRow>
                     <TableHead className="w-[110px]">Status</TableHead>
                     <TableHead>Hostname / Name</TableHead>
+                    {isAdmin && <TableHead>Assigned User</TableHead>}
                     <TableHead>OS / Template</TableHead>
                     <TableHead>IP Address</TableHead>
                     <TableHead>Hypervisor / Node</TableHead>
                     <TableHead>Allocated Specs</TableHead>
-                    <TableHead className="text-right">Created</TableHead>
+                    <TableHead className="text-right">Action</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filteredInstances.map((inst) => {
                     const isRunning = inst.status === "running"
                     return (
-                      <TableRow key={inst.id}>
+                      <TableRow key={inst.id} className="hover:bg-muted/40 transition-colors">
                         {/* Status */}
                         <TableCell>
                           <div className="flex items-center gap-2">
@@ -438,15 +442,30 @@ export default function InstancesPage() {
 
                         {/* Hostname & Name */}
                         <TableCell>
-                          <div className="flex flex-col">
-                            <span className="font-mono font-semibold text-sm text-foreground">
+                          <Link
+                            to={`/instances/${inst.id}`}
+                            className="flex flex-col group cursor-pointer"
+                          >
+                            <span className="font-mono font-semibold text-sm text-foreground group-hover:text-primary transition-colors">
                               {inst.hostname}
                             </span>
                             <span className="text-xs text-muted-foreground truncate max-w-[180px]">
                               {inst.name}
                             </span>
-                          </div>
+                          </Link>
                         </TableCell>
+
+                        {/* Owner (Admin only) */}
+                        {isAdmin && (
+                          <TableCell>
+                            <div className="flex items-center gap-1.5 text-xs">
+                              <UserIcon className="size-3 text-muted-foreground" />
+                              <span className="font-medium text-foreground truncate max-w-[140px]">
+                                {inst.owner_global_name || inst.owner_username || "Unknown"}
+                              </span>
+                            </div>
+                          </TableCell>
+                        )}
 
                         {/* OS Template */}
                         <TableCell>
@@ -506,9 +525,13 @@ export default function InstancesPage() {
                           </div>
                         </TableCell>
 
-                        {/* Created Date */}
-                        <TableCell className="text-right text-xs font-mono text-muted-foreground">
-                          {inst.created_at ? inst.created_at.split("T")[0] : "—"}
+                        {/* Manage Action */}
+                        <TableCell className="text-right">
+                          <Link to={`/instances/${inst.id}`}>
+                            <Button size="sm" variant="outline" className="h-7 text-xs gap-1 hover:border-primary">
+                              Manage <ChevronRight className="size-3 text-muted-foreground" />
+                            </Button>
+                          </Link>
                         </TableCell>
                       </TableRow>
                     )

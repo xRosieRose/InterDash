@@ -54,7 +54,6 @@ describe("Authentication Security Tests", () => {
       await new Promise<void>((resolve) => server!.close(() => resolve()));
     }
     closeDatabase();
-    setTimeout(() => process.exit(0), 100).unref();
   });
 
   // ==========================================================================

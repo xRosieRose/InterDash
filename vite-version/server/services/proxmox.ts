@@ -52,6 +52,10 @@ export interface ProxmoxCreateLxcParams {
   ipv4?: string;
   ipv4Gateway?: string;
   ipv6?: string;
+  password?: string;
+  sshPublicKeys?: string;
+  description?: string;
+  unprivileged?: boolean;
   startAfterCreate?: boolean;
 }
 
@@ -303,11 +307,21 @@ export class ProxmoxService {
       swap: params.swapMb,
       rootfs: `${storage}:${params.diskGb}`,
       net0,
-      unprivileged: 1,
+      unprivileged: params.unprivileged !== undefined ? (params.unprivileged ? 1 : 0) : 1,
       start: params.startAfterCreate ? 1 : 0,
       onboot: 1,
       features: "nesting=1",
     };
+
+    if (params.password) {
+      payload.password = params.password;
+    }
+    if (params.sshPublicKeys) {
+      payload["ssh-public-keys"] = params.sshPublicKeys.trim();
+    }
+    if (params.description) {
+      payload.description = params.description;
+    }
 
     const res = await this.request<string>(
       node,
@@ -320,6 +334,195 @@ export class ProxmoxService {
       upid: typeof res.data === "string" ? res.data : String(res.data),
       vmid: params.vmid,
     };
+  }
+
+  /**
+   * Start an LXC container
+   */
+  public static async startLxc(
+    node: ProxmoxNodeConfig,
+    vmid: number
+  ): Promise<{ upid: string }> {
+    const res = await this.request<string>(
+      node,
+      "POST",
+      `/api2/json/nodes/${encodeURIComponent(node.nodeName)}/lxc/${vmid}/status/start`
+    );
+    return { upid: typeof res.data === "string" ? res.data : String(res.data) };
+  }
+
+  /**
+   * Gracefully shut down an LXC container
+   */
+  public static async shutdownLxc(
+    node: ProxmoxNodeConfig,
+    vmid: number
+  ): Promise<{ upid: string }> {
+    const res = await this.request<string>(
+      node,
+      "POST",
+      `/api2/json/nodes/${encodeURIComponent(node.nodeName)}/lxc/${vmid}/status/shutdown`
+    );
+    return { upid: typeof res.data === "string" ? res.data : String(res.data) };
+  }
+
+  /**
+   * Forcibly stop an LXC container
+   */
+  public static async stopLxc(
+    node: ProxmoxNodeConfig,
+    vmid: number
+  ): Promise<{ upid: string }> {
+    const res = await this.request<string>(
+      node,
+      "POST",
+      `/api2/json/nodes/${encodeURIComponent(node.nodeName)}/lxc/${vmid}/status/stop`
+    );
+    return { upid: typeof res.data === "string" ? res.data : String(res.data) };
+  }
+
+  /**
+   * Reboot an LXC container
+   */
+  public static async rebootLxc(
+    node: ProxmoxNodeConfig,
+    vmid: number
+  ): Promise<{ upid: string }> {
+    const res = await this.request<string>(
+      node,
+      "POST",
+      `/api2/json/nodes/${encodeURIComponent(node.nodeName)}/lxc/${vmid}/status/reboot`
+    );
+    return { upid: typeof res.data === "string" ? res.data : String(res.data) };
+  }
+
+  /**
+   * Destroy an LXC container and purge its volumes
+   */
+  public static async destroyLxc(
+    node: ProxmoxNodeConfig,
+    vmid: number,
+    purge = true
+  ): Promise<{ upid: string }> {
+    const res = await this.request<string>(
+      node,
+      "DELETE",
+      `/api2/json/nodes/${encodeURIComponent(node.nodeName)}/lxc/${vmid}?purge=${purge ? 1 : 0}`
+    );
+    return { upid: typeof res.data === "string" ? res.data : String(res.data) };
+  }
+
+  /**
+   * Read the configuration of an LXC container
+   */
+  public static async getLxcConfig(
+    node: ProxmoxNodeConfig,
+    vmid: number
+  ): Promise<Record<string, unknown>> {
+    const res = await this.request<Record<string, unknown>>(
+      node,
+      "GET",
+      `/api2/json/nodes/${encodeURIComponent(node.nodeName)}/lxc/${vmid}/config`
+    );
+    return res.data || {};
+  }
+
+  /**
+   * Update configuration parameters on an LXC container
+   */
+  public static async updateLxcConfig(
+    node: ProxmoxNodeConfig,
+    vmid: number,
+    configPayload: Record<string, unknown>
+  ): Promise<void> {
+    await this.request(
+      node,
+      "PUT",
+      `/api2/json/nodes/${encodeURIComponent(node.nodeName)}/lxc/${vmid}/config`,
+      configPayload
+    );
+  }
+
+  /**
+   * Update the root password of an LXC container
+   */
+  public static async setLxcPassword(
+    node: ProxmoxNodeConfig,
+    vmid: number,
+    password: string
+  ): Promise<void> {
+    await this.updateLxcConfig(node, vmid, { password });
+  }
+
+  /**
+   * Check if an LXC container currently has an active lock state (e.g. backup, create, disk)
+   */
+  public static async checkLxcLocked(
+    node: ProxmoxNodeConfig,
+    vmid: number
+  ): Promise<{ locked: boolean; lockName?: string }> {
+    try {
+      const config = await this.getLxcConfig(node, vmid);
+      if (config.lock && typeof config.lock === "string" && config.lock.trim().length > 0) {
+        return { locked: true, lockName: config.lock.trim() };
+      }
+      return { locked: false };
+    } catch {
+      return { locked: false };
+    }
+  }
+
+  /**
+   * Request a termproxy ticket for real interactive console sessions
+   */
+  public static async createLxcTermProxy(
+    node: ProxmoxNodeConfig,
+    vmid: number
+  ): Promise<{ port: number; ticket: string; upid: string; user: string }> {
+    const res = await this.request<{
+      port: number | string;
+      ticket: string;
+      upid: string;
+      user: string;
+    }>(
+      node,
+      "POST",
+      `/api2/json/nodes/${encodeURIComponent(node.nodeName)}/lxc/${vmid}/termproxy`
+    );
+
+    const portNum = typeof res.data.port === "string" ? parseInt(res.data.port, 10) : res.data.port;
+    return {
+      port: portNum,
+      ticket: res.data.ticket,
+      upid: res.data.upid,
+      user: res.data.user || "root@pam",
+    };
+  }
+
+  /**
+   * Centralized Proxmox background task polling with timeout and error handling
+   */
+  public static async waitForProxmoxTask(
+    node: ProxmoxNodeConfig,
+    upid: string,
+    timeoutMs = 120_000,
+    intervalMs = 1_500
+  ): Promise<{ exitstatus: string }> {
+    const startTime = Date.now();
+    while (Date.now() - startTime < timeoutMs) {
+      const taskStatus = await this.getTaskStatus(node, upid);
+      if (taskStatus.status === "stopped") {
+        const exitstatus = taskStatus.exitstatus || "OK";
+        if (exitstatus !== "OK") {
+          throw new Error(`Proxmox task failed: ${exitstatus}`);
+        }
+        return { exitstatus };
+      }
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+    throw new Error(
+      `Proxmox task timed out after ${Math.round(timeoutMs / 1000)}s [UPID: ${upid}]`
+    );
   }
 
   /**

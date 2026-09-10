@@ -11,6 +11,7 @@
  *   - Panel branding and global settings updates
  */
 
+import crypto from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import { v4 as uuidv4 } from "uuid";
 import { requireAuth, requireRole } from "../middleware/auth.js";
@@ -471,6 +472,7 @@ router.post("/vps", async (req: Request, res: Response) => {
     targetNodeId,
     hostname,
     name,
+    description,
     osTemplate,
     cpuCores = 1,
     memoryMb = 1024,
@@ -480,6 +482,8 @@ router.post("/vps", async (req: Request, res: Response) => {
     bridge,
     ipv4PoolId,
     startAfterCreate = true,
+    rootPassword,
+    sshPublicKey,
     idempotencyKey,
   } = req.body;
 
@@ -497,22 +501,81 @@ router.post("/vps", async (req: Request, res: Response) => {
     return;
   }
 
+  // Validate target node exists & is enabled
+  const nodeConfig = ProvisioningService.getNodeConfig(targetNodeId);
+  if (!nodeConfig) {
+    res.status(404).json({ error: "Target Proxmox node does not exist or is disabled." });
+    return;
+  }
+
+  // Resource boundaries validation
+  const parsedCores = parseInt(cpuCores, 10);
+  const parsedMemory = parseInt(memoryMb, 10);
+  const parsedDisk = parseInt(diskGb, 10);
+  const parsedSwap = parseInt(swapMb, 10) || 512;
+
+  if (isNaN(parsedCores) || parsedCores < 1 || parsedCores > 64) {
+    res.status(400).json({ error: "CPU cores must be an integer between 1 and 64." });
+    return;
+  }
+  if (isNaN(parsedMemory) || parsedMemory < 256 || parsedMemory > 131072) {
+    res.status(400).json({ error: "Memory must be between 256 MB and 131072 MB." });
+    return;
+  }
+  if (isNaN(parsedDisk) || parsedDisk < 5 || parsedDisk > 2048) {
+    res.status(400).json({ error: "Disk size must be between 5 GB and 2048 GB." });
+    return;
+  }
+
+  // Hostname validation
+  const cleanHostname = hostname.trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(cleanHostname)) {
+    res.status(400).json({
+      error: "Hostname must be 1-63 lowercase alphanumeric characters or hyphens, starting with an alphanumeric character.",
+    });
+    return;
+  }
+
+  // Root Password & SSH Key validation / generation
+  let effectivePassword = rootPassword?.trim();
+  let generatedPassword = false;
+
+  if (!effectivePassword) {
+    // Cryptographically secure password generation
+    effectivePassword = crypto.randomBytes(12).toString("base64url");
+    generatedPassword = true;
+  } else if (effectivePassword.length < 8) {
+    res.status(400).json({ error: "Root password must be at least 8 characters long." });
+    return;
+  }
+
+  if (sshPublicKey && typeof sshPublicKey === "string") {
+    const trimmedKey = sshPublicKey.trim();
+    if (!/^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp\d+)\s+[A-Za-z0-9+/=]+/.test(trimmedKey)) {
+      res.status(400).json({ error: "Invalid SSH Public Key format. Must be an OpenSSH public key." });
+      return;
+    }
+  }
+
   try {
     const jobResult = await ProvisioningService.submitJob({
       ownerUserId,
       targetNodeId,
       requestedByUserId: req.user.id,
-      hostname: hostname.trim().toLowerCase().replace(/[^a-z0-9-]/g, "-"),
-      name,
-      osTemplate,
-      cpuCores: parseInt(cpuCores, 10) || 1,
-      memoryMb: parseInt(memoryMb, 10) || 1024,
-      swapMb: parseInt(swapMb, 10) || 512,
-      diskGb: parseInt(diskGb, 10) || 25,
-      storage,
-      bridge,
-      ipv4PoolId,
+      hostname: cleanHostname,
+      name: name?.trim() || `${cleanHostname} Instance`,
+      description: description?.trim() || undefined,
+      osTemplate: osTemplate.trim(),
+      cpuCores: parsedCores,
+      memoryMb: parsedMemory,
+      swapMb: parsedSwap,
+      diskGb: parsedDisk,
+      storage: storage || nodeConfig.defaultStorage,
+      bridge: bridge || nodeConfig.defaultBridge,
+      ipv4PoolId: ipv4PoolId || undefined,
       startAfterCreate: Boolean(startAfterCreate),
+      rootPassword: effectivePassword,
+      sshPublicKey: sshPublicKey?.trim() || undefined,
       idempotencyKey,
     });
 
@@ -520,11 +583,13 @@ router.post("/vps", async (req: Request, res: Response) => {
       success: true,
       jobId: jobResult.jobId,
       status: jobResult.status,
+      isDuplicate: jobResult.isDuplicate,
+      generatedPassword: generatedPassword ? effectivePassword : undefined,
       message: "VPS provisioning job queued successfully.",
     });
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ error: `Provisioning initiation failed: ${msg}` });
+  } catch (err: any) {
+    const status = err.statusCode || 500;
+    res.status(status).json({ error: `Provisioning initiation failed: ${err.message}` });
   }
 });
 

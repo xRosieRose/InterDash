@@ -305,6 +305,69 @@ export const migrations: Migration[] = [
       }
     },
   },
+
+  {
+    version: 9,
+    name: "vps_operations_and_durability",
+    up: (db: Database) => {
+      // 1. Extend vps table
+      const safeAddColumn = (table: string, columnDef: string) => {
+        try {
+          db.run(`ALTER TABLE ${table} ADD COLUMN ${columnDef};`);
+        } catch {
+          // column already exists
+        }
+      };
+
+      safeAddColumn("vps", "description TEXT");
+      safeAddColumn("vps", "last_proxmox_sync_at TEXT");
+      safeAddColumn("vps", "lock_state TEXT DEFAULT NULL");
+
+      // Deduplicate any pre-existing duplicate rows before applying unique constraint
+      try {
+        db.run(`
+          DELETE FROM vps WHERE rowid NOT IN (
+            SELECT MIN(rowid) FROM vps GROUP BY proxmox_node_id, proxmox_vmid
+          );
+        `);
+      } catch {
+        // ignore if rowid or group by fails
+      }
+
+      // Unique index on (proxmox_node_id, proxmox_vmid)
+      db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_vps_node_vmid ON vps(proxmox_node_id, proxmox_vmid);");
+
+      // 2. Extend provisioning_jobs table
+      safeAddColumn("provisioning_jobs", "current_state TEXT");
+      safeAddColumn("provisioning_jobs", "vmid INTEGER");
+      safeAddColumn("provisioning_jobs", "cleanup_status TEXT");
+      safeAddColumn("provisioning_jobs", "error_details TEXT");
+      safeAddColumn("provisioning_jobs", "request_hash TEXT");
+
+      // 3. Create vps_operations table
+      db.run(`
+        CREATE TABLE IF NOT EXISTS vps_operations (
+          id                    TEXT PRIMARY KEY,
+          vps_id                TEXT NOT NULL REFERENCES vps(id) ON DELETE CASCADE,
+          requested_by_user_id  TEXT NOT NULL REFERENCES users(id),
+          operation_type        TEXT NOT NULL CHECK(operation_type IN ('start','stop','reboot','reinstall','password_reset','rename','update_description','sync_status','console')),
+          status                TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','waiting_for_proxmox_task','completed','failed','cancelled','recovery_required')),
+          current_step          TEXT NOT NULL DEFAULT 'queued',
+          params_json           TEXT,
+          result_json           TEXT,
+          error_code            TEXT,
+          error_message         TEXT,
+          started_at            TEXT NOT NULL DEFAULT (datetime('now')),
+          completed_at          TEXT,
+          created_at            TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_vps_operations_vps_id ON vps_operations(vps_id);
+        CREATE INDEX IF NOT EXISTS idx_vps_operations_status ON vps_operations(status);
+        CREATE INDEX IF NOT EXISTS idx_vps_operations_created_at ON vps_operations(created_at);
+      `);
+    },
+  },
 ];
 
 /**

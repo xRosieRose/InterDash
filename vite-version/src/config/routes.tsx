@@ -9,6 +9,7 @@ const ProductTourDemo = lazy(() => import("@/components/ui/product-tour-demo"))
 
 // Compute
 const Instances = lazy(() => import("@/app/instances/page"))
+const InstanceDetail = lazy(() => import("@/app/instances/detail/page"))
 const Analytics = lazy(() => import("@/app/analytics/page"))
 
 // Operations
@@ -68,6 +69,14 @@ export const routes: RouteConfig[] = [
     element: (
       <ProtectedRoute>
         <Instances />
+      </ProtectedRoute>
+    ),
+  },
+  {
+    path: "/instances/:id",
+    element: (
+      <ProtectedRoute>
+        <InstanceDetail />
       </ProtectedRoute>
     ),
   },
