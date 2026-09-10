@@ -307,7 +307,7 @@ export default function AuthSectionThree({
             </div>
 
             {/* Dashboard Mockup using the landing page image */}
-            <div className="mt-8 w-full max-w-[620px] lg:max-w-[700px] xl:max-w-[740px] overflow-hidden rounded-2xl border border-white/15 bg-black/85 p-2 shadow-[0_30px_85px_rgba(0,0,0,0.7)] backdrop-blur-xl lg:absolute lg:left-[6%] lg:-bottom-18 xl:-bottom-24 lg:mt-0 lg:w-[102%] xl:left-[8%] xl:w-[106%] lg:origin-bottom-left lg:-rotate-1">
+            <div className="mt-8 w-full max-w-[720px] sm:max-w-[780px] lg:max-w-none overflow-hidden rounded-2xl border border-white/15 bg-black/85 p-2 shadow-[0_35px_95px_rgba(0,0,0,0.75)] backdrop-blur-xl lg:absolute lg:left-[4%] lg:-bottom-20 lg:mt-0 lg:w-[116%] xl:left-[5%] xl:-bottom-26 xl:w-[120%] 2xl:w-[124%] lg:origin-bottom-left lg:-rotate-1">
               <motion.div
                 initial={{ opacity: 0, y: 60, filter: "blur(8px)" }}
                 whileInView={{ opacity: 1, y: 0, filter: "blur(0px)" }}
@@ -332,7 +332,7 @@ export default function AuthSectionThree({
                 <img
                   src={lightDashboardImg}
                   alt="InterDash Cloud VPS Dashboard Preview - Light Mode"
-                  className="h-auto max-h-[380px] lg:max-h-[440px] w-full object-cover object-top block dark:hidden"
+                  className="h-auto max-h-[400px] lg:max-h-[460px] w-full object-cover object-top block dark:hidden"
                   loading="lazy"
                   onError={(e) => {
                     // Fallback to absolute root if relative fails
@@ -344,7 +344,7 @@ export default function AuthSectionThree({
                 <img
                   src={darkDashboardImg}
                   alt="InterDash Cloud VPS Dashboard Preview - Dark Mode"
-                  className="h-auto max-h-[380px] lg:max-h-[440px] w-full object-cover object-top hidden dark:block"
+                  className="h-auto max-h-[400px] lg:max-h-[460px] w-full object-cover object-top hidden dark:block"
                   loading="lazy"
                   onError={(e) => {
                     // Fallback to absolute root if relative fails
