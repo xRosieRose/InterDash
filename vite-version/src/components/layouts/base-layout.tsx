@@ -15,9 +15,10 @@ interface BaseLayoutProps {
   children: React.ReactNode
   title?: string
   description?: string
+  centered?: boolean
 }
 
-export function BaseLayout({ children, title, description }: BaseLayoutProps) {
+export function BaseLayout({ children, title, description, centered }: BaseLayoutProps) {
   const [themeCustomizerOpen, setThemeCustomizerOpen] = React.useState(false)
   const { config } = useSidebarConfig()
 
@@ -45,7 +46,7 @@ export function BaseLayout({ children, title, description }: BaseLayoutProps) {
               <div className="@container/main flex flex-1 flex-col gap-2">
                 <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
                   {title && (
-                    <div className="px-4 lg:px-6">
+                    <div className={centered ? "px-4 lg:px-6 max-w-4xl mx-auto w-full" : "px-4 lg:px-6"}>
                       <div className="flex flex-col gap-2">
                         <h1 className="text-2xl font-bold tracking-tight">{title}</h1>
                         {description && (
@@ -69,7 +70,7 @@ export function BaseLayout({ children, title, description }: BaseLayoutProps) {
               <div className="@container/main flex flex-1 flex-col gap-2">
                 <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
                   {title && (
-                    <div className="px-4 lg:px-6">
+                    <div className={centered ? "px-4 lg:px-6 max-w-4xl mx-auto w-full" : "px-4 lg:px-6"}>
                       <div className="flex flex-col gap-2">
                         <h1 className="text-2xl font-bold tracking-tight">{title}</h1>
                         {description && (

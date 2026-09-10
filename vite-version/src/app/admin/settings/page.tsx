@@ -98,7 +98,7 @@ export default function AdminSettingsPage() {
 
   if (isLoading) {
     return (
-      <BaseLayout title="Platform Settings" description="Global control panel configuration & branding">
+      <BaseLayout title="Platform Settings" description="Global control panel configuration & branding" centered>
         <div className="py-24 flex flex-col items-center justify-center gap-2 text-xs text-muted-foreground">
           <Loader2 className="size-6 animate-spin text-primary" />
           Loading panel configuration...
@@ -111,8 +111,9 @@ export default function AdminSettingsPage() {
     <BaseLayout
       title="Platform Settings"
       description="Global panel branding, public identity, support links, and communication endpoints."
+      centered
     >
-      <div className="@container/main px-4 lg:px-6 max-w-4xl space-y-6">
+      <div className="@container/main px-4 lg:px-6 max-w-4xl mx-auto w-full space-y-6">
         <form onSubmit={handleSave}>
           <Card>
             <CardHeader>

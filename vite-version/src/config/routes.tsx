@@ -122,6 +122,10 @@ export const routes: RouteConfig[] = [
       </ProtectedRoute>
     ),
   },
+  {
+    path: "/settings",
+    element: <Navigate to="/admin/settings" replace />,
+  },
 
   // Role-Aware Entrypoint
   {
