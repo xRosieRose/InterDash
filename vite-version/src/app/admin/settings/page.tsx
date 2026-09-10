@@ -1,7 +1,5 @@
-"use client"
-
 import * as React from "react"
-import { Save, Loader2, Globe, Shield } from "lucide-react"
+import { Save, Loader2, Globe, Shield, Upload, Image as ImageIcon } from "lucide-react"
 import { BaseLayout } from "@/components/layouts/base-layout"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -15,9 +13,11 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { toast } from "sonner"
+import { useSettings } from "@/contexts/settings-context"
 
 export default function AdminSettingsPage() {
-  const [brandName, setBrandName] = React.useState("InterENL")
+  const { refreshSettings } = useSettings()
+  const [brandName, setBrandName] = React.useState("InterDash")
   const [panelTitle, setPanelTitle] = React.useState("InterDash — Cloud VPS Control Panel")
   const [logoUrl, setLogoUrl] = React.useState("")
   const [faviconUrl, setFaviconUrl] = React.useState("")
@@ -26,8 +26,55 @@ export default function AdminSettingsPage() {
   const [discordUrl, setDiscordUrl] = React.useState("https://discord.gg/interenl")
   const [contactEmail, setContactEmail] = React.useState("support@interenl.com")
 
+  const logoInputRef = React.useRef<HTMLInputElement | null>(null)
+  const faviconInputRef = React.useRef<HTMLInputElement | null>(null)
+
   const [isLoading, setIsLoading] = React.useState(true)
   const [isSaving, setIsSaving] = React.useState(false)
+
+  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (!file.type.startsWith("image/")) {
+      toast.error("Please select a valid image file.")
+      return
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error("Logo must be under 2 MB.")
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = (evt) => {
+      const res = evt.target?.result as string
+      if (res) {
+        setLogoUrl(res)
+        toast.success("Logo loaded!")
+      }
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const handleFaviconUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (!file.type.startsWith("image/")) {
+      toast.error("Please select a valid icon or image file.")
+      return
+    }
+    if (file.size > 1 * 1024 * 1024) {
+      toast.error("Favicon must be under 1 MB.")
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = (evt) => {
+      const res = evt.target?.result as string
+      if (res) {
+        setFaviconUrl(res)
+        toast.success("Favicon loaded!")
+      }
+    }
+    reader.readAsDataURL(file)
+  }
 
   const fetchSettings = React.useCallback(async () => {
     try {
@@ -88,6 +135,7 @@ export default function AdminSettingsPage() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || "Failed to update settings.")
 
+      await refreshSettings()
       toast.success("Platform settings saved successfully!")
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : "Error saving settings")
@@ -121,7 +169,7 @@ export default function AdminSettingsPage() {
                 <Globe className="size-4 text-primary" /> Branding & Identity
               </CardTitle>
               <CardDescription>
-                Customize visible platform names and logos. Updates reflect dynamically without code changes.
+                Customize visible platform names and logos. Updates reflect dynamically across all views.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4 text-sm">
@@ -131,7 +179,7 @@ export default function AdminSettingsPage() {
                   <Input
                     value={brandName}
                     onChange={(e) => setBrandName(e.target.value)}
-                    placeholder="e.g. InterENL"
+                    placeholder="e.g. InterDash"
                   />
                 </div>
                 <div className="space-y-1.5">
@@ -144,22 +192,116 @@ export default function AdminSettingsPage() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <Label>Custom Logo URL (Optional)</Label>
-                  <Input
-                    value={logoUrl}
-                    onChange={(e) => setLogoUrl(e.target.value)}
-                    placeholder="https://..."
-                  />
+              {/* Logo & Favicon Upload Blocks */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+                {/* Custom Logo */}
+                <div className="space-y-2 p-3 rounded-lg border bg-muted/20">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs font-semibold flex items-center gap-1.5">
+                      <ImageIcon className="size-3.5 text-primary" /> Custom Logo
+                    </Label>
+                    {logoUrl && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setLogoUrl("")
+                          if (logoInputRef.current) logoInputRef.current.value = ""
+                        }}
+                        className="text-[11px] text-destructive hover:underline cursor-pointer"
+                      >
+                        Remove Logo
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <div className="size-10 rounded border border-border bg-background flex items-center justify-center overflow-hidden shrink-0 shadow-xs">
+                      {logoUrl ? (
+                        <img src={logoUrl} alt="Logo preview" className="size-full object-contain" />
+                      ) : (
+                        <span className="text-xs text-muted-foreground/50">Logo</span>
+                      )}
+                    </div>
+
+                    <input
+                      type="file"
+                      ref={logoInputRef}
+                      accept="image/*"
+                      className="hidden"
+                      onChange={handleLogoUpload}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-xs gap-1.5 shrink-0"
+                      onClick={() => logoInputRef.current?.click()}
+                    >
+                      <Upload className="size-3.5" /> Upload Logo
+                    </Button>
+
+                    <Input
+                      placeholder="or paste logo URL..."
+                      value={logoUrl.startsWith("data:") ? "Custom logo uploaded" : logoUrl}
+                      onChange={(e) => setLogoUrl(e.target.value)}
+                      className="text-xs h-8 flex-1 font-mono"
+                    />
+                  </div>
                 </div>
-                <div className="space-y-1.5">
-                  <Label>Favicon URL (Optional)</Label>
-                  <Input
-                    value={faviconUrl}
-                    onChange={(e) => setFaviconUrl(e.target.value)}
-                    placeholder="https://..."
-                  />
+
+                {/* Favicon */}
+                <div className="space-y-2 p-3 rounded-lg border bg-muted/20">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs font-semibold flex items-center gap-1.5">
+                      <Globe className="size-3.5 text-primary" /> Favicon
+                    </Label>
+                    {faviconUrl && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFaviconUrl("")
+                          if (faviconInputRef.current) faviconInputRef.current.value = ""
+                        }}
+                        className="text-[11px] text-destructive hover:underline cursor-pointer"
+                      >
+                        Remove Favicon
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <div className="size-10 rounded border border-border bg-background flex items-center justify-center overflow-hidden shrink-0 shadow-xs">
+                      {faviconUrl ? (
+                        <img src={faviconUrl} alt="Favicon preview" className="size-6 object-contain" />
+                      ) : (
+                        <span className="text-xs text-muted-foreground/50">Icon</span>
+                      )}
+                    </div>
+
+                    <input
+                      type="file"
+                      ref={faviconInputRef}
+                      accept="image/*,.ico"
+                      className="hidden"
+                      onChange={handleFaviconUpload}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-xs gap-1.5 shrink-0"
+                      onClick={() => faviconInputRef.current?.click()}
+                    >
+                      <Upload className="size-3.5" /> Upload Icon
+                    </Button>
+
+                    <Input
+                      placeholder="or paste favicon URL..."
+                      value={faviconUrl.startsWith("data:") ? "Custom favicon uploaded" : faviconUrl}
+                      onChange={(e) => setFaviconUrl(e.target.value)}
+                      className="text-xs h-8 flex-1 font-mono"
+                    />
+                  </div>
                 </div>
               </div>
             </CardContent>

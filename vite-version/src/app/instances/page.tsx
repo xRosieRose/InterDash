@@ -20,7 +20,6 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
   Card,
-  CardAction,
   CardDescription,
   CardHeader,
   CardTitle,
@@ -129,71 +128,131 @@ export default function InstancesPage() {
       description="View assigned cloud VPS instances, network IP allocations, and hypervisor statuses."
     >
       <div className="@container/main px-4 lg:px-6 space-y-6">
-        {/* Top Summary Metric Cards */}
+        {/* Top Summary Metric Cards - features-8 elevated aesthetic */}
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <Card className="border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-            <CardHeader>
-              <CardDescription className="flex items-center justify-between">
-                <span>Active VPS Instances</span>
-                <Server className="size-4 text-primary" />
-              </CardDescription>
-              <CardTitle className="text-2xl font-semibold tabular-nums sm:text-3xl">
-                {totalCount}
-              </CardTitle>
-              <CardAction>
+          {/* Card 1: Active VPS Instances */}
+          <Card className="relative overflow-hidden border-border bg-card/80 backdrop-blur-sm transition-all hover:border-primary/40 hover:shadow-lg group">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <div className="relative flex aspect-square size-11 rounded-full border border-emerald-500/30 before:absolute before:-inset-1.5 before:rounded-full before:border before:border-emerald-500/15 bg-emerald-500/10 shrink-0">
+                  <Server className="m-auto size-5 text-emerald-500 dark:text-emerald-400" />
+                </div>
                 <Badge
                   variant="outline"
-                  className="text-emerald-600 dark:text-emerald-400 border-emerald-500/30 bg-emerald-500/10"
+                  className="text-emerald-600 dark:text-emerald-400 border-emerald-500/30 bg-emerald-500/10 text-xs font-medium"
                 >
-                  {runningCount} Running
+                  {runningCount} / {totalCount} Active
                 </Badge>
-              </CardAction>
+              </div>
+              <div className="mt-4 space-y-1">
+                <CardDescription className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  Fleet Instances
+                </CardDescription>
+                <CardTitle className="text-3xl font-bold tabular-nums tracking-tight">
+                  {totalCount}
+                </CardTitle>
+              </div>
+              <div className="flex items-center gap-2 pt-1 text-xs text-muted-foreground">
+                <span className="inline-flex items-center gap-1 text-emerald-500 font-medium">
+                  <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  {runningCount} Running
+                </span>
+                <span>•</span>
+                <span>{stoppedCount} Stopped</span>
+              </div>
             </CardHeader>
+            {/* Ambient Background Wave SVG */}
+            <svg className="absolute -bottom-3 -right-3 w-40 h-16 opacity-15 group-hover:opacity-25 transition-opacity text-emerald-500 pointer-events-none" viewBox="0 0 254 104" fill="none">
+              <path d="M112.891 97.7C140.366 97.08 171.004 94.67 201.087 87.51C210.43 85.28 219.615 82.64 228.284 78.24C239.348 71.31 245.555 63.94 242.498 45.61C231.169 38.3 194.482 25.53 162.64 21.29C158.034 20.39 157.115 17.89 162.389 15.52C179.805 15.35 212.998 24.46 236.423 34.12C247.474 41.82 251.841 65.48 242.921 76.63C220.502 88.29 172.738 99.21 114.506 103.79C67.9334 102.97 19.1771 87.51 5.41318 75.77C-1.13794 59.17 13.4863 37.43 50.5431 15.72C86.4883 5.13 153.151 0.13 177.013 2.94C218.04 9.01 244.933 19.64 246.997 23.61C242.63 24.58 204.117 13.43 157.558 7.52C102.154 8.06 46.5758 23.29 14.9818 44.65C5.61172 67.24 22.8564 82.32 51.3902 92.58C90.0219 97.74 112.891 97.7 112.891 97.7Z" fill="currentColor" />
+            </svg>
           </Card>
 
-          <Card className="border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-            <CardHeader>
-              <CardDescription className="flex items-center justify-between">
-                <span>Allocated Cores</span>
-                <Cpu className="size-4 text-primary" />
-              </CardDescription>
-              <CardTitle className="text-2xl font-semibold tabular-nums sm:text-3xl">
-                {totalCores} <span className="text-sm font-normal text-muted-foreground">vCPUs</span>
-              </CardTitle>
-              <CardAction>
-                <Badge variant="outline">Compute</Badge>
-              </CardAction>
+          {/* Card 2: Allocated Cores */}
+          <Card className="relative overflow-hidden border-border bg-card/80 backdrop-blur-sm transition-all hover:border-primary/40 hover:shadow-lg group">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <div className="relative flex aspect-square size-11 rounded-full border border-primary/25 before:absolute before:-inset-1.5 before:rounded-full before:border before:border-primary/10 bg-primary/10 shrink-0">
+                  <Cpu className="m-auto size-5 text-primary" />
+                </div>
+                <Badge variant="outline" className="border-primary/30 bg-primary/5 text-primary text-xs font-medium">
+                  Compute
+                </Badge>
+              </div>
+              <div className="mt-4 space-y-1">
+                <CardDescription className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  Virtual Cores
+                </CardDescription>
+                <CardTitle className="text-3xl font-bold tabular-nums tracking-tight">
+                  {totalCores} <span className="text-lg font-normal text-muted-foreground">vCPUs</span>
+                </CardTitle>
+              </div>
+              <div className="pt-1 text-xs text-muted-foreground">
+                Dedicated hypervisor execution threads
+              </div>
             </CardHeader>
+            {/* Micro Telemetry Wave SVG */}
+            <svg className="absolute -bottom-2 -right-4 w-44 h-16 opacity-15 group-hover:opacity-25 transition-opacity text-primary pointer-events-none" viewBox="0 0 386 123" fill="none">
+              <path d="M3 121C3 121 15 93 36 87C56 81 80 80 91 80C102 80 116 64 125 92C132 92 142 78 153 80C165 83 186 92 193 92C199 92 205 64 213 64C220 64 237 93 243 92C248 90 257 60 265 60C271 60 283 87 285 87C293 87 304 73 311 73C321 65 333 64 345 62C362 80 383 106 383 106" stroke="currentColor" strokeWidth="3" />
+            </svg>
           </Card>
 
-          <Card className="border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-            <CardHeader>
-              <CardDescription className="flex items-center justify-between">
-                <span>Allocated Memory</span>
-                <Activity className="size-4 text-primary" />
-              </CardDescription>
-              <CardTitle className="text-2xl font-semibold tabular-nums sm:text-3xl">
-                {totalMemoryGb} <span className="text-sm font-normal text-muted-foreground">GB RAM</span>
-              </CardTitle>
-              <CardAction>
-                <Badge variant="outline">Memory</Badge>
-              </CardAction>
+          {/* Card 3: Allocated Memory */}
+          <Card className="relative overflow-hidden border-border bg-card/80 backdrop-blur-sm transition-all hover:border-primary/40 hover:shadow-lg group">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <div className="relative flex aspect-square size-11 rounded-full border border-primary/25 before:absolute before:-inset-1.5 before:rounded-full before:border before:border-primary/10 bg-primary/10 shrink-0">
+                  <Activity className="m-auto size-5 text-primary" />
+                </div>
+                <Badge variant="outline" className="border-primary/30 bg-primary/5 text-primary text-xs font-medium">
+                  Memory
+                </Badge>
+              </div>
+              <div className="mt-4 space-y-1">
+                <CardDescription className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  Allocated RAM
+                </CardDescription>
+                <CardTitle className="text-3xl font-bold tabular-nums tracking-tight">
+                  {totalMemoryGb} <span className="text-lg font-normal text-muted-foreground">GB</span>
+                </CardTitle>
+              </div>
+              <div className="pt-1 text-xs text-muted-foreground">
+                High-speed DDR5 pooled memory capacity
+              </div>
             </CardHeader>
+            {/* Concentric radar circle micro-accent */}
+            <svg className="absolute -bottom-4 -right-4 w-36 h-20 opacity-15 group-hover:opacity-25 transition-opacity text-primary pointer-events-none" viewBox="0 0 212 143" fill="none">
+              <path d="M44 55C50 40 59 32 70 27C81 21 93 18 106 18C118 18 130 21 141 26C152 32 161 39 169 50" stroke="currentColor" strokeWidth="3" />
+              <path d="M67 18C70 8 77 6 84 4C91 2 98 1 106 1C113 1 121 2 128 4C135 5 142 8 149 11" stroke="currentColor" strokeWidth="2" strokeDasharray="4 4" />
+            </svg>
           </Card>
 
-          <Card className="border-border bg-gradient-to-t from-primary/5 to-card shadow-xs">
-            <CardHeader>
-              <CardDescription className="flex items-center justify-between">
-                <span>Allocated Storage</span>
-                <HardDrive className="size-4 text-primary" />
-              </CardDescription>
-              <CardTitle className="text-2xl font-semibold tabular-nums sm:text-3xl">
-                {totalDiskGb} <span className="text-sm font-normal text-muted-foreground">GB SSD</span>
-              </CardTitle>
-              <CardAction>
-                <Badge variant="outline">RootFS</Badge>
-              </CardAction>
+          {/* Card 4: Allocated Storage */}
+          <Card className="relative overflow-hidden border-border bg-card/80 backdrop-blur-sm transition-all hover:border-primary/40 hover:shadow-lg group">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <div className="relative flex aspect-square size-11 rounded-full border border-primary/25 before:absolute before:-inset-1.5 before:rounded-full before:border before:border-primary/10 bg-primary/10 shrink-0">
+                  <HardDrive className="m-auto size-5 text-primary" />
+                </div>
+                <Badge variant="outline" className="border-primary/30 bg-primary/5 text-primary text-xs font-medium">
+                  NVMe RootFS
+                </Badge>
+              </div>
+              <div className="mt-4 space-y-1">
+                <CardDescription className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  Storage Volume
+                </CardDescription>
+                <CardTitle className="text-3xl font-bold tabular-nums tracking-tight">
+                  {totalDiskGb} <span className="text-lg font-normal text-muted-foreground">GB</span>
+                </CardTitle>
+              </div>
+              <div className="pt-1 text-xs text-muted-foreground">
+                High-IOPS PCIe 4.0 SSD rootfs allocation
+              </div>
             </CardHeader>
+            {/* Sparkline gradient fill SVG */}
+            <svg className="absolute -bottom-2 -right-2 w-44 h-16 opacity-15 group-hover:opacity-25 transition-opacity text-primary pointer-events-none" viewBox="0 0 366 231" fill="none">
+              <path d="M0 231V179L2 180L4 183L7 178L11 191V155L14 142V154L19 158L22 148V142L26 129V120L31 120V130L35 130L40 138V126L47 103V92L52 89L56 87L60 103L65 122L70 109L73 123V130L78 134V138L83 142V130L89 116V122L93 123L96 122V137L101 120L106 140L110 130L115 152L119 140V148L125 158L131 155L138 158L144 169L148 151L154 145L159 140L163 116V109L166 109L176 98L180 98V81L184 56L188 106L193 75V98L200 75L203 113L207 94L212 81L216 62L220 75L226 84L230 75L236 102L241 98L245 87L251 96L257 99L264 75L267 58L276 13L282 20L287 73L294 61L300 0L305 22L312 105L318 105L325 80L333 52L340 87L348 82L355 94L360 108L365 95V231H0Z" fill="currentColor" fillOpacity="0.3" />
+            </svg>
           </Card>
         </div>
 

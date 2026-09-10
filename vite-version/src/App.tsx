@@ -6,6 +6,7 @@ import { useEffect } from 'react'
 import { initGTM } from '@/utils/analytics'
 
 import { AuthProvider } from '@/contexts/auth-context'
+import { SettingsProvider } from '@/contexts/settings-context'
 
 // Get basename from environment (for deployment) or use empty string for development
 const basename = import.meta.env.VITE_BASENAME || ''
@@ -22,7 +23,9 @@ function App() {
         <SidebarConfigProvider>
           <Router basename={basename}>
             <AuthProvider>
-              <AppRouter />
+              <SettingsProvider>
+                <AppRouter />
+              </SettingsProvider>
             </AuthProvider>
           </Router>
         </SidebarConfigProvider>

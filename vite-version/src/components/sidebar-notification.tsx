@@ -5,8 +5,10 @@ import { X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Logo } from "./logo"
+import { useSettings } from "@/contexts/settings-context"
 
 export function SidebarNotification() {
+  const { settings } = useSettings()
   const [isVisible, setIsVisible] = React.useState(true)
 
   if (!isVisible) return null
@@ -26,11 +28,15 @@ export function SidebarNotification() {
         
         <div className="pr-6">
           <h3 className="flex items-center gap-3 font-semibold text-neutral-900 dark:text-neutral-100 mb-2 mt-1">
-            <Logo size={42} className="-mt-1" />
+            {settings.logo_url ? (
+              <img src={settings.logo_url} alt="" className="size-8 object-contain" />
+            ) : (
+              <Logo size={32} className="-mt-1" />
+            )}
             <div>
               Welcome to{" "}
               <span className="text-primary font-bold">
-                InterENL
+                {settings.brand_name || "InterDash"}
               </span>
             </div>
           </h3>

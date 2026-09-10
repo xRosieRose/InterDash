@@ -1,10 +1,27 @@
 import * as React from "react"
+import { useSettings } from "@/contexts/settings-context"
 
 interface LogoProps extends React.SVGProps<SVGSVGElement> {
   size?: number
+  forceSvg?: boolean
 }
 
-export function Logo({ size = 24, className, ...props }: LogoProps) {
+export function Logo({ size = 24, className, forceSvg = false, ...props }: LogoProps) {
+  const { settings } = useSettings()
+
+  if (!forceSvg && settings?.logo_url) {
+    return (
+      <img
+        src={settings.logo_url}
+        alt={settings.brand_name || "Logo"}
+        width={size}
+        height={size}
+        style={{ width: size, height: size, objectFit: "contain" }}
+        className={`rounded shrink-0 ${className || ""}`}
+      />
+    )
+  }
+
   return (
     <svg
       width={size}

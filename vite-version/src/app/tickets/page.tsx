@@ -32,6 +32,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { useAuth } from "@/contexts/auth-context"
+import { useSettings } from "@/contexts/settings-context"
 import { toast } from "sonner"
 
 interface TicketItem {
@@ -63,6 +64,7 @@ interface TicketMessage {
 
 export default function TicketsPage() {
   const { user } = useAuth()
+  const { settings } = useSettings()
   const isAdmin = user?.role === "admin"
 
   const [tickets, setTickets] = React.useState<TicketItem[]>([])
@@ -264,7 +266,7 @@ export default function TicketsPage() {
   return (
     <BaseLayout
       title="Support Tickets"
-      description="Official InterENL support channel for hypervisor questions, network routing, and platform assistance."
+      description={`Official ${settings.brand_name || "Platform"} support channel for hypervisor questions, network routing, and platform assistance.`}
     >
       <div className="@container/main px-4 lg:px-6 space-y-4">
         {/* Action Header */}
@@ -415,7 +417,7 @@ export default function TicketsPage() {
                               {isStaff ? (
                                 <>
                                   <Shield className="size-3.5 text-primary" />
-                                  <span className="text-primary font-bold">InterENL Staff</span>
+                                  <span className="text-primary font-bold">{settings.brand_name || "Platform"} Staff</span>
                                 </>
                               ) : (
                                 <>

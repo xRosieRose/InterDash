@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { FlutedGlass } from "@paper-design/shaders-react";
 import { motion } from "motion/react";
+import { useSettings } from "@/contexts/settings-context";
 
 interface AuthSectionThreeProps {
   /**
@@ -14,33 +15,40 @@ interface AuthSectionThreeProps {
   onModeChange?: (mode: "signup" | "signin") => void;
 }
 
-const termsText = (
-  <>
-    By authenticating with Discord, you agree to the InterENL{" "}
-    <a
-      href="#"
-      className="font-medium text-foreground underline underline-offset-2 hover:text-white transition-colors"
-    >
-      Terms of Service
-    </a>{" "}
-    and{" "}
-    <a
-      href="#"
-      className="font-medium text-foreground underline underline-offset-2 hover:text-white transition-colors"
-    >
-      Privacy Policy
-    </a>
-    .
-  </>
-);
+function TermsNotice({ brandName }: { brandName?: string }) {
+  return (
+    <>
+      By authenticating with Discord, you agree to the {brandName || "InterDash"}{" "}
+      <a
+        href="#"
+        className="font-medium text-foreground underline underline-offset-2 hover:text-white transition-colors"
+      >
+        Terms of Service
+      </a>{" "}
+      and{" "}
+      <a
+        href="#"
+        className="font-medium text-foreground underline underline-offset-2 hover:text-white transition-colors"
+      >
+        Privacy Policy
+      </a>
+      .
+    </>
+  );
+}
 
 export default function AuthSectionThree({
   mode: initialMode = "signup",
   onModeChange,
 }: AuthSectionThreeProps) {
+  const { settings } = useSettings();
   const [mode, setMode] = useState<"signup" | "signin">(initialMode);
   const [isConnecting, setIsConnecting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    setMode(initialMode);
+  }, [initialMode]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -103,15 +111,19 @@ export default function AuthSectionThree({
             {/* Logo and Brand Header */}
             <div>
               <div className="flex items-center gap-2.5 mb-6">
-                <div className="flex size-9 items-center justify-center rounded-xl bg-primary text-primary-foreground font-bold text-sm shadow-sm">
-                  ID
+                <div className="flex size-9 items-center justify-center rounded-xl bg-primary text-primary-foreground font-bold text-sm shadow-sm overflow-hidden">
+                  {settings.logo_url ? (
+                    <img src={settings.logo_url} alt={settings.brand_name} className="size-6 object-contain" />
+                  ) : (
+                    <span>{settings.brand_name?.substring(0, 2).toUpperCase() || "ID"}</span>
+                  )}
                 </div>
                 <div>
                   <span className="font-bold tracking-tight text-lg text-foreground block leading-tight">
-                    InterDash
+                    {settings.brand_name || "InterDash"}
                   </span>
                   <span className="text-[11px] text-muted-foreground block leading-none">
-                    InterENL Cloud Infrastructure
+                    {settings.panel_title || "Cloud VPS Infrastructure"}
                   </span>
                 </div>
                 <span className="ml-auto text-xs px-2.5 py-1 rounded-full border border-white/10 bg-white/5 text-white font-medium flex items-center gap-1.5">
@@ -169,7 +181,7 @@ export default function AuthSectionThree({
                   <span>Single Sign-On Security</span>
                 </div>
                 <p className="leading-relaxed">
-                  Discord is the exclusive authentication provider for InterDash. We use Discord OAuth2 to protect against unauthorized instance abuse without requiring credit cards or passwords.
+                  Discord is the exclusive authentication provider for {settings.brand_name || "InterDash"}. We use Discord OAuth2 to protect against unauthorized instance abuse without requiring credit cards or passwords.
                 </p>
               </div>
             </div>
@@ -198,7 +210,7 @@ export default function AuthSectionThree({
 
             {/* Terms and Policies */}
             <div className="mt-8 pt-4 border-t border-border text-center text-xs text-muted-foreground leading-relaxed">
-              {termsText}
+              <TermsNotice brandName={settings.brand_name} />
             </div>
 
             {/* Mode Switcher */}
@@ -216,7 +228,7 @@ export default function AuthSectionThree({
                 </span>
               ) : (
                 <span>
-                  New to InterDash Cloud?{" "}
+                  New to {settings.brand_name || "InterDash"} Cloud?{" "}
                   <button
                     type="button"
                     onClick={() => switchMode("signup")}
@@ -293,7 +305,7 @@ export default function AuthSectionThree({
                 }}
                 className="mt-7 text-2xl font-light leading-tight tracking-[-0.035em] text-white/95 sm:text-3xl lg:text-[32px]"
               >
-                “With InterDash and instant Discord authentication, provisioning
+                “With {settings.brand_name || "InterDash"} and instant Discord authentication, provisioning
                 our distributed NVMe Linux instances took under thirty seconds.”
               </motion.blockquote>
 

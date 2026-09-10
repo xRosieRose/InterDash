@@ -28,6 +28,7 @@ import { Logo } from '@/components/logo'
 import { MegaMenu } from '@/components/landing/mega-menu'
 import { ModeToggle } from '@/components/mode-toggle'
 import { useTheme } from '@/hooks/use-theme'
+import { useSettings } from '@/contexts/settings-context'
 
 const navigationItems = [
   { name: 'Home', href: '#hero' },
@@ -74,6 +75,7 @@ export function LandingNavbar() {
   const [isOpen, setIsOpen] = useState(false)
   const [solutionsOpen, setSolutionsOpen] = useState(false)
   const { setTheme, theme } = useTheme()
+  const { settings } = useSettings()
 
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-background/80 backdrop-blur-xl supports-[backdrop-filter]:bg-background/60">
@@ -83,7 +85,7 @@ export function LandingNavbar() {
           <a href="#hero" className="flex items-center space-x-2 cursor-pointer">
             <Logo size={32} />
             <span className="font-bold text-xl tracking-tight">
-              InterENL
+              {settings.brand_name || "InterENL"}
             </span>
           </a>
         </div>
@@ -160,7 +162,7 @@ export function LandingNavbar() {
                   <div className="p-2 bg-primary/10 rounded-lg">
                     <Logo size={16} />
                   </div>
-                  <SheetTitle className="text-lg font-semibold">InterENL</SheetTitle>
+                  <SheetTitle className="text-lg font-semibold">{settings.brand_name || "InterENL"}</SheetTitle>
                   <div className="ml-auto flex items-center gap-2">
                     <Button
                       variant="ghost"

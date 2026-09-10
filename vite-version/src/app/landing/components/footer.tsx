@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/form"
 import { Logo } from '@/components/logo'
 import { Github, Twitter, Linkedin, Youtube, Heart } from 'lucide-react'
+import { useSettings } from '@/contexts/settings-context'
 
 const newsletterSchema = z.object({
   email: z.string().email({
@@ -56,6 +57,7 @@ const socialLinks = [
 ]
 
 export function LandingFooter() {
+  const { settings } = useSettings()
   const form = useForm<z.infer<typeof newsletterSchema>>({
     resolver: zodResolver(newsletterSchema),
     defaultValues: {
@@ -111,7 +113,7 @@ export function LandingFooter() {
             <div className="flex items-center space-x-2 mb-4 max-lg:justify-center">
               <a href="#hero" className="flex items-center space-x-2 cursor-pointer">
                 <Logo size={32} />
-                <span className="font-bold text-xl">InterENL</span>
+                <span className="font-bold text-xl">{settings.brand_name || "InterENL"}</span>
               </a>
             </div>
             <p className="text-muted-foreground mb-6 max-lg:text-center max-lg:flex max-lg:justify-center">

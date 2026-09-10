@@ -1,7 +1,10 @@
 import { Heart } from "lucide-react"
 import { Link } from "react-router-dom"
+import { useSettings } from "@/contexts/settings-context"
 
 export function SiteFooter() {
+  const { settings } = useSettings()
+
   return (
     <footer className="border-t bg-background">
       <div className="px-4 py-6 lg:px-6">
@@ -14,7 +17,7 @@ export function SiteFooter() {
               to="/landing"
               className="font-medium text-foreground hover:text-primary transition-colors"
             >
-              InterENL Team
+              {settings.brand_name || "InterDash"} Team
             </Link>
           </div>
           <p className="text-xs text-muted-foreground">
