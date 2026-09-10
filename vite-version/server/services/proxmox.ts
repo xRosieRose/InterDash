@@ -96,7 +96,7 @@ export class ProxmoxService {
         {
           protocol: parsed.protocol,
           hostname: parsed.hostname,
-          port: parsed.port || (isHttps ? 443 : 80),
+          port: parsed.port || node.port || (isHttps ? 8006 : 80),
           path: parsed.pathname + parsed.search,
           method,
           headers,
