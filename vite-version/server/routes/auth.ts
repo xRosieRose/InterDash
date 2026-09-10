@@ -143,13 +143,13 @@ router.get(
       // Access token is used ONLY on the server. Never sent to the client.
       // We can revoke it now if desired — we only need the user's identity.
 
-      // Determine role
-      let role: "user" | "staff" | "admin" | "owner" = "user";
+      // Determine role strictly as user or admin
+      let role: "user" | "admin" = "user";
       if (
         config.discordAdminUserId &&
         discordUser.id === config.discordAdminUserId
       ) {
-        role = "owner";
+        role = "admin";
       }
 
       const db = getDb();
@@ -162,18 +162,19 @@ router.get(
       );
 
       let finalUserId: string;
-      let finalRole: string;
+      let finalRole: "user" | "admin";
 
       if (existingUser.length && existingUser[0].values.length) {
         // Existing user — update profile, preserve role (unless they're the admin)
         finalUserId = existingUser[0].values[0][0] as string;
         const existingRole = existingUser[0].values[0][1] as string;
 
-        // Only upgrade role if they match the admin ID, never downgrade
-        finalRole =
-          role === "owner"
-            ? "owner"
-            : existingRole;
+        // Only upgrade role if they match the admin ID, normalize legacy owner/staff
+        if (role === "admin" || existingRole === "admin" || existingRole === "owner") {
+          finalRole = "admin";
+        } else {
+          finalRole = "user";
+        }
 
         db.run(
           `UPDATE users SET
@@ -298,9 +299,7 @@ router.get("/me", requireAuth, (req: Request, res: Response) => {
     avatar_url: avatarUrl,
     role: req.user.role,
     status: req.user.status,
-    is_admin:
-      req.user.role === "admin" ||
-      req.user.role === "owner",
+    is_admin: req.user.role === "admin",
   });
 });
 

@@ -21,7 +21,7 @@ export interface AuthUser {
   global_name: string | null
   email: string | null
   avatar_url: string
-  role: "user" | "staff" | "admin" | "owner"
+  role: "user" | "admin"
   status: string
   is_admin: boolean
 }

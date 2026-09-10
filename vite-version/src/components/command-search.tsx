@@ -5,19 +5,13 @@ import { useNavigate } from "react-router-dom"
 import { Command as CommandPrimitive } from "cmdk"
 import {
   Search,
-  LayoutPanelLeft,
-  LayoutDashboard,
-  Mail,
-  CheckSquare,
-  Shield,
-  AlertTriangle,
+  Server,
+  Activity,
+  LifeBuoy,
+  ShieldAlert,
+  Users,
   Settings,
-  HelpCircle,
-  CreditCard,
-  User,
-  Bell,
-  Link2,
-  Palette,
+  Globe,
   type LucideIcon,
 } from "lucide-react"
 
@@ -125,42 +119,21 @@ export function CommandSearch({ open, onOpenChange }: CommandSearchProps) {
   const commandRef = React.useRef<HTMLDivElement>(null)
 
   const searchItems: SearchItem[] = [
-    // Cloud Compute
-    { title: "VPS Instances", url: "/dashboard", group: "Cloud Compute", icon: LayoutDashboard },
-    { title: "Global Telemetry", url: "/dashboard-2", group: "Cloud Compute", icon: LayoutPanelLeft },
-    { title: "Deploy Free VPS", url: "/dashboard", group: "Cloud Compute", icon: LayoutDashboard },
+    // Compute
+    { title: "VPS Instances", url: "/instances", group: "Compute", icon: Server },
+    { title: "Resource Analytics", url: "/analytics", group: "Compute", icon: Activity },
 
     // Operations
-    { title: "Deployment Tasks", url: "/tasks", group: "Operations", icon: CheckSquare },
-    { title: "Support Tickets", url: "/mail", group: "Operations", icon: Mail },
-    { title: "Team & API Keys", url: "/users", group: "Operations", icon: User },
+    { title: "Support Tickets", url: "/tickets", group: "Operations", icon: LifeBuoy },
 
-    // Auth Pages
-    { title: "Sign In 1", url: "/auth/sign-in", group: "Auth Pages", icon: Shield },
-    { title: "Sign In 2", url: "/auth/sign-in-2", group: "Auth Pages", icon: Shield },
-    { title: "Sign Up 1", url: "/auth/sign-up", group: "Auth Pages", icon: Shield },
-    { title: "Sign Up 2", url: "/auth/sign-up-2", group: "Auth Pages", icon: Shield },
-    { title: "Forgot Password 1", url: "/auth/forgot-password", group: "Auth Pages", icon: Shield },
-    { title: "Forgot Password 2", url: "/auth/forgot-password-2", group: "Auth Pages", icon: Shield },
+    // Admin (Control Plane)
+    { title: "Infrastructure Overview", url: "/admin/overview", group: "Admin", icon: ShieldAlert },
+    { title: "User Accounts", url: "/admin/users", group: "Admin", icon: Users },
+    { title: "Proxmox Nodes", url: "/admin/nodes", group: "Admin", icon: Server },
+    { title: "Panel Settings", url: "/admin/settings", group: "Admin", icon: Settings },
 
-    // Errors
-    { title: "Unauthorized", url: "/errors/unauthorized", group: "Errors", icon: AlertTriangle },
-    { title: "Forbidden", url: "/errors/forbidden", group: "Errors", icon: AlertTriangle },
-    { title: "Not Found", url: "/errors/not-found", group: "Errors", icon: AlertTriangle },
-    { title: "Internal Server Error", url: "/errors/internal-server-error", group: "Errors", icon: AlertTriangle },
-    { title: "Under Maintenance", url: "/errors/under-maintenance", group: "Errors", icon: AlertTriangle },
-
-    // Settings
-    { title: "User Settings", url: "/settings/user", group: "Settings", icon: User },
-    { title: "Account Settings", url: "/settings/account", group: "Settings", icon: Settings },
-    { title: "Plans & Billing", url: "/settings/billing", group: "Settings", icon: CreditCard },
-    { title: "Appearance", url: "/settings/appearance", group: "Settings", icon: Palette },
-    { title: "Notifications", url: "/settings/notifications", group: "Settings", icon: Bell },
-    { title: "Connections", url: "/settings/connections", group: "Settings", icon: Link2 },
-
-    // Pages
-    { title: "VPS FAQs", url: "/faqs", group: "Pages", icon: HelpCircle },
-    { title: "Landing Page", url: "/landing", group: "Pages", icon: Link2 },
+    // Public / Landing
+    { title: "Landing Page", url: "/landing", group: "General", icon: Globe },
   ]
 
   const groupedItems = searchItems.reduce((acc, item) => {

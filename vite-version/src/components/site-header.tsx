@@ -36,10 +36,6 @@ export function SiteHeader() {
             <SearchTrigger onClick={() => setSearchOpen(true)} />
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <div className="hidden md:flex items-center gap-1.5 text-xs text-emerald-500 font-medium px-2.5 py-1 rounded-full border border-emerald-500/20 bg-emerald-500/5">
-              <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
-              <span>All Systems Operational</span>
-            </div>
             <Button variant="ghost" asChild size="sm" className="hidden sm:flex text-xs">
               <a
                 href={getAppUrl("/landing")}
@@ -48,11 +44,6 @@ export function SiteHeader() {
                 className="dark:text-foreground"
               >
                 Landing Page
-              </a>
-            </Button>
-            <Button asChild size="sm" className="hidden sm:flex text-xs gap-1.5">
-              <a href={getAppUrl("/dashboard")}>
-                Deploy Free VPS
               </a>
             </Button>
             <ModeToggle />

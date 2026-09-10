@@ -22,7 +22,7 @@ const plans = [
       'Instant Cloud Deployment',
       'Community Discord Support'
     ],
-    cta: 'Deploy Free VPS',
+    cta: 'Get Started with InterENL',
     popular: false
   },
   {
@@ -40,7 +40,7 @@ const plans = [
       'Enterprise DDoS Protection',
       '24/7 Priority Support'
     ],
-    cta: 'Deploy Cloud Pro',
+    cta: 'Contact Support',
     popular: true,
     includesPrevious: 'All Free VPS features, plus'
   },

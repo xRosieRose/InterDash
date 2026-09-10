@@ -1,12 +1,12 @@
 "use client"
 
 import {
-  CreditCard,
   EllipsisVertical,
   LogOut,
-  BellDot,
   CircleUser,
-  ShieldAlert,
+  Server,
+  LifeBuoy,
+  Settings,
 } from "lucide-react"
 import { Link } from "react-router-dom"
 import { useAuth } from "@/contexts/auth-context"
@@ -114,27 +114,23 @@ export function NavUser({
             <DropdownMenuSeparator />
             <DropdownMenuGroup>
               <DropdownMenuItem asChild className="cursor-pointer">
-                <Link to="/settings/account">
-                  <CircleUser className="size-4" />
-                  Account Settings
+                <Link to="/instances">
+                  <Server className="size-4" />
+                  My Instances
                 </Link>
               </DropdownMenuItem>
               <DropdownMenuItem asChild className="cursor-pointer">
-                <Link to="/settings/billing">
-                  <CreditCard className="size-4" />
-                  Plan & Limits
-                </Link>
-              </DropdownMenuItem>
-              <DropdownMenuItem asChild className="cursor-pointer">
-                <Link to="/settings/notifications">
-                  <BellDot className="size-4" />
-                  Notifications
+                <Link to="/tickets">
+                  <LifeBuoy className="size-4" />
+                  Support Tickets
                 </Link>
               </DropdownMenuItem>
               {user.isAdmin && (
-                <DropdownMenuItem className="cursor-default text-xs text-zinc-400">
-                  <ShieldAlert className="size-4 text-white" />
-                  Superuser Console Active
+                <DropdownMenuItem asChild className="cursor-pointer">
+                  <Link to="/admin/settings">
+                    <Settings className="size-4" />
+                    Panel Settings
+                  </Link>
                 </DropdownMenuItem>
               )}
             </DropdownMenuGroup>

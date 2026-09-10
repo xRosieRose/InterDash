@@ -18,7 +18,7 @@ export interface AuthUser {
   global_name: string | null;
   email: string | null;
   avatar_hash: string | null;
-  role: "user" | "staff" | "admin" | "owner";
+  role: "user" | "admin";
   status: "active" | "suspended" | "banned";
 }
 
@@ -221,3 +221,27 @@ export function requireRole(...allowedRoles: AuthUser["role"][]) {
     next();
   };
 }
+
+/**
+ * Server-side page guard for admin pages.
+ * If unauthenticated -> redirect to /auth/sign-in
+ * If authenticated but not admin -> 403 Forbidden
+ */
+export function requireAdminPage(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): void {
+  if (!req.user) {
+    res.redirect(302, "/auth/sign-in");
+    return;
+  }
+
+  if (req.user.role !== "admin") {
+    res.status(403).send("Forbidden: Administrative privileges required.");
+    return;
+  }
+
+  next();
+}
+

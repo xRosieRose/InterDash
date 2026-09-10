@@ -15,7 +15,13 @@ import { Navigate, useLocation } from "react-router-dom"
 import { useAuth } from "@/contexts/auth-context"
 import { Loader2 } from "lucide-react"
 
-export function ProtectedRoute({ children }: { children: React.ReactNode }) {
+export function ProtectedRoute({
+  children,
+  requireAdmin = false,
+}: {
+  children: React.ReactNode
+  requireAdmin?: boolean
+}) {
   const { user, isLoading } = useAuth()
   const location = useLocation()
 
@@ -35,6 +41,10 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   if (!user) {
     // Preserve attempted destination for post-login redirect
     return <Navigate to="/auth/sign-in" state={{ from: location }} replace />
+  }
+
+  if (requireAdmin && user.role !== "admin") {
+    return <Navigate to="/errors/forbidden" replace />
   }
 
   return <>{children}</>

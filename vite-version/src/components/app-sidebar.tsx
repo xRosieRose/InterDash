@@ -4,19 +4,14 @@ import * as React from "react"
 import {
   Server,
   Activity,
-  Mail,
-  CheckSquare,
-  Shield,
-  AlertTriangle,
-  Settings,
-  HelpCircle,
-  LayoutTemplate,
+  LifeBuoy,
+  LayoutDashboard,
   Users,
+  HardDrive,
+  Settings,
 } from "lucide-react"
 import { Link } from "react-router-dom"
 import { Logo } from "@/components/logo"
-import { SidebarNotification } from "@/components/sidebar-notification"
-
 import { NavMain } from "@/components/nav-main"
 import { NavUser } from "@/components/nav-user"
 import { useAuth } from "@/contexts/auth-context"
@@ -30,165 +25,9 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar"
 
-const data = {
-  navGroups: [
-    {
-      label: "Cloud Compute",
-      items: [
-        {
-          title: "VPS Instances",
-          url: "/dashboard",
-          icon: Server,
-        },
-        {
-          title: "Global Telemetry",
-          url: "/dashboard-2",
-          icon: Activity,
-        },
-      ],
-    },
-    {
-      label: "Operations",
-      items: [
-        {
-          title: "Deployment Tasks",
-          url: "/tasks",
-          icon: CheckSquare,
-        },
-        {
-          title: "Support Tickets",
-          url: "/mail",
-          icon: Mail,
-        },
-        {
-          title: "Team & API Keys",
-          url: "/users",
-          icon: Users,
-        },
-      ],
-    },
-    {
-      label: "Pages",
-      items: [
-        {
-          title: "Landing",
-          url: "/landing",
-          target: "_blank",
-          icon: LayoutTemplate,
-        },
-        {
-          title: "Auth Pages",
-          url: "#",
-          icon: Shield,
-          items: [
-            {
-              title: "Sign In 1",
-              url: "/auth/sign-in",
-            },
-            {
-              title: "Sign In 2",
-              url: "/auth/sign-in-2",
-            },
-            {
-              title: "Sign In 3",
-              url: "/auth/sign-in-3",
-            },
-            {
-              title: "Sign Up 1",
-              url: "/auth/sign-up",
-            },
-            {
-              title: "Sign Up 2",
-              url: "/auth/sign-up-2",
-            },
-            {
-              title: "Sign Up 3",
-              url: "/auth/sign-up-3",
-            },
-            {
-              title: "Forgot Password 1",
-              url: "/auth/forgot-password",
-            },
-            {
-              title: "Forgot Password 2",
-              url: "/auth/forgot-password-2",
-            },
-            {
-              title: "Forgot Password 3",
-              url: "/auth/forgot-password-3",
-            }
-          ],
-        },
-        {
-          title: "Errors",
-          url: "#",
-          icon: AlertTriangle,
-          items: [
-            {
-              title: "Unauthorized",
-              url: "/errors/unauthorized",
-            },
-            {
-              title: "Forbidden",
-              url: "/errors/forbidden",
-            },
-            {
-              title: "Not Found",
-              url: "/errors/not-found",
-            },
-            {
-              title: "Internal Server Error",
-              url: "/errors/internal-server-error",
-            },
-            {
-              title: "Under Maintenance",
-              url: "/errors/under-maintenance",
-            },
-          ],
-        },
-        {
-          title: "Settings",
-          url: "#",
-          icon: Settings,
-          items: [
-            {
-              title: "User Settings",
-              url: "/settings/user",
-            },
-            {
-              title: "Account Settings",
-              url: "/settings/account",
-            },
-            {
-              title: "Plans & Billing",
-              url: "/settings/billing",
-            },
-            {
-              title: "Appearance",
-              url: "/settings/appearance",
-            },
-            {
-              title: "Notifications",
-              url: "/settings/notifications",
-            },
-            {
-              title: "Connections",
-              url: "/settings/connections",
-            },
-          ],
-        },
-        {
-          title: "VPS FAQs",
-          url: "/faqs",
-          icon: HelpCircle,
-        },
-      ],
-    },
-  ],
-}
-
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const { user } = useAuth()
+  const isAdmin = user?.role === "admin"
 
   const liveUser = user
     ? {
@@ -206,13 +45,73 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         role: "guest",
       }
 
+  // Build nav groups dynamically based on verified server role
+  const navGroups = [
+    {
+      label: "COMPUTE",
+      items: [
+        {
+          title: "Instances",
+          url: "/instances",
+          icon: Server,
+        },
+        {
+          title: "Analytics",
+          url: "/analytics",
+          icon: Activity,
+        },
+      ],
+    },
+    {
+      label: "OPERATIONS",
+      items: [
+        {
+          title: "Tickets",
+          url: "/tickets",
+          icon: LifeBuoy,
+        },
+      ],
+    },
+  ]
+
+  // Admin group is ONLY rendered when role === 'admin'
+  if (isAdmin) {
+    navGroups.push({
+      label: "ADMIN",
+      items: [
+        {
+          title: "Overview",
+          url: "/admin/overview",
+          icon: LayoutDashboard,
+        },
+        {
+          title: "Users",
+          url: "/admin/users",
+          icon: Users,
+        },
+        {
+          title: "Nodes",
+          url: "/admin/nodes",
+          icon: HardDrive,
+        },
+        {
+          title: "Settings",
+          url: "/admin/settings",
+          icon: Settings,
+        },
+      ],
+    })
+  }
+
+  const headerDestination = isAdmin ? "/admin/overview" : "/instances"
+
   return (
     <Sidebar {...props}>
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton size="lg" asChild>
-              <Link to="/dashboard">
+              <Link to={headerDestination}>
                 <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
                   <Logo size={24} className="text-current" />
                 </div>
@@ -226,12 +125,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
-        {data.navGroups.map((group) => (
+        {navGroups.map((group) => (
           <NavMain key={group.label} label={group.label} items={group.items} />
         ))}
       </SidebarContent>
       <SidebarFooter>
-        <SidebarNotification />
         <NavUser user={liveUser} />
       </SidebarFooter>
     </Sidebar>

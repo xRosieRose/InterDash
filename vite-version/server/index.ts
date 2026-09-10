@@ -21,10 +21,14 @@ import {
   csrfCookieSetter,
   csrfProtection,
 } from "./middleware/security.js";
-import { requireAuth, optionalAuth } from "./middleware/auth.js";
+import { requireAuth, optionalAuth, requireAdminPage } from "./middleware/auth.js";
 import authRoutes from "./routes/auth.js";
 import vpsRoutes from "./routes/vps.js";
-import userRoutes from "./routes/users.js";
+import analyticsRoutes from "./routes/analytics.js";
+import ticketsRoutes from "./routes/tickets.js";
+import provisioningRoutes from "./routes/provisioning.js";
+import adminRoutes from "./routes/admin.js";
+import settingsRoutes from "./routes/settings.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -55,11 +59,13 @@ export async function createApp(): Promise<express.Express> {
   app.use(csrfCookieSetter);
 
   // ==========================================================================
-  // Health Check (Public)
+  // Health Check & Public Settings (Public)
   // ==========================================================================
   app.get("/api/health", (_req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
+
+  app.use("/api/settings", settingsRoutes);
 
   // ==========================================================================
   // Auth API Routes (mixed public/protected)
@@ -72,7 +78,11 @@ export async function createApp(): Promise<express.Express> {
   // Protected API Routes (require CSRF for mutations)
   // ==========================================================================
   app.use("/api/vps", csrfProtection, vpsRoutes);
-  app.use("/api/users", csrfProtection, userRoutes);
+  app.use("/api/analytics", csrfProtection, analyticsRoutes);
+  app.use("/api/tickets", csrfProtection, ticketsRoutes);
+  app.use("/api/provisioning", csrfProtection, provisioningRoutes);
+  app.use("/api/admin", csrfProtection, adminRoutes);
+  app.use("/api/users", csrfProtection, adminRoutes);
 
   // Catch-all for unknown API routes (Express 5 wildcard syntax: /api/{*splat})
   app.all("/api/{*splat}", (_req, res) => {
@@ -86,41 +96,68 @@ export async function createApp(): Promise<express.Express> {
   app.use(express.static(distPath, { index: false }));
 
   // ==========================================================================
-  // Protected Page Routes
-  // These routes MUST validate the session BEFORE serving the SPA.
-  // If unauthenticated → 302 redirect to /auth/sign-in
-  // If authenticated → serve index.html (React Router handles the view)
+  // Role-Aware Page Redirects (server-side)
+  // ==========================================================================
+  app.get(["/dashboard", "/dashboard/{*splat}"], requireAuth, (req, res) => {
+    if (req.user?.role === "admin") {
+      res.redirect(302, "/admin/overview");
+    } else {
+      res.redirect(302, "/instances");
+    }
+  });
+
+  app.get(["/dashboard-2", "/dashboard-2/{*splat}"], requireAuth, (_req, res) => {
+    res.redirect(302, "/analytics");
+  });
+
+  app.get(["/mail", "/mail/{*splat}"], requireAuth, (_req, res) => {
+    res.redirect(302, "/tickets");
+  });
+
+  app.get(["/users", "/users/{*splat}"], requireAuth, (req, res) => {
+    if (req.user?.role === "admin") {
+      res.redirect(302, "/admin/users");
+    } else {
+      res.redirect(302, "/instances");
+    }
+  });
+
+  // Legacy/alias redirects
+  app.get(["/vps", "/vps/{*splat}", "/servers", "/servers/{*splat}"], requireAuth, (_req, res) => {
+    res.redirect(302, "/instances");
+  });
+
+  // ==========================================================================
+  // Admin Page Routes (Require Authenticated Session AND role === 'admin')
+  // ==========================================================================
+  app.get(["/admin", "/admin/{*splat}"], requireAuth, requireAdminPage, (_req, res) => {
+    res.sendFile(path.join(distPath, "index.html"));
+  });
+
+  // ==========================================================================
+  // Protected Product & Legacy Page Routes (Require Authenticated Session)
   // ==========================================================================
   const protectedPaths = [
-    "/dashboard",
-    "/dashboard/{*splat}",
-    "/dashboard-2",
-    "/dashboard-2/{*splat}",
-    "/vps",
-    "/vps/{*splat}",
-    "/servers",
-    "/servers/{*splat}",
+    "/instances",
+    "/instances/{*splat}",
+    "/analytics",
+    "/analytics/{*splat}",
+    "/tickets",
+    "/tickets/{*splat}",
+    "/settings",
+    "/settings/{*splat}",
     "/billing",
     "/billing/{*splat}",
     "/support",
     "/support/{*splat}",
-    "/mail",
-    "/mail/{*splat}",
     "/tasks",
     "/tasks/{*splat}",
     "/chat",
     "/chat/{*splat}",
     "/calendar",
     "/calendar/{*splat}",
-    "/users",
-    "/users/{*splat}",
-    "/settings",
-    "/settings/{*splat}",
-    "/admin",
-    "/admin/{*splat}",
   ];
 
-  // Server-side auth check for protected pages
   for (const routePath of protectedPaths) {
     app.get(routePath, requireAuth, (_req, res) => {
       res.sendFile(path.join(distPath, "index.html"));

@@ -1,45 +1,34 @@
-import { lazy } from 'react'
-import { ProtectedRoute } from '@/components/auth/protected-route'
+import { lazy } from "react"
+import { Navigate } from "react-router-dom"
+import { ProtectedRoute } from "@/components/auth/protected-route"
+import { RoleRedirect } from "@/components/router/role-redirect"
 
-// Lazy load components for better performance
-const Landing = lazy(() => import('@/app/landing/page'))
-const Dashboard = lazy(() => import('@/app/dashboard/page'))
-const Dashboard2 = lazy(() => import('@/app/dashboard-2/page'))
-const Mail = lazy(() => import('@/app/mail/page'))
-const Tasks = lazy(() => import('@/app/tasks/page'))
-const Chat = lazy(() => import('@/app/chat/page'))
-const Calendar = lazy(() => import('@/app/calendar/page'))
-const Users = lazy(() => import('@/app/users/page'))
-const FAQs = lazy(() => import('@/app/faqs/page'))
-const Pricing = lazy(() => import('@/app/pricing/page'))
+// Public & Landing
+const Landing = lazy(() => import("@/app/landing/page"))
+
+// Compute
+const Instances = lazy(() => import("@/app/instances/page"))
+const Analytics = lazy(() => import("@/app/analytics/page"))
+
+// Operations
+const Tickets = lazy(() => import("@/app/tickets/page"))
+
+// Admin
+const AdminOverview = lazy(() => import("@/app/admin/overview/page"))
+const AdminUsers = lazy(() => import("@/app/admin/users/page"))
+const AdminNodes = lazy(() => import("@/app/admin/nodes/page"))
+const AdminSettings = lazy(() => import("@/app/admin/settings/page"))
 
 // Auth pages
-const SignIn = lazy(() => import('@/app/auth/sign-in/page'))
-const SignIn2 = lazy(() => import('@/app/auth/sign-in-2/page'))
-const SignIn3 = lazy(() => import('@/app/auth/sign-in-3/page'))
-const SignUp = lazy(() => import('@/app/auth/sign-up/page'))
-const SignUp2 = lazy(() => import('@/app/auth/sign-up-2/page'))
-const SignUp3 = lazy(() => import('@/app/auth/sign-up-3/page'))
-const ForgotPassword = lazy(() => import('@/app/auth/forgot-password/page'))
-const ForgotPassword2 = lazy(() => import('@/app/auth/forgot-password-2/page'))
-const ForgotPassword3 = lazy(() => import('@/app/auth/forgot-password-3/page'))
-const AuthCallback = lazy(() => import('@/app/auth/callback/page'))
-const Demo = lazy(() => import('@/components/ui/demo'))
+const SignIn = lazy(() => import("@/app/auth/sign-in/page"))
+const AuthCallback = lazy(() => import("@/app/auth/callback/page"))
 
 // Error pages
-const Unauthorized = lazy(() => import('@/app/errors/unauthorized/page'))
-const Forbidden = lazy(() => import('@/app/errors/forbidden/page'))
-const NotFound = lazy(() => import('@/app/errors/not-found/page'))
-const InternalServerError = lazy(() => import('@/app/errors/internal-server-error/page'))
-const UnderMaintenance = lazy(() => import('@/app/errors/under-maintenance/page'))
-
-// Settings pages
-const UserSettings = lazy(() => import('@/app/settings/user/page'))
-const AccountSettings = lazy(() => import('@/app/settings/account/page'))
-const BillingSettings = lazy(() => import('@/app/settings/billing/page'))
-const AppearanceSettings = lazy(() => import('@/app/settings/appearance/page'))
-const NotificationSettings = lazy(() => import('@/app/settings/notifications/page'))
-const ConnectionSettings = lazy(() => import('@/app/settings/connections/page'))
+const Unauthorized = lazy(() => import("@/app/errors/unauthorized/page"))
+const Forbidden = lazy(() => import("@/app/errors/forbidden/page"))
+const NotFound = lazy(() => import("@/app/errors/not-found/page"))
+const InternalServerError = lazy(() => import("@/app/errors/internal-server-error/page"))
+const UnderMaintenance = lazy(() => import("@/app/errors/under-maintenance/page"))
 
 export interface RouteConfig {
   path: string
@@ -48,157 +37,145 @@ export interface RouteConfig {
 }
 
 export const routes: RouteConfig[] = [
-  // Default route - Landing Page
+  // Landing Page
   {
     path: "/",
-    element: <Landing />
+    element: <Landing />,
   },
-
-  // Landing Page alias
   {
     path: "/landing",
-    element: <Landing />
+    element: <Landing />,
   },
 
-  // Dashboard Routes
-  {
-    path: "/dashboard",
-    element: <ProtectedRoute><Dashboard /></ProtectedRoute>
-  },
-  {
-    path: "/dashboard-2",
-    element: <ProtectedRoute><Dashboard2 /></ProtectedRoute>
-  },
-
-  // Application Routes
-  {
-    path: "/mail",
-    element: <ProtectedRoute><Mail /></ProtectedRoute>
-  },
-  {
-    path: "/tasks",
-    element: <ProtectedRoute><Tasks /></ProtectedRoute>
-  },
-  {
-    path: "/chat",
-    element: <ProtectedRoute><Chat /></ProtectedRoute>
-  },
-  {
-    path: "/calendar",
-    element: <ProtectedRoute><Calendar /></ProtectedRoute>
-  },
-
-  // Content Pages
-  {
-    path: "/users",
-    element: <ProtectedRoute><Users /></ProtectedRoute>
-  },
-  {
-    path: "/faqs",
-    element: <FAQs />
-  },
-  {
-    path: "/pricing",
-    element: <Pricing />
-  },
-  {
-    path: "/demo",
-    element: <Demo />
-  },
-
-  // Authentication Routes
+  // Authentication
   {
     path: "/auth/sign-in",
-    element: <SignIn />
-  },
-  {
-    path: "/auth/sign-in-2",
-    element: <SignIn2 />
-  },
-  {
-    path: "/auth/sign-in-3",
-    element: <SignIn3 />
-  },
-  {
-    path: "/auth/sign-up",
-    element: <SignUp />
-  },
-  {
-    path: "/auth/sign-up-2",
-    element: <SignUp2 />
-  },
-  {
-    path: "/auth/sign-up-3",
-    element: <SignUp3 />
-  },
-  {
-    path: "/auth/forgot-password",
-    element: <ForgotPassword />
-  },
-  {
-    path: "/auth/forgot-password-2",
-    element: <ForgotPassword2 />
-  },
-  {
-    path: "/auth/forgot-password-3",
-    element: <ForgotPassword3 />
+    element: <SignIn />,
   },
   {
     path: "/auth/callback",
-    element: <AuthCallback />
+    element: <AuthCallback />,
+  },
+
+  // Compute Routes (Authenticated)
+  {
+    path: "/instances",
+    element: (
+      <ProtectedRoute>
+        <Instances />
+      </ProtectedRoute>
+    ),
+  },
+  {
+    path: "/analytics",
+    element: (
+      <ProtectedRoute>
+        <Analytics />
+      </ProtectedRoute>
+    ),
+  },
+
+  // Operations Routes (Authenticated)
+  {
+    path: "/tickets",
+    element: (
+      <ProtectedRoute>
+        <Tickets />
+      </ProtectedRoute>
+    ),
+  },
+
+  // Admin Routes (Authenticated + Admin Role)
+  {
+    path: "/admin",
+    element: <Navigate to="/admin/overview" replace />,
+  },
+  {
+    path: "/admin/overview",
+    element: (
+      <ProtectedRoute requireAdmin>
+        <AdminOverview />
+      </ProtectedRoute>
+    ),
+  },
+  {
+    path: "/admin/users",
+    element: (
+      <ProtectedRoute requireAdmin>
+        <AdminUsers />
+      </ProtectedRoute>
+    ),
+  },
+  {
+    path: "/admin/nodes",
+    element: (
+      <ProtectedRoute requireAdmin>
+        <AdminNodes />
+      </ProtectedRoute>
+    ),
+  },
+  {
+    path: "/admin/settings",
+    element: (
+      <ProtectedRoute requireAdmin>
+        <AdminSettings />
+      </ProtectedRoute>
+    ),
+  },
+
+  // Role-Aware Entrypoint
+  {
+    path: "/dashboard",
+    element: <RoleRedirect />,
+  },
+
+  // Controlled Legacy Redirects
+  {
+    path: "/dashboard-2",
+    element: <Navigate to="/analytics" replace />,
+  },
+  {
+    path: "/vps",
+    element: <Navigate to="/instances" replace />,
+  },
+  {
+    path: "/servers",
+    element: <Navigate to="/instances" replace />,
+  },
+  {
+    path: "/mail",
+    element: <Navigate to="/tickets" replace />,
+  },
+  {
+    path: "/users",
+    element: <RoleRedirect />,
   },
 
   // Error Pages
   {
     path: "/errors/unauthorized",
-    element: <Unauthorized />
+    element: <Unauthorized />,
   },
   {
     path: "/errors/forbidden",
-    element: <Forbidden />
+    element: <Forbidden />,
   },
   {
     path: "/errors/not-found",
-    element: <NotFound />
+    element: <NotFound />,
   },
   {
     path: "/errors/internal-server-error",
-    element: <InternalServerError />
+    element: <InternalServerError />,
   },
   {
     path: "/errors/under-maintenance",
-    element: <UnderMaintenance />
-  },
-
-  // Settings Routes
-  {
-    path: "/settings/user",
-    element: <ProtectedRoute><UserSettings /></ProtectedRoute>
-  },
-  {
-    path: "/settings/account",
-    element: <ProtectedRoute><AccountSettings /></ProtectedRoute>
-  },
-  {
-    path: "/settings/billing",
-    element: <ProtectedRoute><BillingSettings /></ProtectedRoute>
-  },
-  {
-    path: "/settings/appearance",
-    element: <ProtectedRoute><AppearanceSettings /></ProtectedRoute>
-  },
-  {
-    path: "/settings/notifications",
-    element: <ProtectedRoute><NotificationSettings /></ProtectedRoute>
-  },
-  {
-    path: "/settings/connections",
-    element: <ProtectedRoute><ConnectionSettings /></ProtectedRoute>
+    element: <UnderMaintenance />,
   },
 
   // Catch-all route for 404
   {
     path: "*",
-    element: <NotFound />
-  }
+    element: <NotFound />,
+  },
 ]

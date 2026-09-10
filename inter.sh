@@ -469,14 +469,19 @@ run_installer() {
       print_success "Created .env from template"
     else
       cat << 'EOF' > "$env_file"
-# InterDash Environment Configuration
-VITE_DISCORD_CLIENT_ID=123456789012345678
-DISCORD_CLIENT_SECRET=your_discord_client_secret_here
-VITE_DISCORD_REDIRECT_URI=http://localhost:5173/auth/callback
-VITE_DISCORD_SCOPES=identify email guilds
-DISCORD_ADMIN_USER_ID=your_discord_user_id_here
+# InterDash Production Environment Configuration
+NODE_ENV=production
 PORT=5173
-HOST=0.0.0.0
+APP_URL=http://localhost:5173
+SESSION_SECRET=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))" 2>/dev/null || echo "session_secret_32bytes_random_hex_key")
+DATABASE_PATH=./data/interdash.db
+DISCORD_CLIENT_ID=
+DISCORD_CLIENT_SECRET=
+DISCORD_REDIRECT_URI=http://localhost:5173/api/auth/discord/callback
+DISCORD_SCOPES=identify email
+DISCORD_ADMIN_USER_ID=
+PROXMOX_DEFAULT_STORAGE=local-lvm
+PROXMOX_DEFAULT_BRIDGE=vmbr0
 EOF
       print_success "Created fresh .env file"
     fi
@@ -568,9 +573,14 @@ run_updater() {
   if [ "$LOCAL_HASH" = "$REMOTE_HASH" ]; then
     print_success "InterDash is already on the latest version ($LOCAL_HASH)"
     echo ""
-    read -p "  Force reinstall dependencies and rebuild? (y/N): " -r FORCE_REBUILD
-    if [[ ! $FORCE_REBUILD =~ ^[Yy]$ ]]; then
-      exit 0
+    if [ ! -t 0 ] || [ "${FORCE:-0}" = "1" ] || [ "${1:-}" = "-f" ] || [ "${2:-}" = "-f" ] || [ "${1:-}" = "--force" ] || [ "${2:-}" = "--force" ]; then
+      FORCE_REBUILD="y"
+    else
+      read -p "  Force reinstall dependencies and rebuild? (y/N): " -r FORCE_REBUILD
+      if [[ ! $FORCE_REBUILD =~ ^[Yy]$ ]]; then
+        restart_pm2
+        exit 0
+      fi
     fi
   else
     print_step "New update available: ${GRAY_MID}$LOCAL_HASH${NC} → ${WHITE_BOLD}$REMOTE_HASH${NC}"

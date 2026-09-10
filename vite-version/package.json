@@ -10,7 +10,7 @@
     "start": "tsx server/index.ts",
     "start:prod": "NODE_ENV=production tsx server/index.ts",
     "create-admin": "tsx server/scripts/create-admin.ts",
-    "test": "tsx --test server/__tests__/auth.test.ts",
+    "test": "tsx --test server/__tests__/auth.test.ts server/__tests__/control_plane.test.ts",
     "lint": "eslint .",
     "preview": "vite preview"
   },

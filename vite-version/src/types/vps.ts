@@ -1,46 +1,41 @@
-export type VpsStatus = 'running' | 'stopped' | 'provisioning' | 'restarting'
+/**
+ * InterDash — VPS Data Types
+ *
+ * Models real VPS instances backed by the persistent database
+ * and Proxmox VE hypervisors.
+ */
 
-export interface VpsInstance {
-  id: string
-  name: string
-  hostname: string
-  status: VpsStatus
-  ipv4: string
-  ipv6: string
-  region: DatacenterRegion
-  os: {
-    name: string
-    version: string
-    icon: string
-  }
-  specs: {
-    cpu: string
-    ram: string
-    storage: string
-    bandwidth: string
-  }
-  uptime: string
-  createdDate: string
-  cpuUsage: number
-  ramUsage: number
-  bandwidthUsageGB: number
+export type VpsStatus =
+  | "running"
+  | "stopped"
+  | "provisioning"
+  | "error"
+  | "unknown"
+  | "deleting";
+
+export interface VpsRecord {
+  id: string;
+  owner_user_id: string;
+  proxmox_node_id: string;
+  proxmox_vmid: number;
+  name: string;
+  hostname: string;
+  status: VpsStatus;
+  os_image_id: string;
+  cpu_cores: number;
+  memory_mb: number;
+  swap_mb: number;
+  disk_gb: number;
+  ipv4_address: string | null;
+  ipv6_address: string | null;
+  created_at: string;
+  updated_at: string;
+  node_name?: string;
+  node_region?: string;
+  node_hostname?: string;
+  owner_username?: string;
+  owner_global_name?: string;
 }
 
-export interface DatacenterRegion {
-  code: string
-  name: string
-  country: string
-  flag: string
-  datacenter: string
-  latencyMs: number
-  status: 'online' | 'degraded'
-}
-
-export interface OsImage {
-  id: string
-  name: string
-  version: string
-  category: string
-  icon: string
-  defaultUser: string
-}
+// Legacy compatibility type alias
+export type VpsInstance = VpsRecord;

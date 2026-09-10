@@ -60,6 +60,8 @@ CREATE INDEX IF NOT EXISTS idx_audit_event_type ON audit_logs(event_type);
 CREATE INDEX IF NOT EXISTS idx_audit_user_id ON audit_logs(user_id);
 `;
 
+import { runMigrations } from "./migrations.js";
+
 /**
  * Initialize the database connection and run migrations.
  */
@@ -87,8 +89,9 @@ export async function initDatabase(): Promise<Database> {
   db.run("PRAGMA journal_mode = WAL;");
   db.run("PRAGMA foreign_keys = ON;");
 
-  // Run schema migrations
+  // Run base schema & versioned migrations
   db.run(SCHEMA_SQL);
+  runMigrations(db);
 
   // Save to disk
   saveToDisk();
@@ -150,3 +153,38 @@ export function closeDatabase(): void {
     console.log("[DB] Database closed.");
   }
 }
+
+/**
+ * Execute a SELECT query and return all matched rows as typed objects.
+ */
+export function queryAll<T = Record<string, any>>(sql: string, params: any[] = []): T[] {
+  const database = getDb();
+  const res = database.exec(sql, params);
+  if (!res.length || !res[0].values.length) return [];
+  const cols = res[0].columns;
+  return res[0].values.map((row) => {
+    const obj: any = {};
+    cols.forEach((col, i) => {
+      obj[col] = row[i];
+    });
+    return obj as T;
+  });
+}
+
+/**
+ * Execute a SELECT query and return the first matched row as a typed object, or null.
+ */
+export function queryOne<T = Record<string, any>>(sql: string, params: any[] = []): T | null {
+  const all = queryAll<T>(sql, params);
+  return all.length ? all[0] : null;
+}
+
+/**
+ * Execute a mutating SQL statement and immediately persist changes to disk.
+ */
+export function execute(sql: string, params: any[] = []): void {
+  const database = getDb();
+  database.run(sql, params);
+  saveToDisk();
+}
+
