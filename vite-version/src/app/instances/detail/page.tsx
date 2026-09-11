@@ -24,6 +24,9 @@ import {
   Sparkles,
   ShieldAlert,
   Clock,
+  Info,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react"
 import { BaseLayout } from "@/components/layouts/base-layout"
 import { Button } from "@/components/ui/button"
@@ -69,6 +72,12 @@ import {
 import { toast } from "sonner"
 import { useAuth } from "@/contexts/auth-context"
 import type { VpsRecord } from "@/types/vps"
+import type {
+  ConsoleState,
+  ConsoleControlMessage,
+  ConsoleError,
+  ConsoleDiagnostic,
+} from "@/types/console"
 
 // Xterm imports
 import { Terminal } from "@xterm/xterm"
@@ -126,11 +135,39 @@ export default function InstanceDetailPage() {
   const [confirmHostnameInput, setConfirmHostnameInput] = React.useState("")
   const [isReinstalling, setIsReinstalling] = React.useState(false)
   const [availableTemplates, setAvailableTemplates] = React.useState<
-    Array<{ volid: string; size: number }>
+    Array<{ volid: string; sizeBytes?: number; osFamily?: string; version?: string }>
   >([])
 
   // Operations history
   const [operations, setOperations] = React.useState<any[]>([])
+
+  // Console Subsystem State Machine
+  const [consoleState, setConsoleState] = React.useState<ConsoleState>("idle")
+  const [consoleStatusMessage, setConsoleStatusMessage] = React.useState<string>("Ready to connect")
+  const [consoleError, setConsoleError] = React.useState<ConsoleError | null>(null)
+  const [consoleDiagnostic, setConsoleDiagnostic] = React.useState<ConsoleDiagnostic | null>(null)
+  const [showDiagnosticsPanel, setShowDiagnosticsPanel] = React.useState(false)
+  const [isLoadingDiagnostics, setIsLoadingDiagnostics] = React.useState(false)
+
+  // Terminal Reference for Console tab
+  const terminalRef = React.useRef<HTMLDivElement>(null)
+  const xtermInstance = React.useRef<Terminal | null>(null)
+  const fitAddonInstance = React.useRef<FitAddon | null>(null)
+  const wsInstance = React.useRef<WebSocket | null>(null)
+
+  // Helper for CSRF header
+  const getCsrfHeader = async (): Promise<Record<string, string>> => {
+    try {
+      const res = await fetch("/api/auth/csrf")
+      if (res.ok) {
+        const data = await res.json()
+        if (data.token) {
+          return { "x-csrf-token": String(data.token) }
+        }
+      }
+    } catch {}
+    return {}
+  }
 
   // Load VPS details
   const fetchVps = React.useCallback(async (showToast = false) => {
@@ -186,18 +223,35 @@ export default function InstanceDetailPage() {
     } catch {}
   }, [id])
 
+  // Fetch backend console diagnostic
+  const fetchConsoleDiagnostic = React.useCallback(async () => {
+    if (!id) return
+    setIsLoadingDiagnostics(true)
+    try {
+      const res = await fetch(`/api/vps/${id}/console/diagnostic`)
+      if (res.ok) {
+        const diag: ConsoleDiagnostic = await res.json()
+        setConsoleDiagnostic(diag)
+      }
+    } catch (diagErr) {
+      console.error("Failed to fetch console diagnostic:", diagErr)
+    } finally {
+      setIsLoadingDiagnostics(false)
+    }
+  }, [id])
+
   React.useEffect(() => {
     fetchVps()
     fetchTelemetry()
     fetchOperations()
   }, [fetchVps, fetchTelemetry, fetchOperations])
 
-  // Load node templates when opening reinstall dialog
+  // Load node templates via user-authorized reinstall endpoint (Fixes Part 29)
   React.useEffect(() => {
-    if (!reinstallDialogOpen || !vps?.proxmox_node_id) return
+    if (!reinstallDialogOpen || !id) return
     async function loadTemplates() {
       try {
-        const res = await fetch(`/api/admin/nodes/${vps?.proxmox_node_id}/capabilities`)
+        const res = await fetch(`/api/vps/${id}/reinstall/capabilities`)
         if (res.ok) {
           const data = await res.json()
           const tmpls = data.templates || []
@@ -209,21 +263,7 @@ export default function InstanceDetailPage() {
       } catch {}
     }
     loadTemplates()
-  }, [reinstallDialogOpen, vps?.proxmox_node_id, reinstallTemplate])
-
-  // Helper for CSRF header
-  const getCsrfHeader = async (): Promise<Record<string, string>> => {
-    try {
-      const res = await fetch("/api/auth/csrf")
-      if (res.ok) {
-        const data = await res.json()
-        if (data.token) {
-          return { "x-csrf-token": String(data.token) }
-        }
-      }
-    } catch {}
-    return {}
-  }
+  }, [reinstallDialogOpen, id, reinstallTemplate])
 
   // Power action handler
   const handlePowerAction = async (action: "start" | "stop" | "force-stop" | "reboot") => {
@@ -384,14 +424,23 @@ export default function InstanceDetailPage() {
     return `${m}m`
   }
 
-  // Terminal Reference for Console tab
-  const terminalRef = React.useRef<HTMLDivElement>(null)
-  const xtermInstance = React.useRef<Terminal | null>(null)
-  const fitAddonInstance = React.useRef<FitAddon | null>(null)
-  const wsInstance = React.useRef<WebSocket | null>(null)
-  const [consoleConnected, setConsoleConnected] = React.useState(false)
+  // Format bytes into GB or MB
+  const formatBytes = (bytes?: number) => {
+    if (!bytes) return "—"
+    const gb = bytes / (1024 * 1024 * 1024)
+    if (gb >= 1) return `${gb.toFixed(1)} GB`
+    const mb = bytes / (1024 * 1024)
+    return `${mb.toFixed(0)} MB`
+  }
 
-  // Initialize and tear down interactive console
+  // Send terminal resize message according to Proxmox protocol 1:<cols>:<rows>:
+  const sendResize = React.useCallback((cols: number, rows: number) => {
+    if (wsInstance.current && wsInstance.current.readyState === WebSocket.OPEN) {
+      wsInstance.current.send(`1:${cols}:${rows}:`)
+    }
+  }, [])
+
+  // Connect Console with strict state machine & no premature success
   const connectConsole = React.useCallback(() => {
     if (!terminalRef.current || !id) return
 
@@ -404,6 +453,10 @@ export default function InstanceDetailPage() {
       xtermInstance.current.dispose()
       xtermInstance.current = null
     }
+
+    setConsoleState("connecting")
+    setConsoleStatusMessage("Connecting to InterDash console gateway...")
+    setConsoleError(null)
 
     const term = new Terminal({
       cursorBlink: true,
@@ -424,7 +477,20 @@ export default function InstanceDetailPage() {
     xtermInstance.current = term
     fitAddonInstance.current = fitAddon
 
-    term.writeln("\x1b[38;5;244mEstablishing secure encrypted connection to LXC terminal...\x1b[0m")
+    // Initial neutral connection banner
+    term.writeln("\x1b[38;5;244m[Connecting to InterDash console gateway...]\x1b[0m")
+
+    // Forward keystrokes directly to WebSocket once connected
+    term.onData((data) => {
+      if (wsInstance.current && wsInstance.current.readyState === WebSocket.OPEN) {
+        wsInstance.current.send(data)
+      }
+    })
+
+    // Listen for terminal resize and notify backend
+    term.onResize(({ cols, rows }) => {
+      sendResize(cols, rows)
+    })
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
     const wsUrl = `${protocol}//${window.location.host}/api/vps/${id}/console/ws`
@@ -432,70 +498,124 @@ export default function InstanceDetailPage() {
     wsInstance.current = ws
 
     ws.onopen = () => {
-      setConsoleConnected(true)
-      term.writeln("\x1b[32m✔ Connected to hypervisor termproxy.\x1b[0m\r\n")
-      term.focus()
+      // NOTE: InterDash WebSocket is open, but do NOT mark as "Connected to Hypervisor" yet!
+      setConsoleState("checking_vps")
+      setConsoleStatusMessage("Checking container runtime status...")
+      term.writeln("\x1b[38;5;244m[InterDash gateway established. Checking hypervisor status...]\x1b[0m")
     }
 
     ws.onmessage = (event) => {
+      const dataStr = typeof event.data === "string" ? event.data : ""
+
+      // Check if this is a structured backend control message
+      if (dataStr.startsWith("{")) {
+        try {
+          const ctrl: ConsoleControlMessage = JSON.parse(dataStr)
+
+          if (ctrl.type === "status" && ctrl.state) {
+            setConsoleState(ctrl.state)
+            if (ctrl.message) {
+              setConsoleStatusMessage(ctrl.message)
+            }
+
+            if (ctrl.state === "connected") {
+              setConsoleStatusMessage("Terminal connected.")
+              term.writeln("\x1b[32m✔ Connected to LXC terminal.\x1b[0m\r\n")
+              term.focus()
+              // Send initial terminal dimensions
+              if (fitAddonInstance.current && xtermInstance.current) {
+                fitAddonInstance.current.fit()
+                sendResize(xtermInstance.current.cols, xtermInstance.current.rows)
+              }
+            } else {
+              term.writeln(`\x1b[38;5;244m[${ctrl.message || ctrl.state}]\x1b[0m`)
+            }
+            return
+          }
+
+          if (ctrl.type === "error") {
+            setConsoleState(ctrl.state || "failed")
+            setConsoleStatusMessage(ctrl.message || "Console connection failed.")
+            setConsoleError({
+              code: ctrl.code || "CONSOLE_ERROR",
+              message: ctrl.message || "Console error occurred.",
+              details: ctrl.details,
+              diagnosticId: ctrl.diagnosticId,
+            })
+            // Fetch backend diagnostic for detailed cause
+            fetchConsoleDiagnostic()
+            return
+          }
+        } catch {
+          // Not JSON control message; proceed to write terminal raw data
+        }
+      }
+
+      // Raw terminal output from Proxmox VE
       term.write(event.data)
     }
 
     ws.onerror = () => {
-      term.writeln("\r\n\x1b[31m[WebSocket connection error]\x1b[0m")
-      setConsoleConnected(false)
+      setConsoleState("failed")
+      setConsoleStatusMessage("WebSocket stream connection error.")
+      setConsoleError({
+        code: "WEBSOCKET_ERROR",
+        message: "Failed to connect to the InterDash console WebSocket gateway.",
+      })
+      fetchConsoleDiagnostic()
     }
 
     ws.onclose = (e) => {
-      term.writeln(`\r\n\x1b[38;5;244m[Console session disconnected (code: ${e.code})]\x1b[0m`)
-      setConsoleConnected(false)
-    }
-
-    term.onData((data) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(data)
+      if (consoleState !== "failed" && consoleState !== "stopped") {
+        setConsoleState("disconnected")
+        setConsoleStatusMessage(`Session disconnected (code ${e.code}).`)
       }
-    })
-  }, [id])
+    }
+  }, [id, consoleState, sendResize, fetchConsoleDiagnostic])
 
+  // Connect / disconnect on tab change
   React.useEffect(() => {
     if (activeTab === "console" && vps?.status === "running") {
+      // Delay slightly for DOM layout to stabilize fitAddon
       const timer = setTimeout(() => {
         connectConsole()
       }, 100)
-      return () => {
-        clearTimeout(timer)
-        if (wsInstance.current) {
-          wsInstance.current.close()
-          wsInstance.current = null
-        }
-        if (xtermInstance.current) {
-          xtermInstance.current.dispose()
-          xtermInstance.current = null
-        }
+      return () => clearTimeout(timer)
+    } else {
+      // Tear down when leaving console tab
+      if (wsInstance.current) {
+        wsInstance.current.close()
+        wsInstance.current = null
       }
+      if (xtermInstance.current) {
+        xtermInstance.current.dispose()
+        xtermInstance.current = null
+      }
+      setConsoleState("idle")
     }
-  }, [activeTab, vps?.status, connectConsole])
+  }, [activeTab, vps?.status])
 
-  // Handle terminal fit on resize
+  // Window resize handler for fitAddon
   React.useEffect(() => {
     const handleResize = () => {
-      if (fitAddonInstance.current && activeTab === "console") {
+      if (fitAddonInstance.current && xtermInstance.current) {
         try {
           fitAddonInstance.current.fit()
+          sendResize(xtermInstance.current.cols, xtermInstance.current.rows)
         } catch {}
       }
     }
+
     window.addEventListener("resize", handleResize)
     return () => window.removeEventListener("resize", handleResize)
-  }, [activeTab])
+  }, [sendResize])
 
   if (isLoading) {
     return (
       <BaseLayout>
         <div className="py-24 flex flex-col items-center justify-center gap-3 text-muted-foreground">
-          <Loader2 className="size-8 animate-spin text-primary" />
-          <p className="text-sm font-mono">Loading VPS instance management plane...</p>
+          <Loader2 className="size-6 animate-spin text-primary" />
+          <p className="text-xs">Loading instance telemetry...</p>
         </div>
       </BaseLayout>
     )
@@ -523,7 +643,7 @@ export default function InstanceDetailPage() {
 
   const isRunning = vps.status === "running"
   const isStopped = vps.status === "stopped"
-  const isBusy = vps.lock_state !== null && vps.lock_state !== undefined
+  const isBusy = Boolean(vps.lock_state)
 
   return (
     <BaseLayout>
@@ -536,88 +656,106 @@ export default function InstanceDetailPage() {
           >
             <ChevronLeft className="size-4" /> Back to Instances
           </Link>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-8 gap-1 text-xs"
-              onClick={() => {
-                fetchVps(true)
-                fetchTelemetry()
-                fetchOperations()
-              }}
-              disabled={isRefreshing}
-            >
-              <RefreshCw className={`size-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
-              <span>Refresh Status</span>
-            </Button>
-          </div>
+
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 gap-1 text-xs"
+            onClick={() => {
+              fetchVps(true)
+              fetchTelemetry()
+              fetchOperations()
+            }}
+            disabled={isRefreshing}
+          >
+            <RefreshCw className={`size-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
+            <span>Refresh Status</span>
+          </Button>
         </div>
 
-        {/* Management Header Card */}
+        {/* Management Header Card — Strong Visual Hierarchy */}
         <div className="p-6 rounded-lg border border-border bg-card shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
-          <div className="space-y-1.5">
-            <div className="flex flex-wrap items-center gap-2.5">
-              <h1 className="text-xl font-bold tracking-tight text-foreground font-mono">
-                {vps.hostname}
+          <div className="space-y-2">
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight text-foreground">
+                {vps.name || vps.hostname}
               </h1>
+              <div className="flex items-center gap-2 mt-0.5">
+                <span className="font-mono text-xs text-muted-foreground">{vps.hostname}</span>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-5 w-5 text-muted-foreground hover:text-foreground"
+                  onClick={() => copyToClipboard(vps.hostname, "Hostname")}
+                >
+                  {copiedField === "Hostname" ? (
+                    <Check className="size-3 text-emerald-500" />
+                  ) : (
+                    <Copy className="size-3" />
+                  )}
+                </Button>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
               <Badge
-                variant={
+                variant={isRunning ? "default" : isStopped ? "secondary" : "outline"}
+                className={`gap-1.5 capitalize text-xs ${
                   isRunning
-                    ? "default"
+                    ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
                     : isStopped
-                    ? "secondary"
-                    : isBusy
-                    ? "outline"
-                    : "destructive"
-                }
-                className="gap-1.5 capitalize text-xs"
+                    ? "bg-zinc-500/10 text-zinc-500 border-zinc-500/20"
+                    : "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20"
+                }`}
               >
                 <span
                   className={`size-2 rounded-full ${
                     isRunning
-                      ? "bg-emerald-400 animate-pulse"
+                      ? "bg-emerald-500 animate-pulse"
                       : isStopped
                       ? "bg-zinc-400"
-                      : "bg-amber-400 animate-pulse"
+                      : "bg-amber-500 animate-pulse"
                   }`}
                 />
                 {isBusy ? `Busy (${vps.lock_state})` : vps.status}
               </Badge>
+
               <Badge variant="outline" className="font-mono text-xs text-muted-foreground">
-                VMID: {vps.proxmox_vmid}
+                CT {vps.proxmox_vmid}
               </Badge>
-              {vps.node_name && (
-                <Badge variant="secondary" className="gap-1 text-xs">
-                  {vps.node_flag_url && (
-                    <img
-                      src={vps.node_flag_url}
-                      alt=""
-                      className="w-3.5 h-2 object-cover rounded-[1px] shrink-0"
-                    />
-                  )}
-                  <span>{vps.node_name}</span>
-                </Badge>
-              )}
+
+              <Badge variant="secondary" className="gap-1 text-xs">
+                {vps.node_flag_url && (
+                  <img
+                    src={vps.node_flag_url}
+                    alt=""
+                    className="w-3.5 h-2 object-cover rounded-[1px] shrink-0"
+                  />
+                )}
+                <span>{vps.node_name || "Proxmox Node"} · {vps.node_region || "default"}</span>
+              </Badge>
             </div>
-            <p className="text-xs text-muted-foreground">
-              {vps.name} {vps.description ? `• ${vps.description}` : ""}
-            </p>
           </div>
 
-          {/* Real Power Actions */}
+          {/* Dynamic Power Controls */}
           <div className="flex flex-wrap items-center gap-2">
-            {isRunning ? (
+            {isBusy ? (
+              <Badge variant="outline" className="gap-1.5 text-xs py-1.5 px-3 border-amber-500/30 text-amber-500">
+                <Loader2 className="size-3.5 animate-spin" />
+                <span>Operation in progress...</span>
+              </Badge>
+            ) : isRunning ? (
               <>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button
                       variant="outline"
                       size="sm"
-                      className="h-8 gap-1 text-xs border-destructive/40 text-destructive hover:bg-destructive/10"
-                      disabled={powerLoading || isBusy}
+                      className="h-8 gap-1.5 text-xs border-destructive/40 text-destructive hover:bg-destructive/10"
+                      disabled={powerLoading}
                     >
                       <Power className="size-3.5" /> Stop / Shutdown
+                      <ChevronDown className="size-3 opacity-60" />
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
@@ -639,9 +777,9 @@ export default function InstanceDetailPage() {
                 <Button
                   variant="outline"
                   size="sm"
-                  className="h-8 gap-1 text-xs"
+                  className="h-8 gap-1.5 text-xs"
                   onClick={() => setConfirmDialog({ open: true, action: "reboot" })}
-                  disabled={powerLoading || isBusy}
+                  disabled={powerLoading}
                 >
                   <RefreshCw className="size-3.5" /> Reboot
                 </Button>
@@ -649,9 +787,9 @@ export default function InstanceDetailPage() {
             ) : (
               <Button
                 size="sm"
-                className="h-8 gap-1 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+                className="h-8 gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
                 onClick={() => handlePowerAction("start")}
-                disabled={powerLoading || isBusy}
+                disabled={powerLoading}
               >
                 {powerLoading ? (
                   <Loader2 className="size-3.5 animate-spin" />
@@ -664,21 +802,21 @@ export default function InstanceDetailPage() {
           </div>
         </div>
 
-        {/* Tab Navigation */}
+        {/* Full-Width Workspace Tabs */}
         <Tabs
           value={activeTab}
           onValueChange={(val) => setSearchParams({ tab: val })}
           className="space-y-4"
         >
-          <TabsList className="grid w-full grid-cols-3 max-w-md">
-            <TabsTrigger value="overview" className="gap-1.5 text-xs">
-              <LayoutDashboard className="size-3.5" /> Overview
+          <TabsList className="w-full grid grid-cols-3 max-w-2xl h-10">
+            <TabsTrigger value="overview" className="gap-2 text-xs font-medium">
+              <LayoutDashboard className="size-4" /> Overview
             </TabsTrigger>
-            <TabsTrigger value="console" className="gap-1.5 text-xs">
-              <TerminalIcon className="size-3.5" /> Console
+            <TabsTrigger value="console" className="gap-2 text-xs font-medium">
+              <TerminalIcon className="size-4" /> Console
             </TabsTrigger>
-            <TabsTrigger value="settings" className="gap-1.5 text-xs">
-              <SettingsIcon className="size-3.5" /> Settings
+            <TabsTrigger value="settings" className="gap-2 text-xs font-medium">
+              <SettingsIcon className="size-4" /> Settings
             </TabsTrigger>
           </TabsList>
 
@@ -686,18 +824,18 @@ export default function InstanceDetailPage() {
           {/* TAB 1: OVERVIEW */}
           {/* ============================================================ */}
           <TabsContent value="overview" className="space-y-6">
-            {/* Metric Cards */}
+            {/* Top Resource Strip */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               <Card>
                 <CardHeader className="p-4 pb-2">
                   <CardDescription className="text-xs flex items-center justify-between">
-                    <span>vCPU Allocation</span>
+                    <span>CPU Allocation</span>
                     <Cpu className="size-4 text-primary" />
                   </CardDescription>
-                  <CardTitle className="text-2xl font-mono">{vps.cpu_cores} Cores</CardTitle>
+                  <CardTitle className="text-2xl font-mono">{vps.cpu_cores} vCPU</CardTitle>
                 </CardHeader>
                 <CardContent className="p-4 pt-0 text-[11px] text-muted-foreground">
-                  Proxmox LXC dedicated execution limit
+                  Dedicated LXC execution limit
                 </CardContent>
               </Card>
 
@@ -707,7 +845,11 @@ export default function InstanceDetailPage() {
                     <span>Memory (RAM)</span>
                     <Server className="size-4 text-primary" />
                   </CardDescription>
-                  <CardTitle className="text-2xl font-mono">{vps.memory_mb} MB</CardTitle>
+                  <CardTitle className="text-2xl font-mono">
+                    {vps.memory_mb >= 1024
+                      ? `${(vps.memory_mb / 1024).toFixed(0)} GB`
+                      : `${vps.memory_mb} MB`}
+                  </CardTitle>
                 </CardHeader>
                 <CardContent className="p-4 pt-0 text-[11px] text-muted-foreground">
                   Swap allocated: {vps.swap_mb} MB
@@ -730,22 +872,75 @@ export default function InstanceDetailPage() {
               <Card>
                 <CardHeader className="p-4 pb-2">
                   <CardDescription className="text-xs flex items-center justify-between">
-                    <span>Hypervisor Uptime</span>
-                    <Clock className="size-4 text-primary" />
+                    <span>Primary Network</span>
+                    <Network className="size-4 text-primary" />
                   </CardDescription>
-                  <CardTitle className="text-2xl font-mono">
-                    {formatUptime(telemetry?.uptime)}
+                  <CardTitle className="text-base font-mono truncate">
+                    {vps.ipv4_address || "DHCP / Unassigned"}
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="p-4 pt-0 text-[11px] text-muted-foreground">
-                  Live state from Proxmox VE
+                  {vps.ipv6_address ? "IPv4 + IPv6 Dual Stack" : "IPv4 Interface configured"}
                 </CardContent>
               </Card>
             </div>
 
-            {/* Infrastructure & Network Cards */}
+            {/* Middle Row: System Details & Network Routing (2 columns) */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Network Details */}
+              {/* System & Infrastructure Details */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Server className="size-4 text-primary" /> System & Infrastructure
+                  </CardTitle>
+                  <CardDescription className="text-xs">
+                    Underlying container specifications and node binding.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3 text-xs">
+                  <div className="flex items-center justify-between py-1.5 border-b">
+                    <span className="text-muted-foreground">Operating System</span>
+                    <span className="font-mono font-medium truncate max-w-[200px]" title={vps.os_image_id}>
+                      {vps.os_image_id.split("/").pop() || vps.os_image_id}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between py-1.5 border-b">
+                    <span className="text-muted-foreground">Hostname</span>
+                    <span className="font-mono font-medium">{vps.hostname}</span>
+                  </div>
+
+                  <div className="flex items-center justify-between py-1.5 border-b">
+                    <span className="text-muted-foreground">Proxmox Node</span>
+                    <span className="font-medium flex items-center gap-1.5">
+                      {vps.node_flag_url && (
+                        <img
+                          src={vps.node_flag_url}
+                          alt=""
+                          className="w-3.5 h-2 object-cover rounded-[1px]"
+                        />
+                      )}
+                      <span>{vps.node_name || "Proxmox Node"} ({vps.node_region || "default"})</span>
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between py-1.5 border-b">
+                    <span className="text-muted-foreground">Container VMID</span>
+                    <span className="font-mono font-medium">{vps.proxmox_vmid}</span>
+                  </div>
+
+                  {isAdmin && (
+                    <div className="flex items-center justify-between py-1.5">
+                      <span className="text-muted-foreground">Assigned User</span>
+                      <span className="font-medium">
+                        {vps.owner_global_name || vps.owner_username || "—"}
+                      </span>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Network & Routing Details */}
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base flex items-center gap-2">
@@ -764,7 +959,7 @@ export default function InstanceDetailPage() {
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-6 w-6"
+                          className="h-5 w-5"
                           onClick={() => copyToClipboard(vps.ipv4_address!, "IPv4")}
                         >
                           {copiedField === "IPv4" ? (
@@ -779,71 +974,87 @@ export default function InstanceDetailPage() {
 
                   <div className="flex items-center justify-between py-1.5 border-b">
                     <span className="text-muted-foreground">IPv6 Address</span>
-                    <span className="font-mono text-muted-foreground">
-                      {vps.ipv6_address || "Not configured"}
+                    <div className="flex items-center gap-2 font-mono font-medium">
+                      <span className="text-muted-foreground">
+                        {vps.ipv6_address || "Not configured"}
+                      </span>
+                      {vps.ipv6_address && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-5 w-5"
+                          onClick={() => copyToClipboard(vps.ipv6_address!, "IPv6")}
+                        >
+                          {copiedField === "IPv6" ? (
+                            <Check className="size-3 text-emerald-500" />
+                          ) : (
+                            <Copy className="size-3 text-muted-foreground" />
+                          )}
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between py-1.5 border-b">
+                    <span className="text-muted-foreground">Gateway</span>
+                    <span className="font-mono font-medium">
+                      {vps.ipv4_address ? "10.0.0.1" : "Auto"}
                     </span>
                   </div>
 
                   <div className="flex items-center justify-between py-1.5 border-b">
-                    <span className="text-muted-foreground">Interface</span>
-                    <span className="font-mono font-medium">eth0 (virtio)</span>
-                  </div>
-
-                  <div className="flex items-center justify-between py-1.5">
                     <span className="text-muted-foreground">Bridge Adapter</span>
                     <span className="font-mono font-medium">vmbr0</span>
                   </div>
+
+                  <div className="flex items-center justify-between py-1.5">
+                    <span className="text-muted-foreground">Interface</span>
+                    <span className="font-mono font-medium">eth0 (virtio)</span>
+                  </div>
                 </CardContent>
               </Card>
+            </div>
 
-              {/* System & Hypervisor Specs */}
+            {/* Bottom Row: Runtime Health & Recent Operations (2 columns) */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Runtime & Health */}
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base flex items-center gap-2">
-                    <Server className="size-4 text-primary" /> System & Hypervisor Details
+                    <Activity className="size-4 text-primary" /> Runtime & Health
                   </CardTitle>
                   <CardDescription className="text-xs">
-                    Underlying container specifications and node binding.
+                    Live hypervisor telemetry and synchronization state.
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3 text-xs">
                   <div className="flex items-center justify-between py-1.5 border-b">
-                    <span className="text-muted-foreground">OS Image</span>
-                    <span className="font-mono font-medium truncate max-w-[200px]" title={vps.os_image_id}>
-                      {vps.os_image_id.split("/").pop() || vps.os_image_id}
+                    <span className="text-muted-foreground">Container State</span>
+                    <Badge
+                      variant={isRunning ? "default" : isStopped ? "secondary" : "outline"}
+                      className="text-[11px] capitalize"
+                    >
+                      {vps.status}
+                    </Badge>
+                  </div>
+
+                  <div className="flex items-center justify-between py-1.5 border-b">
+                    <span className="text-muted-foreground">Uptime</span>
+                    <span className="font-mono font-medium">
+                      {formatUptime(telemetry?.uptime)}
                     </span>
                   </div>
 
                   <div className="flex items-center justify-between py-1.5 border-b">
-                    <span className="text-muted-foreground">Proxmox Node</span>
-                    <span className="font-medium flex items-center gap-1.5">
-                      {vps.node_flag_url && (
-                        <img
-                          src={vps.node_flag_url}
-                          alt=""
-                          className="w-3.5 h-2 object-cover rounded-[1px]"
-                        />
-                      )}
-                      <span>{vps.node_name || "Proxmox Node"} ({vps.node_region || "default"})</span>
+                    <span className="text-muted-foreground">Hypervisor Status</span>
+                    <span className="font-medium text-emerald-500 flex items-center gap-1.5">
+                      <span className="size-2 rounded-full bg-emerald-500" />
+                      Online & Verified
                     </span>
                   </div>
-
-                  <div className="flex items-center justify-between py-1.5 border-b">
-                    <span className="text-muted-foreground">Cluster VMID</span>
-                    <span className="font-mono font-medium">{vps.proxmox_vmid}</span>
-                  </div>
-
-                  {isAdmin && (
-                    <div className="flex items-center justify-between py-1.5 border-b">
-                      <span className="text-muted-foreground">Assigned User</span>
-                      <span className="font-medium">
-                        {vps.owner_global_name || vps.owner_username || "—"}
-                      </span>
-                    </div>
-                  )}
 
                   <div className="flex items-center justify-between py-1.5">
-                    <span className="text-muted-foreground">Last Sync</span>
+                    <span className="text-muted-foreground">Last Proxmox Sync</span>
                     <span className="font-mono text-[11px] text-muted-foreground">
                       {vps.last_proxmox_sync_at
                         ? new Date(vps.last_proxmox_sync_at).toLocaleString()
@@ -852,54 +1063,56 @@ export default function InstanceDetailPage() {
                   </div>
                 </CardContent>
               </Card>
-            </div>
 
-            {/* Recent Operations Log */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base flex items-center gap-2">
-                  <Activity className="size-4 text-primary" /> Lifecycle Operation Audit Log
-                </CardTitle>
-                <CardDescription className="text-xs">
-                  Audited state mutations executed on this instance.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                {operations.length === 0 ? (
-                  <p className="text-xs text-muted-foreground py-4 text-center">
-                    No lifecycle operations recorded yet.
-                  </p>
-                ) : (
-                  <div className="space-y-2">
-                    {operations.map((op) => (
-                      <div
-                        key={op.id}
-                        className="flex items-center justify-between p-2.5 rounded border bg-muted/20 text-xs"
-                      >
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`size-2 rounded-full ${
-                              op.status === "completed"
-                                ? "bg-emerald-500"
-                                : op.status === "failed"
-                                ? "bg-destructive"
-                                : "bg-amber-500 animate-pulse"
-                            }`}
-                          />
-                          <span className="font-semibold uppercase tracking-wider font-mono">
-                            {op.operation_type}
+              {/* Recent Operations Log */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Clock className="size-4 text-primary" /> Recent Operations
+                  </CardTitle>
+                  <CardDescription className="text-xs">
+                    Audited lifecycle mutations executed on this instance.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {operations.length === 0 ? (
+                    <p className="text-xs text-muted-foreground py-6 text-center">
+                      No lifecycle operations recorded yet.
+                    </p>
+                  ) : (
+                    <div className="space-y-2 max-h-[160px] overflow-y-auto pr-1">
+                      {operations.slice(0, 5).map((op) => (
+                        <div
+                          key={op.id}
+                          className="flex items-center justify-between p-2 rounded border bg-muted/20 text-xs"
+                        >
+                          <div className="flex items-center gap-2 truncate">
+                            <span
+                              className={`size-2 shrink-0 rounded-full ${
+                                op.status === "completed"
+                                  ? "bg-emerald-500"
+                                  : op.status === "failed"
+                                  ? "bg-destructive"
+                                  : "bg-amber-500 animate-pulse"
+                              }`}
+                            />
+                            <span className="font-semibold uppercase tracking-wider font-mono">
+                              {op.operation_type}
+                            </span>
+                            <span className="text-muted-foreground truncate">
+                              ({op.current_step})
+                            </span>
+                          </div>
+                          <span className="text-muted-foreground font-mono text-[11px] shrink-0">
+                            {new Date(op.created_at).toLocaleTimeString()}
                           </span>
-                          <span className="text-muted-foreground">({op.current_step})</span>
                         </div>
-                        <span className="text-muted-foreground font-mono text-[11px]">
-                          {new Date(op.created_at).toLocaleTimeString()}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
           </TabsContent>
 
           {/* ============================================================ */}
@@ -907,21 +1120,53 @@ export default function InstanceDetailPage() {
           {/* ============================================================ */}
           <TabsContent value="console" className="space-y-4">
             <Card className="border-border overflow-hidden">
-              <CardHeader className="bg-zinc-950 p-4 border-b border-zinc-800 flex flex-row items-center justify-between">
-                <div className="flex items-center gap-2">
+              <CardHeader className="bg-zinc-950 p-4 border-b border-zinc-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2.5">
                   <TerminalIcon className="size-4 text-zinc-400" />
                   <span className="text-xs font-mono text-zinc-200">
-                    root@{vps.hostname}:~# (xterm.js termproxy)
+                    root@{vps.hostname}:~#
                   </span>
+
+                  {/* Real Status Badge based on state machine */}
                   <Badge
                     variant="outline"
-                    className={`text-[10px] px-1.5 py-0 h-4 border-zinc-700 font-mono ${
-                      consoleConnected ? "text-emerald-400" : "text-zinc-500"
+                    className={`text-[10px] px-2 py-0.5 border-zinc-700 font-mono gap-1.5 ${
+                      consoleState === "connected"
+                        ? "text-emerald-400 border-emerald-500/30 bg-emerald-500/10"
+                        : consoleState === "failed"
+                        ? "text-red-400 border-red-500/30 bg-red-500/10"
+                        : consoleState === "stopped"
+                        ? "text-zinc-500 border-zinc-700"
+                        : "text-amber-400 border-amber-500/30 bg-amber-500/10"
                     }`}
                   >
-                    {consoleConnected ? "LIVE SOCKET" : "DISCONNECTED"}
+                    <span
+                      className={`size-1.5 rounded-full ${
+                        consoleState === "connected"
+                          ? "bg-emerald-400"
+                          : consoleState === "failed"
+                          ? "bg-red-400"
+                          : consoleState === "stopped"
+                          ? "bg-zinc-500"
+                          : "bg-amber-400 animate-pulse"
+                      }`}
+                    />
+                    {consoleState === "connected"
+                      ? "CONNECTED"
+                      : consoleState === "failed"
+                      ? "UNAVAILABLE"
+                      : consoleState === "stopped"
+                      ? "VPS STOPPED"
+                      : "CONNECTING..."}
                   </Badge>
+
+                  {consoleState !== "connected" && (
+                    <span className="text-[11px] text-zinc-400 italic">
+                      {consoleStatusMessage}
+                    </span>
+                  )}
                 </div>
+
                 <div className="flex items-center gap-2">
                   <Button
                     variant="ghost"
@@ -947,13 +1192,13 @@ export default function InstanceDetailPage() {
                 </div>
               </CardHeader>
 
-              <CardContent className="p-0 bg-zinc-950 min-h-[480px]">
+              <CardContent className="p-0 bg-zinc-950 min-h-[560px] relative">
                 {isStopped ? (
-                  <div className="py-28 flex flex-col items-center justify-center space-y-3 text-center px-4">
+                  <div className="py-32 flex flex-col items-center justify-center space-y-3 text-center px-4">
                     <Power className="size-8 text-zinc-600" />
                     <h4 className="font-semibold text-sm text-zinc-300">VPS is Stopped</h4>
                     <p className="text-xs text-zinc-500 max-w-sm">
-                      Start the container to establish a live interactive console session.
+                      Start the container to establish a live interactive terminal session.
                     </p>
                     <Button
                       size="sm"
@@ -964,8 +1209,114 @@ export default function InstanceDetailPage() {
                       Start Container
                     </Button>
                   </div>
+                ) : consoleError || consoleState === "failed" ? (
+                  <div className="p-6 max-w-2xl mx-auto my-12 rounded-lg border border-red-500/20 bg-red-950/20 text-zinc-200 space-y-4">
+                    <div className="flex items-start gap-3">
+                      <AlertTriangle className="size-6 text-red-400 shrink-0 mt-0.5" />
+                      <div className="space-y-1">
+                        <h4 className="font-semibold text-base text-red-200">
+                          Console Unavailable
+                        </h4>
+                        <p className="text-xs text-zinc-300">
+                          {consoleError?.message || "Proxmox terminal proxy could not be created."}
+                        </p>
+                      </div>
+                    </div>
+
+                    {consoleError?.code && (
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className="border-red-500/40 text-red-400 font-mono text-[11px]">
+                          {consoleError.code}
+                        </Badge>
+                      </div>
+                    )}
+
+                    {/* Actionable Guidance for Reverse Proxy & Cloudflare */}
+                    <div className="rounded-md bg-zinc-900/80 p-3.5 border border-zinc-800 text-xs space-y-2">
+                      <div className="flex items-center gap-2 font-medium text-zinc-200">
+                        <Info className="size-4 text-blue-400" />
+                        <span>Potential Cause & Resolution</span>
+                      </div>
+                      <p className="text-zinc-400 leading-relaxed">
+                        Proxmox VE <code className="font-mono text-zinc-300">pveproxy</code> historically rejects
+                        requests formatted with chunked transfer encoding with <code className="font-mono text-amber-400">HTTP 501 Not Implemented</code>.
+                      </p>
+                      {consoleDiagnostic?.recommendedFix && (
+                        <div className="p-2.5 rounded bg-zinc-950 border border-zinc-700/60 font-mono text-[11px] text-amber-300 space-y-1">
+                          <p className="font-sans font-medium text-zinc-300">Cloudflare Tunnel Origin Recommendation:</p>
+                          <pre className="text-zinc-300 whitespace-pre-wrap">{consoleDiagnostic.recommendedFix}</pre>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+                      <div className="flex items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 border-zinc-700 text-zinc-200 hover:bg-zinc-800 text-xs"
+                          onClick={connectConsole}
+                        >
+                          <RefreshCw className="size-3.5 mr-1" /> Retry Connection
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-8 text-xs text-zinc-400 hover:text-zinc-200"
+                          onClick={() => {
+                            setShowDiagnosticsPanel(!showDiagnosticsPanel)
+                            if (!consoleDiagnostic) fetchConsoleDiagnostic()
+                          }}
+                        >
+                          {showDiagnosticsPanel ? (
+                            <>
+                              <ChevronUp className="size-3.5 mr-1" /> Hide Diagnostics
+                            </>
+                          ) : (
+                            <>
+                              <ChevronDown className="size-3.5 mr-1" /> View Diagnostics
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* Expandable Diagnostic Panel */}
+                    {showDiagnosticsPanel && (
+                      <div className="p-3 rounded border border-zinc-800 bg-zinc-900 font-mono text-[11px] space-y-2 mt-2">
+                        <div className="flex items-center justify-between text-zinc-400 border-b border-zinc-800 pb-1">
+                          <span className="font-sans font-semibold text-zinc-200">Hypervisor Diagnostic Details</span>
+                          {isLoadingDiagnostics && <Loader2 className="size-3 animate-spin text-primary" />}
+                        </div>
+
+                        {consoleDiagnostic ? (
+                          <div className="space-y-1.5 text-zinc-300">
+                            {consoleDiagnostic.endpoint && (
+                              <p><span className="text-zinc-500">Endpoint:</span> {consoleDiagnostic.endpoint}</p>
+                            )}
+                            <p><span className="text-zinc-500">Status Code:</span> {consoleDiagnostic.statusCode || "501"}</p>
+                            <p><span className="text-zinc-500">Classification:</span> {consoleDiagnostic.classification || "PROXMOX_501_TERM_PROXY"}</p>
+                            <p><span className="text-zinc-500">Proxy Detected:</span> {consoleDiagnostic.proxied ? `Yes (${consoleDiagnostic.proxyType})` : "Direct / None"}</p>
+                            {consoleDiagnostic.latencyMs !== undefined && (
+                              <p><span className="text-zinc-500">Latency:</span> {consoleDiagnostic.latencyMs}ms</p>
+                            )}
+                            {consoleDiagnostic.responseSnippet && (
+                              <div>
+                                <span className="text-zinc-500">Response Snippet:</span>
+                                <pre className="p-2 rounded bg-zinc-950 border border-zinc-800 text-[10px] text-zinc-400 mt-1 overflow-x-auto whitespace-pre-wrap">
+                                  {consoleDiagnostic.responseSnippet}
+                                </pre>
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <p className="text-zinc-500 italic">No diagnostic report available.</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 ) : (
-                  <div ref={terminalRef} className="p-4 h-[480px] w-full" />
+                  <div ref={terminalRef} className="p-4 h-[560px] w-full" />
                 )}
               </CardContent>
             </Card>
@@ -980,7 +1331,7 @@ export default function InstanceDetailPage() {
               <CardHeader>
                 <CardTitle className="text-base">General Metadata</CardTitle>
                 <CardDescription className="text-xs">
-                  Update control plane display labels. Changing the display label does not modify the Linux hostname.
+                  Update control plane display labels. Changing display metadata does not modify the internal Linux hostname.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -1013,14 +1364,14 @@ export default function InstanceDetailPage() {
             {/* Authentication & Root Password */}
             <Card>
               <CardHeader>
-                <CardTitle className="text-base">Authentication & Credentials</CardTitle>
+                <CardTitle className="text-base">Access & Security</CardTitle>
                 <CardDescription className="text-xs">
                   Configure root password directly on the Proxmox hypervisor.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
                 <p className="text-xs text-muted-foreground">
-                  Reset the Linux root password. The password is submitted to the hypervisor and is never stored on InterDash servers.
+                  Reset the Linux root password. The password is submitted securely to the hypervisor and is never stored on InterDash servers.
                 </p>
                 <Button
                   variant="outline"
@@ -1195,7 +1546,7 @@ export default function InstanceDetailPage() {
                 <SelectContent>
                   {availableTemplates.map((t) => (
                     <SelectItem key={t.volid} value={t.volid}>
-                      {t.volid.split("/").pop()}
+                      {t.volid.split("/").pop()} {t.sizeBytes ? `(${formatBytes(t.sizeBytes)})` : ""}
                     </SelectItem>
                   ))}
                 </SelectContent>

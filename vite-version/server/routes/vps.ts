@@ -10,6 +10,8 @@ import { Router, type Request, type Response } from "express";
 import { requireAuth } from "../middleware/auth.js";
 import { queryAll, queryOne } from "../db/index.js";
 import { VpsOperationsService } from "../services/vps-operations.js";
+import { ProxmoxService } from "../services/proxmox.js";
+import { ProvisioningService } from "../services/provisioning.js";
 
 const router = Router();
 
@@ -269,6 +271,82 @@ router.get("/:id/operations", (req: Request, res: Response) => {
     verifyVpsOwnership(id, req.user);
     const operations = VpsOperationsService.getOperations(id);
     res.json({ operations });
+  } catch (err: any) {
+    res.status(err.statusCode || 500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// GET /api/vps/:id/reinstall/capabilities — User-Authorized Template Discovery
+// ============================================================================
+router.get("/:id/reinstall/capabilities", async (req: Request, res: Response) => {
+  if (!req.user) {
+    res.status(401).json({ error: "Authentication required." });
+    return;
+  }
+
+  const { id } = req.params;
+
+  try {
+    const vps = verifyVpsOwnership(id, req.user);
+    const node = ProvisioningService.getNodeConfig(vps.proxmox_node_id);
+    if (!node) {
+      res.status(502).json({ error: `Associated hypervisor node '${vps.proxmox_node_id}' is unavailable.` });
+      return;
+    }
+
+    const verification = await ProxmoxService.verifyNode(node, false);
+    // Return only safe template metadata for reinstall
+    const safeTemplates = (verification.templates || []).map((t) => ({
+      volid: t.volid,
+      filename: t.filename,
+      osFamily: t.osFamily,
+      version: t.version,
+      architecture: t.architecture,
+      sizeBytes: t.sizeBytes,
+    }));
+
+    res.json({ templates: safeTemplates });
+  } catch (err: any) {
+    res.status(err.statusCode || 500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// GET /api/vps/:id/console/diagnostic — Direct Server-Side Termproxy Diagnostic
+// ============================================================================
+router.get("/:id/console/diagnostic", async (req: Request, res: Response) => {
+  if (!req.user) {
+    res.status(401).json({ error: "Authentication required." });
+    return;
+  }
+
+  const { id } = req.params;
+
+  try {
+    const vps = verifyVpsOwnership(id, req.user);
+    const node = ProvisioningService.getNodeConfig(vps.proxmox_node_id);
+    if (!node) {
+      res.status(502).json({ error: `Associated hypervisor node '${vps.proxmox_node_id}' is unavailable.` });
+      return;
+    }
+
+    const diag = await ProxmoxService.testTermProxy(node, vps.proxmox_vmid);
+
+    // Full diagnostic details for administrators; safe high-level status for users
+    if (req.user.role === "admin") {
+      res.json(diag);
+    } else {
+      res.json({
+        ok: diag.ok,
+        lxcStatus: diag.lxcStatus,
+        classification: diag.classification,
+        recommendedFix: diag.recommendedFix,
+        message: diag.ok
+          ? "Console service is operational."
+          : `Console unavailable: ${diag.recommendedFix || "Please contact your administrator."}`,
+      });
+    }
   } catch (err: any) {
     res.status(err.statusCode || 500).json({ error: err.message });
   }

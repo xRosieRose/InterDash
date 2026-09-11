@@ -9,8 +9,10 @@
  *       ↓ WebSocket (authenticated session cookie)
  *   InterDash Backend (/api/vps/:id/console/ws)
  *       ↓ Server-side ownership / admin check
+ *       ↓ LXC runtime state check (running / stopped / locked)
  *       ↓ Proxmox API: POST /nodes/{node}/lxc/{vmid}/termproxy
  *       ↓ Upstream WebSocket (wss://.../vncwebsocket?port=...&vncticket=...)
+ *       ↓ Protocol handshake: user:ticket\n
  *   Real Proxmox LXC Container Shell
  *
  * Security:
@@ -26,10 +28,38 @@ import { URL } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import { queryOne, execute } from "../db/index.js";
 import { hashToken } from "../middleware/auth.js";
-import { ProxmoxService, resolveProxmoxEndpoint } from "./proxmox.js";
+import {
+  ProxmoxService,
+  resolveProxmoxEndpoint,
+  ProxmoxRequestError,
+  type ProxmoxErrorClassification,
+} from "./proxmox.js";
 import { ProvisioningService } from "./provisioning.js";
 
 const IDLE_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
+
+export type ConsoleState =
+  | "idle"
+  | "connecting"
+  | "checking_vps"
+  | "requesting_termproxy"
+  | "termproxy_ready"
+  | "connecting_upstream"
+  | "handshaking"
+  | "connected"
+  | "failed"
+  | "disconnected"
+  | "stopped"
+  | "busy";
+
+export interface ConsoleControlMessage {
+  type: "status" | "error" | "data";
+  state?: ConsoleState;
+  message?: string;
+  code?: string;
+  diagnosticId?: string;
+  details?: Record<string, unknown>;
+}
 
 export function setupConsoleWebSocket(server: Server): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true });
@@ -107,11 +137,23 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
       wss.handleUpgrade(req, socket, head, async (clientWs) => {
         let idleTimer: NodeJS.Timeout | null = null;
         let upstreamWs: WebSocket | null = null;
+        let isConnected = false;
+
+        const sendControl = (msg: ConsoleControlMessage) => {
+          if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(JSON.stringify(msg));
+          }
+        };
 
         const resetIdleTimer = () => {
           if (idleTimer) clearTimeout(idleTimer);
           idleTimer = setTimeout(() => {
             console.log(`[CONSOLE] Session for VPS ${vpsId} closed due to 15m idle timeout.`);
+            sendControl({
+              type: "status",
+              state: "disconnected",
+              message: "Session closed due to inactivity.",
+            });
             clientWs.close(1000, "Session closed due to inactivity.");
             upstreamWs?.close();
           }, IDLE_TIMEOUT_MS);
@@ -127,10 +169,54 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
         );
 
         try {
-          // 5. Request termproxy ticket from Proxmox
+          // STEP 1: Verify container state
+          sendControl({
+            type: "status",
+            state: "checking_vps",
+            message: "Checking container runtime status...",
+          });
+
+          let lxcStatus = "unknown";
+          try {
+            const statusRes = await ProxmoxService.getLxcStatus(node, vps.proxmox_vmid);
+            lxcStatus = statusRes.status;
+          } catch (statusErr: unknown) {
+            console.warn(`[CONSOLE] Could not query container status for VPS ${vpsId}:`, statusErr);
+          }
+
+          if (lxcStatus === "stopped") {
+            sendControl({
+              type: "error",
+              state: "stopped",
+              code: "CONSOLE_LXC_STOPPED",
+              message: "VPS is stopped. Start it to open the console.",
+            });
+            clientWs.close(1000, "VPS stopped");
+            return;
+          }
+
+          // STEP 2: Request termproxy ticket from Proxmox
+          sendControl({
+            type: "status",
+            state: "requesting_termproxy",
+            message: "Requesting Proxmox terminal proxy ticket...",
+          });
+
           const termproxy = await ProxmoxService.createLxcTermProxy(node, vps.proxmox_vmid);
 
-          // 6. Connect upstream WebSocket to Proxmox VE
+          sendControl({
+            type: "status",
+            state: "termproxy_ready",
+            message: "Termproxy ticket acquired.",
+          });
+
+          // STEP 3: Connect upstream WebSocket to Proxmox VE
+          sendControl({
+            type: "status",
+            state: "connecting_upstream",
+            message: "Connecting terminal stream to hypervisor...",
+          });
+
           const endpoint = resolveProxmoxEndpoint(node.apiUrl, node.hostname, node.port);
           const wsProtocol = endpoint.isHttps ? "wss" : "ws";
           const wsPort =
@@ -152,36 +238,85 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
           });
 
           upstreamWs.on("open", () => {
-            // Initial Proxmox termproxy handshake
+            sendControl({
+              type: "status",
+              state: "handshaking",
+              message: "Performing console handshake with hypervisor...",
+            });
+
+            // Initial Proxmox termproxy handshake: user:ticket\n
             upstreamWs?.send(`${termproxy.user}:${termproxy.ticket}\n`);
           });
 
           upstreamWs.on("message", (data) => {
             resetIdleTimer();
+
+            // First incoming data confirms handshake success and shell readiness
+            if (!isConnected) {
+              isConnected = true;
+              sendControl({
+                type: "status",
+                state: "connected",
+                message: "Terminal connected.",
+              });
+            }
+
             if (clientWs.readyState === WebSocket.OPEN) {
               clientWs.send(data);
             }
           });
 
           upstreamWs.on("error", (err) => {
-            console.error(`[CONSOLE] Upstream Proxmox WS error for VPS ${vpsId}:`, err.message);
+            console.error(
+              `[CONSOLE] Upstream Proxmox WS error for VPS ${vpsId} [endpoint=${endpoint.displayTarget}]:`,
+              err.message
+            );
+            sendControl({
+              type: "error",
+              state: "failed",
+              code: "WEBSOCKET_CONNECTION_FAILURE",
+              message: `Hypervisor console stream error: ${err.message}`,
+            });
             if (clientWs.readyState === WebSocket.OPEN) {
-              clientWs.send(`\r\n\x1b[31m[Console Error: Connection to hypervisor failed (${err.message})]\x1b[0m\r\n`);
-              clientWs.close(1011, "Upstream error");
+              clientWs.close(1011, "Upstream connection error");
             }
           });
 
           upstreamWs.on("close", (code, reason) => {
             if (clientWs.readyState === WebSocket.OPEN) {
+              sendControl({
+                type: "status",
+                state: "disconnected",
+                message: `Terminal session disconnected (code ${code}).`,
+              });
               clientWs.close(code, reason.toString());
             }
           });
 
           clientWs.on("message", (data) => {
             resetIdleTimer();
-            if (upstreamWs && upstreamWs.readyState === WebSocket.OPEN) {
-              upstreamWs.send(data);
+            if (!upstreamWs || upstreamWs.readyState !== WebSocket.OPEN) return;
+
+            const str = data.toString();
+
+            // Handle client resize messages (either Proxmox format 1:cols:rows: or JSON { type: "resize", cols, rows })
+            if (str.startsWith("1:") && str.endsWith(":")) {
+              upstreamWs.send(str);
+              return;
             }
+
+            if (str.startsWith("{")) {
+              try {
+                const parsed = JSON.parse(str);
+                if (parsed.type === "resize" && typeof parsed.cols === "number" && typeof parsed.rows === "number") {
+                  upstreamWs.send(`1:${parsed.cols}:${parsed.rows}:`);
+                  return;
+                }
+              } catch {}
+            }
+
+            // Normal keyboard / terminal data
+            upstreamWs.send(data);
           });
 
           const cleanup = () => {
@@ -204,10 +339,35 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
           clientWs.on("close", cleanup);
           clientWs.on("error", cleanup);
         } catch (err: unknown) {
+          const endpoint = resolveProxmoxEndpoint(node.apiUrl, node.hostname, node.port);
+          let code: ProxmoxErrorClassification = "UNKNOWN_CONSOLE_FAILURE";
+          let details: Record<string, unknown> | undefined;
+
+          if (err instanceof ProxmoxRequestError) {
+            code = err.classification;
+            details = {
+              statusCode: err.statusCode,
+              proxyDetected: err.proxyDetected,
+              proxyType: err.proxyType,
+              safeBodySnippet: err.safeBodySnippet,
+              endpoint: endpoint.displayTarget,
+            };
+          }
+
           const msg = err instanceof Error ? err.message : String(err);
-          console.error(`[CONSOLE] Failed to initiate termproxy for VPS ${vpsId}:`, msg);
+          console.error(
+            `[CONSOLE] vps=${vpsId} node=${node.nodeName} vmid=${vps.proxmox_vmid} endpoint=${endpoint.displayTarget} classification=${code}: ${msg}`
+          );
+
+          sendControl({
+            type: "error",
+            state: "failed",
+            code,
+            message: msg,
+            details,
+          });
+
           if (clientWs.readyState === WebSocket.OPEN) {
-            clientWs.send(`\r\n\x1b[31m[Console Error: ${msg}]\x1b[0m\r\n`);
             clientWs.close(1011, msg);
           }
         }

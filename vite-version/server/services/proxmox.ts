@@ -163,27 +163,118 @@ export interface ProxmoxCreateLxcParams {
   startAfterCreate?: boolean;
 }
 
+export type ProxmoxErrorClassification =
+  | "PROXMOX_501_TERM_PROXY"
+  | "PROXY_501"
+  | "CLOUDFLARE_501"
+  | "REVERSE_PROXY_501"
+  | "AUTHENTICATION_FAILURE"
+  | "AUTHORIZATION_FAILURE"
+  | "TLS_FAILURE"
+  | "TIMEOUT"
+  | "CONNECTION_REFUSED"
+  | "NODE_NOT_FOUND"
+  | "LXC_NOT_FOUND"
+  | "LXC_STOPPED"
+  | "LXC_LOCKED"
+  | "TERM_PROXY_INVALID_RESPONSE"
+  | "WEBSOCKET_CONNECTION_FAILURE"
+  | "WEBSOCKET_HANDSHAKE_FAILURE"
+  | "UNSUPPORTED_CONSOLE_PROTOCOL"
+  | "UNKNOWN_CONSOLE_FAILURE";
+
+export interface ConsoleDiagnosticResult {
+  ok: boolean;
+  endpoint: string;
+  proxied: boolean;
+  proxyType: "cloudflare" | "reverse_proxy" | "direct";
+  statusCode?: number;
+  statusMessage?: string;
+  contentType?: string;
+  responseSnippet?: string;
+  lxcStatus?: string;
+  proxmoxVersion?: string;
+  latencyMs: number;
+  classification: ProxmoxErrorClassification;
+  recommendedFix?: string;
+  port?: number;
+  user?: string;
+}
+
 export class ProxmoxRequestError extends Error {
   public statusCode?: number;
+  public statusMessage?: string;
+  public contentType?: string;
+  public safeBodySnippet?: string;
+  public safeHeaders?: Record<string, string>;
+  public endpoint?: string;
+  public method?: string;
+  public latency?: number;
   public isTlsError: boolean;
   public isTimeout: boolean;
   public isConnRefused: boolean;
+  public proxyDetected: boolean;
+  public proxyType: "cloudflare" | "reverse_proxy" | "direct";
+  public classification: ProxmoxErrorClassification;
 
   constructor(
     message: string,
     options?: {
       statusCode?: number;
+      statusMessage?: string;
+      contentType?: string;
+      safeBodySnippet?: string;
+      safeHeaders?: Record<string, string>;
+      endpoint?: string;
+      method?: string;
+      latency?: number;
       isTlsError?: boolean;
       isTimeout?: boolean;
       isConnRefused?: boolean;
+      proxyDetected?: boolean;
+      proxyType?: "cloudflare" | "reverse_proxy" | "direct";
+      classification?: ProxmoxErrorClassification;
     }
   ) {
     super(message);
     this.name = "ProxmoxRequestError";
     this.statusCode = options?.statusCode;
+    this.statusMessage = options?.statusMessage;
+    this.contentType = options?.contentType;
+    this.safeBodySnippet = options?.safeBodySnippet;
+    this.safeHeaders = options?.safeHeaders;
+    this.endpoint = options?.endpoint;
+    this.method = options?.method;
+    this.latency = options?.latency;
     this.isTlsError = Boolean(options?.isTlsError);
     this.isTimeout = Boolean(options?.isTimeout);
     this.isConnRefused = Boolean(options?.isConnRefused);
+    this.proxyDetected = Boolean(options?.proxyDetected);
+    this.proxyType = options?.proxyType || "direct";
+
+    if (options?.classification) {
+      this.classification = options.classification;
+    } else if (options?.isTlsError) {
+      this.classification = "TLS_FAILURE";
+    } else if (options?.isTimeout) {
+      this.classification = "TIMEOUT";
+    } else if (options?.isConnRefused) {
+      this.classification = "CONNECTION_REFUSED";
+    } else if (options?.statusCode === 401) {
+      this.classification = "AUTHENTICATION_FAILURE";
+    } else if (options?.statusCode === 403) {
+      this.classification = "AUTHORIZATION_FAILURE";
+    } else if (options?.statusCode === 404) {
+      this.classification = "LXC_NOT_FOUND";
+    } else if (options?.statusCode === 501) {
+      this.classification = options.proxyType === "cloudflare"
+        ? "CLOUDFLARE_501"
+        : options.proxyType === "reverse_proxy"
+        ? "REVERSE_PROXY_501"
+        : "PROXMOX_501_TERM_PROXY";
+    } else {
+      this.classification = "UNKNOWN_CONSOLE_FAILURE";
+    }
   }
 }
 
@@ -355,16 +446,22 @@ export class ProxmoxService {
       }
 
       const client = endpoint.isHttps ? https : http;
-      const postData = body ? JSON.stringify(body) : "";
+      const isMutation = method === "POST" || method === "PUT" || method === "DELETE";
+      const hasBody = body !== undefined && body !== null;
+      const postData = hasBody ? JSON.stringify(body) : "";
 
       const headers: Record<string, string> = {
         Authorization: `PVEAPIToken=${node.authTokenId}=${node.authTokenSecret}`,
         Accept: "application/json",
       };
 
-      if (body) {
+      if (hasBody) {
         headers["Content-Type"] = "application/json";
-        headers["Content-Length"] = Buffer.byteLength(postData).toString();
+        headers["Content-Length"] = Buffer.byteLength(postData, "utf8").toString();
+      } else if (isMutation) {
+        // Explicitly set Content-Length: 0 for body-less mutations (such as POST /termproxy).
+        // Proxmox pveproxy (AnyEvent::HTTPD) rejects chunked transfer encoding with HTTP 501.
+        headers["Content-Length"] = "0";
       }
 
       const agent = endpoint.isHttps
@@ -374,6 +471,7 @@ export class ProxmoxService {
         : undefined;
 
       const fullPath = `${endpoint.pathname}${path.startsWith("/") ? path : `/${path}`}`;
+      const reqStartTime = Date.now();
 
       const req = client.request(
         {
@@ -393,41 +491,146 @@ export class ProxmoxService {
             rawData += chunk;
           });
           res.on("end", () => {
-            try {
-              const json = rawData ? JSON.parse(rawData) : {};
-              const statusCode = res.statusCode || 500;
+            const latency = Date.now() - reqStartTime;
+            const statusCode = res.statusCode || 500;
+            const statusMessage = res.statusMessage || "";
+            const contentType = (res.headers["content-type"] || "").toString();
 
-              if (statusCode >= 200 && statusCode < 300) {
-                resolve({ status: statusCode, data: (json.data !== undefined ? json.data : json) as T });
+            // Collect safe response headers only
+            const safeHeaders: Record<string, string> = {};
+            for (const [k, v] of Object.entries(res.headers)) {
+              const lower = k.toLowerCase();
+              if (
+                ["server", "cf-ray", "via", "date", "content-type", "content-length"].includes(lower) &&
+                typeof v === "string"
+              ) {
+                safeHeaders[lower] = v;
+              }
+            }
+
+            // Proxy detection heuristics
+            const serverHdr = (res.headers["server"] || "").toString().toLowerCase();
+            const cfRay = res.headers["cf-ray"];
+            const viaHdr = res.headers["via"];
+            let proxyDetected = false;
+            let proxyType: "cloudflare" | "reverse_proxy" | "direct" = "direct";
+
+            if (serverHdr.includes("cloudflare") || Boolean(cfRay)) {
+              proxyDetected = true;
+              proxyType = "cloudflare";
+            } else if (
+              Boolean(viaHdr) ||
+              serverHdr.includes("nginx") ||
+              serverHdr.includes("caddy") ||
+              serverHdr.includes("apache") ||
+              serverHdr.includes("envoy")
+            ) {
+              proxyDetected = true;
+              proxyType = "reverse_proxy";
+            }
+
+            const safeBodySnippet = rawData
+              ? rawData.slice(0, 300).replace(/[\r\n\t]+/g, " ").trim()
+              : "";
+
+            // Determine error classification
+            let classification: ProxmoxErrorClassification = "UNKNOWN_CONSOLE_FAILURE";
+            if (statusCode >= 200 && statusCode < 300) {
+              // OK
+            } else if (statusCode === 501) {
+              if (path.includes("termproxy")) {
+                if (proxyType === "cloudflare") {
+                  classification = "CLOUDFLARE_501";
+                } else if (proxyType === "reverse_proxy") {
+                  classification = "REVERSE_PROXY_501";
+                } else {
+                  classification = "PROXMOX_501_TERM_PROXY";
+                }
               } else {
-                let errMsg =
-                  json.errors ||
-                  json.message ||
-                  (typeof json.data === "string" ? json.data : null) ||
-                  `HTTP ${statusCode}: ${res.statusMessage}`;
+                classification = proxyType === "cloudflare" ? "CLOUDFLARE_501" : "PROXY_501";
+              }
+            } else if (statusCode === 401) {
+              classification = "AUTHENTICATION_FAILURE";
+            } else if (statusCode === 403) {
+              classification = "AUTHORIZATION_FAILURE";
+            } else if (statusCode === 404) {
+              classification = path.includes("/lxc/") ? "LXC_NOT_FOUND" : "NODE_NOT_FOUND";
+            }
 
-                if (typeof errMsg === "object") {
-                  errMsg = JSON.stringify(errMsg);
-                }
-
-                if (statusCode === 401) {
-                  errMsg = "Authentication failed. Invalid Proxmox API Token ID or Secret.";
-                } else if (statusCode === 403) {
-                  errMsg = "Permission denied. Proxmox API Token lacks privileges for this action.";
-                }
-
+            if (statusCode >= 200 && statusCode < 300) {
+              try {
+                const json = rawData ? JSON.parse(rawData) : {};
+                resolve({ status: statusCode, data: (json.data !== undefined ? json.data : json) as T });
+              } catch {
                 reject(
-                  new ProxmoxRequestError(`Proxmox API Error [${method} ${path}]: ${errMsg}`, {
-                    statusCode,
-                  })
+                  new ProxmoxRequestError(
+                    `Proxmox API Error [${method} ${path}]: Malformed JSON in HTTP ${statusCode} response`,
+                    {
+                      statusCode,
+                      statusMessage,
+                      contentType,
+                      safeBodySnippet,
+                      safeHeaders,
+                      endpoint: endpoint.displayTarget,
+                      method,
+                      latency,
+                      proxyDetected,
+                      proxyType,
+                      classification: "TERM_PROXY_INVALID_RESPONSE",
+                    }
+                  )
                 );
               }
-            } catch {
+            } else {
+              let errMsg = `HTTP ${statusCode}: ${statusMessage || "Error"}`;
+              try {
+                const json = rawData ? JSON.parse(rawData) : null;
+                if (json) {
+                  errMsg =
+                    json.errors ||
+                    json.message ||
+                    (typeof json.data === "string" ? json.data : null) ||
+                    errMsg;
+                  if (typeof errMsg === "object") {
+                    errMsg = JSON.stringify(errMsg);
+                  }
+                }
+              } catch {
+                if (safeBodySnippet) {
+                  errMsg = `${errMsg} (${safeBodySnippet})`;
+                }
+              }
+
+              if (statusCode === 401) {
+                errMsg = "Authentication failed. Invalid Proxmox API Token ID or Secret.";
+              } else if (statusCode === 403) {
+                errMsg = "Permission denied. Proxmox API Token lacks privileges for this action.";
+              } else if (statusCode === 501 && path.includes("termproxy")) {
+                if (proxyType === "cloudflare") {
+                  errMsg =
+                    "Proxmox termproxy returned HTTP 501 through Cloudflare Tunnel. Verify WebSocket support and disableChunkedEncoding: true in cloudflared originRequest configuration.";
+                } else if (proxyType === "reverse_proxy") {
+                  errMsg =
+                    "Proxmox termproxy returned HTTP 501 through reverse proxy. Ensure reverse proxy does not force chunked transfer encoding.";
+                } else {
+                  errMsg = "Proxmox termproxy returned HTTP 501 Not Implemented.";
+                }
+              }
+
               reject(
-                new ProxmoxRequestError(
-                  `Proxmox API Error [${method} ${path}]: Invalid JSON response (HTTP ${res.statusCode})`,
-                  { statusCode: res.statusCode }
-                )
+                new ProxmoxRequestError(`Proxmox API Error [${method} ${path}]: ${errMsg}`, {
+                  statusCode,
+                  statusMessage,
+                  contentType,
+                  safeBodySnippet,
+                  safeHeaders,
+                  endpoint: endpoint.displayTarget,
+                  method,
+                  latency,
+                  proxyDetected,
+                  proxyType,
+                  classification,
+                })
               );
             }
           });
@@ -435,6 +638,7 @@ export class ProxmoxService {
       );
 
       req.on("error", (err: NodeJS.ErrnoException) => {
+        const latency = Date.now() - reqStartTime;
         const isTls =
           err.message.includes("certificate") ||
           err.message.includes("self-signed") ||
@@ -443,6 +647,7 @@ export class ProxmoxService {
           err.code === "CERT_HAS_EXPIRED";
 
         const isConnRefused = err.code === "ECONNREFUSED";
+        const isTimeout = err.code === "ETIMEDOUT";
 
         let userMsg = `Proxmox Connection Failed [${endpoint.displayTarget}]: ${err.message}`;
         if (isTls) {
@@ -453,8 +658,20 @@ export class ProxmoxService {
 
         reject(
           new ProxmoxRequestError(userMsg, {
+            statusCode: undefined,
+            endpoint: endpoint.displayTarget,
+            method,
+            latency,
             isTlsError: isTls,
+            isTimeout,
             isConnRefused,
+            classification: isTls
+              ? "TLS_FAILURE"
+              : isTimeout
+              ? "TIMEOUT"
+              : isConnRefused
+              ? "CONNECTION_REFUSED"
+              : "UNKNOWN_CONSOLE_FAILURE",
           })
         );
       });
@@ -464,7 +681,12 @@ export class ProxmoxService {
         reject(
           new ProxmoxRequestError(
             `Proxmox Connection Timeout [${endpoint.displayTarget}] after ${Math.max(1, Math.round(timeoutMs / 1000))}s`,
-            { isTimeout: true }
+            {
+              endpoint: endpoint.displayTarget,
+              method,
+              isTimeout: true,
+              classification: "TIMEOUT",
+            }
           )
         );
       });
@@ -1549,6 +1771,20 @@ export class ProxmoxService {
   }
 
   /**
+   * Request API Version from Proxmox VE
+   */
+  public static async getApiVersion(
+    node: ProxmoxNodeConfig
+  ): Promise<{ release: string; repo_id: string; version: string }> {
+    const res = await this.request<{
+      release: string;
+      repo_id: string;
+      version: string;
+    }>(node, "GET", "/api2/json/version");
+    return res.data;
+  }
+
+  /**
    * Request a termproxy ticket for real interactive console sessions
    */
   public static async createLxcTermProxy(
@@ -1556,23 +1792,166 @@ export class ProxmoxService {
     vmid: number
   ): Promise<{ port: number; ticket: string; upid: string; user: string }> {
     const res = await this.request<{
-      port: number | string;
-      ticket: string;
-      upid: string;
-      user: string;
+      port?: number | string;
+      ticket?: string;
+      upid?: string;
+      user?: string;
     }>(
       node,
       "POST",
       `/api2/json/nodes/${encodeURIComponent(node.nodeName)}/lxc/${vmid}/termproxy`
     );
 
-    const portNum = typeof res.data.port === "string" ? parseInt(res.data.port, 10) : res.data.port;
+    if (!res.data) {
+      throw new ProxmoxRequestError(
+        "Proxmox termproxy returned an empty response body.",
+        {
+          classification: "TERM_PROXY_INVALID_RESPONSE",
+          statusCode: 200,
+        }
+      );
+    }
+
+    const rawPort = res.data.port;
+    const portNum = typeof rawPort === "string" ? parseInt(rawPort, 10) : Number(rawPort);
+    const ticket = res.data.ticket;
+
+    if (!portNum || isNaN(portNum) || portNum <= 0 || !ticket || typeof ticket !== "string" || ticket.trim().length === 0) {
+      throw new ProxmoxRequestError(
+        "Proxmox termproxy returned invalid response: missing or invalid port/ticket.",
+        {
+          classification: "TERM_PROXY_INVALID_RESPONSE",
+          statusCode: 200,
+          safeBodySnippet: JSON.stringify(res.data),
+        }
+      );
+    }
+
     return {
       port: portNum,
-      ticket: res.data.ticket,
-      upid: res.data.upid,
+      ticket: ticket.trim(),
+      upid: res.data.upid || "",
       user: res.data.user || "root@pam",
     };
+  }
+
+  /**
+   * Direct server-side diagnostic method for Proxmox LXC termproxy
+   */
+  public static async testTermProxy(
+    node: ProxmoxNodeConfig,
+    vmid: number
+  ): Promise<ConsoleDiagnosticResult> {
+    const startTime = Date.now();
+    const endpoint = resolveProxmoxEndpoint(node.apiUrl, node.hostname, node.port);
+
+    // 1. Verify container exists and check status
+    let lxcStatus: string = "unknown";
+    try {
+      const statusRes = await this.getLxcStatus(node, vmid);
+      lxcStatus = statusRes.status;
+      if (lxcStatus === "stopped") {
+        return {
+          ok: false,
+          endpoint: endpoint.displayTarget,
+          proxied: false,
+          proxyType: "direct",
+          statusCode: 200,
+          lxcStatus,
+          latencyMs: Date.now() - startTime,
+          classification: "LXC_STOPPED",
+          recommendedFix: "VPS is stopped. Start it to open the console.",
+        };
+      }
+    } catch (err: unknown) {
+      if (err instanceof ProxmoxRequestError) {
+        if (err.classification === "LXC_NOT_FOUND" || err.statusCode === 404) {
+          return {
+            ok: false,
+            endpoint: endpoint.displayTarget,
+            proxied: err.proxyDetected,
+            proxyType: err.proxyType,
+            statusCode: 404,
+            lxcStatus: "not_found",
+            latencyMs: Date.now() - startTime,
+            classification: "LXC_NOT_FOUND",
+            recommendedFix: "The Proxmox container was not found on this hypervisor node.",
+          };
+        }
+      }
+    }
+
+    // 2. Query PVE version
+    let pveVersion: string | undefined;
+    try {
+      const ver = await this.getApiVersion(node);
+      pveVersion = ver.release || ver.version;
+    } catch {}
+
+    // 3. Attempt createLxcTermProxy
+    try {
+      const termproxy = await this.createLxcTermProxy(node, vmid);
+      const latencyMs = Date.now() - startTime;
+      return {
+        ok: true,
+        endpoint: endpoint.displayTarget,
+        proxied: false,
+        proxyType: "direct",
+        statusCode: 200,
+        lxcStatus,
+        proxmoxVersion: pveVersion,
+        latencyMs,
+        classification: "PROXMOX_501_TERM_PROXY",
+        port: termproxy.port,
+        user: termproxy.user,
+      };
+    } catch (err: unknown) {
+      const latencyMs = Date.now() - startTime;
+      if (err instanceof ProxmoxRequestError) {
+        let recommendedFix: string | undefined;
+        if (err.classification === "CLOUDFLARE_501") {
+          recommendedFix =
+            "Cloudflare Tunnel detected. Add 'disableChunkedEncoding: true' and enable WebSockets in originRequest.";
+        } else if (err.classification === "REVERSE_PROXY_501") {
+          recommendedFix =
+            "Reverse proxy detected. Verify WebSocket support and ensure chunked transfer encoding is not forced.";
+        } else if (err.classification === "AUTHENTICATION_FAILURE") {
+          recommendedFix = "Verify Proxmox API Token ID and Token Secret.";
+        } else if (err.classification === "AUTHORIZATION_FAILURE") {
+          recommendedFix =
+            "Verify Proxmox API Token has VM.Console or Sys.Console permissions and 'Privilege Separation' is unchecked.";
+        }
+
+        return {
+          ok: false,
+          endpoint: endpoint.displayTarget,
+          proxied: err.proxyDetected,
+          proxyType: err.proxyType,
+          statusCode: err.statusCode,
+          statusMessage: err.statusMessage,
+          contentType: err.contentType,
+          responseSnippet: err.safeBodySnippet,
+          lxcStatus,
+          proxmoxVersion: pveVersion,
+          latencyMs,
+          classification: err.classification,
+          recommendedFix,
+        };
+      }
+
+      const msg = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        endpoint: endpoint.displayTarget,
+        proxied: false,
+        proxyType: "direct",
+        lxcStatus,
+        proxmoxVersion: pveVersion,
+        latencyMs,
+        classification: "UNKNOWN_CONSOLE_FAILURE",
+        responseSnippet: msg,
+      };
+    }
   }
 
   /**
