@@ -1595,21 +1595,43 @@ export default function InstanceDetailPage() {
                       </div>
                     )}
 
-                    {/* Actionable Guidance for Reverse Proxy & Cloudflare */}
+                    {/* Contextual Actionable Guidance */}
                     <div className="rounded-md bg-zinc-900/80 p-3.5 border border-zinc-800 text-xs space-y-2">
                       <div className="flex items-center gap-2 font-medium text-zinc-200">
                         <Info className="size-4 text-blue-400" />
                         <span>Potential Cause & Resolution</span>
                       </div>
-                      <p className="text-zinc-400 leading-relaxed">
-                        Proxmox VE <code className="font-mono text-zinc-300">pveproxy</code> historically rejects
-                        requests formatted with chunked transfer encoding with <code className="font-mono text-amber-400">HTTP 501 Not Implemented</code>.
-                      </p>
-                      {consoleDiagnostic?.recommendedFix && (
-                        <div className="p-2.5 rounded bg-zinc-950 border border-zinc-700/60 font-mono text-[11px] text-amber-300 space-y-1">
-                          <p className="font-sans font-medium text-zinc-300">Cloudflare Tunnel Origin Recommendation:</p>
-                          <pre className="text-zinc-300 whitespace-pre-wrap">{consoleDiagnostic.recommendedFix}</pre>
-                        </div>
+                      {consoleError?.code === "CONSOLE_LXC_LOCKED" ? (
+                        <p className="text-zinc-400 leading-relaxed">
+                          A Proxmox VE background operation (such as snapshot, backup, disk resize, or configuration task)
+                          is currently holding an active lock on this container. The terminal will become accessible
+                          automatically once the hypervisor task finishes.
+                        </p>
+                      ) : consoleError?.code === "CONSOLE_LXC_STOPPED" ? (
+                        <p className="text-zinc-400 leading-relaxed">
+                          The container is currently powered off. Start the VPS container to open an interactive terminal.
+                        </p>
+                      ) : consoleDiagnostic?.classification === "CLOUDFLARE_501" ||
+                        consoleDiagnostic?.classification === "REVERSE_PROXY_501" ||
+                        consoleError?.code === "PROXMOX_501_TERM_PROXY" ? (
+                        <>
+                          <p className="text-zinc-400 leading-relaxed">
+                            Proxmox VE <code className="font-mono text-zinc-300">pveproxy</code> historically rejects
+                            requests formatted with chunked transfer encoding with <code className="font-mono text-amber-400">HTTP 501 Not Implemented</code>.
+                          </p>
+                          {consoleDiagnostic?.recommendedFix && (
+                            <div className="p-2.5 rounded bg-zinc-950 border border-zinc-700/60 font-mono text-[11px] text-amber-300 space-y-1">
+                              <p className="font-sans font-medium text-zinc-300">Cloudflare Tunnel Origin Recommendation:</p>
+                              <pre className="text-zinc-300 whitespace-pre-wrap">{consoleDiagnostic.recommendedFix}</pre>
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <p className="text-zinc-400 leading-relaxed">
+                          {consoleDiagnostic?.recommendedFix ||
+                            consoleError?.message ||
+                            "Unable to establish terminal connection to Proxmox VE hypervisor. Check node reachability and API permissions."}
+                        </p>
                       )}
                     </div>
 

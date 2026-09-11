@@ -229,12 +229,12 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
 
           // Check if container is locked by a Proxmox task
           const isLocked = await ProxmoxService.checkLxcLocked(node, vps.proxmox_vmid, runtimeNode);
-          if (isLocked) {
+          if (isLocked.locked) {
             sendControl({
               type: "error",
               state: "busy",
               code: "CONSOLE_LXC_LOCKED",
-              message: "VPS is currently locked by a Proxmox background operation.",
+              message: `VPS is currently locked by a Proxmox background operation (${isLocked.lockName || "busy"}).`,
             });
             clientWs.close(1000, "VPS locked");
             return;
