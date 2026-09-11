@@ -9,13 +9,14 @@ import {
   AlertTriangle,
   XCircle,
   Activity,
-  Layers,
   Trash2,
   Loader2,
   ShieldAlert,
+  ShieldCheck,
   Upload,
   Globe,
   Pencil,
+  Network,
 } from "lucide-react"
 import { BaseLayout } from "@/components/layouts/base-layout"
 import { Badge } from "@/components/ui/badge"
@@ -23,6 +24,13 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import {
   Table,
   TableBody,
@@ -51,14 +59,67 @@ interface ProxmoxNode {
   region: string
   flag_url?: string | null
   allow_insecure_tls: number
-  default_storage: string
-  default_bridge: string
+  default_template_storage?: string | null
+  default_rootfs_storage?: string | null
+  default_storage?: string
+  default_bridge?: string | null
   enabled: number
-  status: "online" | "offline" | "degraded" | "unknown"
+  status: "healthy" | "online" | "offline" | "degraded" | "misconfigured" | "unverified" | "unknown"
   last_health_check: string | null
+  last_verified_at: string | null
   health_info: string | null
+  verification_info: string | null
   vps_count: number
   created_at: string
+}
+
+interface VerificationCheckItem {
+  name: string
+  status: "passed" | "warning" | "failed"
+  message: string
+  details?: Record<string, unknown>
+}
+
+interface VerificationModalData {
+  nodeName: string
+  status: string
+  reachable: boolean
+  authenticated: boolean
+  identityVerified: boolean
+  latencyMs?: number
+  apiVersion?: string
+  apiRelease?: string
+  expectedNodeName: string
+  actualNodeName?: string
+  checks: VerificationCheckItem[]
+  storages: Array<{
+    storage: string
+    type: string
+    active: boolean
+    content: string[]
+    supportsTemplates: boolean
+    supportsRootfs: boolean
+    totalBytes?: number
+    usedBytes?: number
+    availBytes?: number
+  }>
+  templateStorages: string[]
+  rootfsStorages: string[]
+  templates: Array<{
+    volid: string
+    storage: string
+    filename: string
+    format: string
+    sizeBytes: number
+    osFamily?: string
+  }>
+  bridges: Array<{
+    iface: string
+    type: string
+    active: boolean
+    comments?: string
+  }>
+  verifiedAt?: string
 }
 
 export default function AdminNodesPage() {
@@ -78,9 +139,22 @@ export default function AdminNodesPage() {
   const [authTokenId, setAuthTokenId] = React.useState("")
   const [authTokenSecret, setAuthTokenSecret] = React.useState("")
   const [allowInsecureTls, setAllowInsecureTls] = React.useState(false)
-  const [defaultStorage, setDefaultStorage] = React.useState("local-lvm")
-  const [defaultBridge, setDefaultBridge] = React.useState("vmbr0")
-  const [isTestingAndSaving, setIsTestingAndSaving] = React.useState(false)
+
+  // Add node: Discovered capabilities state
+  const [isTestingConnection, setIsTestingConnection] = React.useState(false)
+  const [testResult, setTestResult] = React.useState<{
+    success: boolean
+    message: string
+    templateStorages: string[]
+    rootfsStorages: string[]
+    bridges: string[]
+    nodes: string[]
+    templatesCount: number
+  } | null>(null)
+  const [defaultTemplateStorage, setDefaultTemplateStorage] = React.useState("")
+  const [defaultRootfsStorage, setDefaultRootfsStorage] = React.useState("")
+  const [defaultBridge, setDefaultBridge] = React.useState("")
+  const [isSavingNode, setIsSavingNode] = React.useState(false)
   const fileInputRef = React.useRef<HTMLInputElement | null>(null)
 
   // Edit node modal
@@ -89,19 +163,21 @@ export default function AdminNodesPage() {
   const [editName, setEditName] = React.useState("")
   const [editRegion, setEditRegion] = React.useState("")
   const [editFlagUrl, setEditFlagUrl] = React.useState("")
-  const [editDefaultStorage, setEditDefaultStorage] = React.useState("")
+  const [editDefaultTemplateStorage, setEditDefaultTemplateStorage] = React.useState("")
+  const [editDefaultRootfsStorage, setEditDefaultRootfsStorage] = React.useState("")
   const [editDefaultBridge, setEditDefaultBridge] = React.useState("")
   const [editAllowInsecureTls, setEditAllowInsecureTls] = React.useState(false)
   const [isSavingEdit, setIsSavingEdit] = React.useState(false)
+  const [isRefreshingEditCaps, setIsRefreshingEditCaps] = React.useState(false)
+  const [editDiscoveredTemplateStorages, setEditDiscoveredTemplateStorages] = React.useState<string[]>([])
+  const [editDiscoveredRootfsStorages, setEditDiscoveredRootfsStorages] = React.useState<string[]>([])
+  const [editDiscoveredBridges, setEditDiscoveredBridges] = React.useState<string[]>([])
   const editFileInputRef = React.useRef<HTMLInputElement | null>(null)
 
-  // Capabilities modal
-  const [capOpen, setCapOpen] = React.useState(false)
-  const [selectedNodeName, setSelectedNodeName] = React.useState("")
-  const [caps, setCaps] = React.useState<{ storages: any[]; bridges: any[]; templates: any[] } | null>(null)
-  const [isLoadingCaps, setIsLoadingCaps] = React.useState(false)
-
-  const [checkingHealthId, setCheckingHealthId] = React.useState<string | null>(null)
+  // Verification & Diagnostics modal
+  const [diagnosticsOpen, setDiagnosticsOpen] = React.useState(false)
+  const [diagnosticsData, setDiagnosticsData] = React.useState<VerificationModalData | null>(null)
+  const [verifyingNodeId, setVerifyingNodeId] = React.useState<string | null>(null)
 
   const fetchNodes = React.useCallback(async (showToast = false) => {
     try {
@@ -123,8 +199,9 @@ export default function AdminNodesPage() {
     fetchNodes()
   }, [fetchNodes])
 
-  const handleCheckHealth = async (nodeId: string) => {
-    setCheckingHealthId(nodeId)
+  // Verify connection (comprehensive 14-layer check)
+  const handleVerifyNode = async (node: ProxmoxNode) => {
+    setVerifyingNodeId(node.id)
     try {
       const csrfRes = await fetch("/api/auth/csrf")
       let csrfToken = ""
@@ -133,7 +210,7 @@ export default function AdminNodesPage() {
         csrfToken = c.token
       }
 
-      const res = await fetch(`/api/admin/nodes/${nodeId}/health`, {
+      const res = await fetch(`/api/admin/nodes/${node.id}/verify`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -142,38 +219,317 @@ export default function AdminNodesPage() {
       })
 
       const data = await res.json()
-      if (!res.ok) throw new Error(data.error || "Health check failed.")
+      if (!res.ok) throw new Error(data.error || "Verification failed.")
 
-      if (data.health?.online) {
-        toast.success(
-          `Node Online! PVE v${data.health.version} (${data.health.latencyMs}ms)`
-        )
+      const v = data.verification
+      setDiagnosticsData({
+        nodeName: node.name,
+        status: v.status,
+        reachable: v.reachable,
+        authenticated: v.authenticated,
+        identityVerified: v.identityVerified,
+        latencyMs: v.latencyMs,
+        apiVersion: v.apiVersion,
+        apiRelease: v.apiRelease,
+        expectedNodeName: v.expectedNodeName,
+        actualNodeName: v.actualNodeName,
+        checks: v.checks || [],
+        storages: v.storages || [],
+        templateStorages: v.templateStorages || [],
+        rootfsStorages: v.rootfsStorages || [],
+        templates: v.templates || [],
+        bridges: v.bridges || [],
+        verifiedAt: v.verifiedAt,
+      })
+      setDiagnosticsOpen(true)
+
+      if (v.status === "healthy") {
+        toast.success(`Node Verified: Healthy (${v.latencyMs ?? 0}ms latency, ${v.templates?.length || 0} templates found)`)
+      } else if (v.status === "degraded") {
+        toast.warning("Node reachable with warnings. See diagnostics for details.")
+      } else if (v.status === "misconfigured") {
+        toast.error("Node misconfigured. Target node name or authentication mismatch.")
       } else {
-        toast.error(`Node Offline: ${data.health?.error || "Connection refused"}`)
+        toast.error(`Node verification failed: ${v.status}`)
       }
 
       fetchNodes()
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : "Error running health check")
+      toast.error(err instanceof Error ? err.message : "Error verifying node")
     } finally {
-      setCheckingHealthId(null)
+      setVerifyingNodeId(null)
     }
   }
 
-  const handleInspectCapabilities = async (node: ProxmoxNode) => {
-    setSelectedNodeName(node.name)
-    setCapOpen(true)
-    setIsLoadingCaps(true)
-    setCaps(null)
+  // Open diagnostics modal from cached or existing verification info
+  const handleViewDiagnostics = (node: ProxmoxNode) => {
+    if (node.verification_info) {
+      try {
+        const v = JSON.parse(node.verification_info)
+        setDiagnosticsData({
+          nodeName: node.name,
+          status: v.status || node.status,
+          reachable: v.reachable ?? true,
+          authenticated: v.authenticated ?? true,
+          identityVerified: v.identityVerified ?? true,
+          latencyMs: v.latencyMs,
+          apiVersion: v.apiVersion,
+          apiRelease: v.apiRelease,
+          expectedNodeName: node.node_name,
+          actualNodeName: v.actualNodeName || node.node_name,
+          checks: v.checks || [],
+          storages: v.storages || [],
+          templateStorages: v.templateStorages || [],
+          rootfsStorages: v.rootfsStorages || [],
+          templates: v.templates || [],
+          bridges: v.bridges || [],
+          verifiedAt: v.verifiedAt || node.last_verified_at || undefined,
+        })
+        setDiagnosticsOpen(true)
+        return
+      } catch {}
+    }
+    // If no parsed verification info is stored, run a live verification
+    handleVerifyNode(node)
+  }
+
+  // Add Node: Test & Discover credentials without saving
+  const handleTestConnection = async () => {
+    if (!apiUrl.trim() || !authTokenId.trim() || !authTokenSecret.trim()) {
+      toast.error("API Base URL, Token ID, and Token Secret are required to test connection.")
+      return
+    }
+
+    setIsTestingConnection(true)
+    setTestResult(null)
+    try {
+      const csrfRes = await fetch("/api/auth/csrf")
+      let csrfToken = ""
+      if (csrfRes.ok) {
+        const c = await csrfRes.json()
+        csrfToken = c.token
+      }
+
+      const res = await fetch("/api/admin/nodes/test-connection", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
+        },
+        body: JSON.stringify({
+          apiUrl: apiUrl.trim(),
+          port,
+          hostname: hostname.trim(),
+          nodeName: nodeName.trim(),
+          authTokenId: authTokenId.trim(),
+          authTokenSecret: authTokenSecret.trim(),
+          allowInsecureTls,
+        }),
+      })
+
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || "Connection test failed.")
+
+      const tStorages = data.templateStorages || []
+      const rStorages = data.rootfsStorages || []
+      const discoveredBridges = (data.bridges || []).map((b: { iface: string }) => b.iface)
+      const clusterNodes = data.discoveredNodes || []
+
+      setTestResult({
+        success: data.success,
+        message: data.message,
+        templateStorages: tStorages,
+        rootfsStorages: rStorages,
+        bridges: discoveredBridges,
+        nodes: clusterNodes,
+        templatesCount: data.templates?.length || 0,
+      })
+
+      // Auto-populate defaults from discovered pools if not set
+      if (tStorages.length > 0 && !defaultTemplateStorage) {
+        setDefaultTemplateStorage(tStorages[0])
+      }
+      if (rStorages.length > 0 && !defaultRootfsStorage) {
+        setDefaultRootfsStorage(rStorages[0])
+      }
+      if (discoveredBridges.length > 0 && !defaultBridge) {
+        setDefaultBridge(discoveredBridges[0])
+      }
+      if (clusterNodes.length > 0 && (!nodeName || !clusterNodes.includes(nodeName))) {
+        setNodeName(clusterNodes[0])
+      }
+
+      toast.success(
+        `Discovered ${tStorages.length} template pool(s), ${rStorages.length} rootfs pool(s), ${discoveredBridges.length} bridge(s)`
+      )
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Connection test failed."
+      setTestResult({
+        success: false,
+        message: msg,
+        templateStorages: [],
+        rootfsStorages: [],
+        bridges: [],
+        nodes: [],
+        templatesCount: 0,
+      })
+      toast.error(msg)
+    } finally {
+      setIsTestingConnection(false)
+    }
+  }
+
+  // Save Node
+  const handleSaveNode = async () => {
+    if (!name.trim() || !hostname.trim() || !apiUrl.trim() || !authTokenId.trim() || !authTokenSecret.trim()) {
+      toast.error("Please fill in all required Proxmox credentials.")
+      return
+    }
+
+    setIsSavingNode(true)
+    try {
+      const csrfRes = await fetch("/api/auth/csrf")
+      let csrfToken = ""
+      if (csrfRes.ok) {
+        const c = await csrfRes.json()
+        csrfToken = c.token
+      }
+
+      const res = await fetch("/api/admin/nodes", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
+        },
+        body: JSON.stringify({
+          name: name.trim(),
+          hostname: hostname.trim(),
+          apiUrl: apiUrl.trim(),
+          port,
+          nodeName: nodeName.trim(),
+          region: region.trim(),
+          flagUrl: flagUrl.trim() || null,
+          authTokenId: authTokenId.trim(),
+          authTokenSecret: authTokenSecret.trim(),
+          allowInsecureTls,
+          defaultTemplateStorage: defaultTemplateStorage.trim() || undefined,
+          defaultRootfsStorage: defaultRootfsStorage.trim() || undefined,
+          defaultBridge: defaultBridge.trim() || undefined,
+        }),
+      })
+
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || "Failed to add node.")
+
+      toast.success(data.message || "Proxmox node saved successfully!")
+      setAddNodeOpen(false)
+      // Reset form
+      setName("")
+      setHostname("")
+      setAuthTokenId("")
+      setAuthTokenSecret("")
+      setFlagUrl("")
+      setTestResult(null)
+      setDefaultTemplateStorage("")
+      setDefaultRootfsStorage("")
+      setDefaultBridge("")
+      if (fileInputRef.current) fileInputRef.current.value = ""
+      fetchNodes()
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to add node")
+    } finally {
+      setIsSavingNode(false)
+    }
+  }
+
+  // Edit Node
+  const handleOpenEdit = async (node: ProxmoxNode) => {
+    setEditingNodeId(node.id)
+    setEditName(node.name)
+    setEditRegion(node.region)
+    setEditFlagUrl(node.flag_url || "")
+    setEditDefaultTemplateStorage(node.default_template_storage || "")
+    setEditDefaultRootfsStorage(node.default_rootfs_storage || node.default_storage || "")
+    setEditDefaultBridge(node.default_bridge || "")
+    setEditAllowInsecureTls(node.allow_insecure_tls === 1)
+    setEditDiscoveredTemplateStorages([])
+    setEditDiscoveredRootfsStorages([])
+    setEditDiscoveredBridges([])
+    setEditNodeOpen(true)
+
+    // Load available storage and bridge options
     try {
       const res = await fetch(`/api/admin/nodes/${node.id}/capabilities`)
+      if (res.ok) {
+        const data = await res.json()
+        setEditDiscoveredTemplateStorages(data.templateStorages || [])
+        setEditDiscoveredRootfsStorages(data.rootfsStorages || [])
+        setEditDiscoveredBridges((data.bridges || []).map((b: { iface: string }) => b.iface))
+      }
+    } catch {}
+  }
+
+  const handleRefreshEditCapabilities = async () => {
+    if (!editingNodeId) return
+    setIsRefreshingEditCaps(true)
+    try {
+      const res = await fetch(`/api/admin/nodes/${editingNodeId}/capabilities?refresh=true`)
+      if (!res.ok) throw new Error("Failed to refresh capabilities.")
       const data = await res.json()
-      if (!res.ok) throw new Error(data.error || "Failed to discover capabilities.")
-      setCaps(data)
+      setEditDiscoveredTemplateStorages(data.templateStorages || [])
+      setEditDiscoveredRootfsStorages(data.rootfsStorages || [])
+      setEditDiscoveredBridges((data.bridges || []).map((b: { iface: string }) => b.iface))
+      toast.success("Discovered infrastructure refreshed from Proxmox!")
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : "Capabilities discovery failed")
+      toast.error(err instanceof Error ? err.message : "Failed to query Proxmox.")
     } finally {
-      setIsLoadingCaps(false)
+      setIsRefreshingEditCaps(false)
+    }
+  }
+
+  const handleSaveEdit = async () => {
+    if (!editingNodeId) return
+    if (!editName.trim() || !editRegion.trim()) {
+      toast.error("Display Name and Region Code are required.")
+      return
+    }
+
+    setIsSavingEdit(true)
+    try {
+      const csrfRes = await fetch("/api/auth/csrf")
+      let csrfToken = ""
+      if (csrfRes.ok) {
+        const c = await csrfRes.json()
+        csrfToken = c.token
+      }
+
+      const res = await fetch(`/api/admin/nodes/${editingNodeId}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
+        },
+        body: JSON.stringify({
+          name: editName.trim(),
+          region: editRegion.trim(),
+          flagUrl: editFlagUrl.trim() || null,
+          defaultTemplateStorage: editDefaultTemplateStorage.trim() || null,
+          defaultRootfsStorage: editDefaultRootfsStorage.trim() || null,
+          defaultBridge: editDefaultBridge.trim() || null,
+          allowInsecureTls: editAllowInsecureTls,
+        }),
+      })
+
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || "Failed to update node.")
+
+      toast.success("Node configuration updated successfully.")
+      setEditNodeOpen(false)
+      fetchNodes()
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Error updating node")
+    } finally {
+      setIsSavingEdit(false)
     }
   }
 
@@ -232,17 +588,6 @@ export default function AdminNodesPage() {
     reader.readAsDataURL(file)
   }
 
-  const handleOpenEdit = (node: ProxmoxNode) => {
-    setEditingNodeId(node.id)
-    setEditName(node.name)
-    setEditRegion(node.region)
-    setEditFlagUrl(node.flag_url || "")
-    setEditDefaultStorage(node.default_storage)
-    setEditDefaultBridge(node.default_bridge)
-    setEditAllowInsecureTls(node.allow_insecure_tls === 1)
-    setEditNodeOpen(true)
-  }
-
   const handleEditFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -271,126 +616,42 @@ export default function AdminNodesPage() {
     reader.readAsDataURL(file)
   }
 
-  const handleSaveEdit = async () => {
-    if (!editingNodeId) return
-    if (!editName.trim() || !editRegion.trim()) {
-      toast.error("Display Name and Region Code are required.")
-      return
-    }
-
-    setIsSavingEdit(true)
-    try {
-      const csrfRes = await fetch("/api/auth/csrf")
-      let csrfToken = ""
-      if (csrfRes.ok) {
-        const c = await csrfRes.json()
-        csrfToken = c.token
-      }
-
-      const res = await fetch(`/api/admin/nodes/${editingNodeId}`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
-        },
-        body: JSON.stringify({
-          name: editName.trim(),
-          region: editRegion.trim(),
-          flagUrl: editFlagUrl.trim() || null,
-          defaultStorage: editDefaultStorage.trim(),
-          defaultBridge: editDefaultBridge.trim(),
-          allowInsecureTls: editAllowInsecureTls,
-        }),
-      })
-
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || "Failed to update node.")
-
-      toast.success("Node configuration updated successfully.")
-      setEditNodeOpen(false)
-      fetchNodes()
-    } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : "Error updating node")
-    } finally {
-      setIsSavingEdit(false)
-    }
-  }
-
-  const handleSaveNode = async () => {
-    if (!name.trim() || !hostname.trim() || !apiUrl.trim() || !authTokenId.trim() || !authTokenSecret.trim()) {
-      toast.error("Please fill in all required Proxmox credentials.")
-      return
-    }
-
-    setIsTestingAndSaving(true)
-    try {
-      const csrfRes = await fetch("/api/auth/csrf")
-      let csrfToken = ""
-      if (csrfRes.ok) {
-        const c = await csrfRes.json()
-        csrfToken = c.token
-      }
-
-      const res = await fetch("/api/admin/nodes", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
-        },
-        body: JSON.stringify({
-          name: name.trim(),
-          hostname: hostname.trim(),
-          apiUrl: apiUrl.trim(),
-          port,
-          nodeName: nodeName.trim(),
-          region: region.trim(),
-          flagUrl: flagUrl.trim() || null,
-          authTokenId: authTokenId.trim(),
-          authTokenSecret: authTokenSecret.trim(),
-          allowInsecureTls,
-          defaultStorage: defaultStorage.trim(),
-          defaultBridge: defaultBridge.trim(),
-        }),
-      })
-
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || "Failed to add node.")
-
-      toast.success(data.message || "Proxmox node connected successfully!")
-      setAddNodeOpen(false)
-      // Reset form
-      setName("")
-      setHostname("")
-      setAuthTokenId("")
-      setAuthTokenSecret("")
-      setFlagUrl("")
-      if (fileInputRef.current) fileInputRef.current.value = ""
-      fetchNodes()
-    } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : "Failed to add node")
-    } finally {
-      setIsTestingAndSaving(false)
-    }
-  }
-
   const getStatusBadge = (status: string) => {
     switch (status) {
+      case "healthy":
+        return (
+          <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-500 gap-1 text-[10px] py-0">
+            <CheckCircle2 className="size-3" /> Healthy
+          </Badge>
+        )
       case "online":
         return (
           <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-500 gap-1 text-[10px] py-0">
             <CheckCircle2 className="size-3" /> Online
           </Badge>
         )
-      case "offline":
-        return (
-          <Badge variant="outline" className="border-destructive/30 bg-destructive/10 text-destructive gap-1 text-[10px] py-0">
-            <XCircle className="size-3" /> Offline
-          </Badge>
-        )
       case "degraded":
         return (
           <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-500 gap-1 text-[10px] py-0">
             <AlertTriangle className="size-3" /> Degraded
+          </Badge>
+        )
+      case "misconfigured":
+        return (
+          <Badge variant="outline" className="border-orange-500/30 bg-orange-500/10 text-orange-500 gap-1 text-[10px] py-0">
+            <AlertTriangle className="size-3" /> Misconfigured
+          </Badge>
+        )
+      case "unverified":
+        return (
+          <Badge variant="outline" className="border-blue-500/30 bg-blue-500/10 text-blue-400 gap-1 text-[10px] py-0">
+            <ShieldAlert className="size-3" /> Unverified
+          </Badge>
+        )
+      case "offline":
+        return (
+          <Badge variant="outline" className="border-destructive/30 bg-destructive/10 text-destructive gap-1 text-[10px] py-0">
+            <XCircle className="size-3" /> Offline
           </Badge>
         )
       default:
@@ -400,6 +661,17 @@ export default function AdminNodesPage() {
           </Badge>
         )
     }
+  }
+
+  const formatVerificationAge = (timestamp: string | null) => {
+    if (!timestamp) return { text: "Unverified", stale: true }
+    const diffMs = Date.now() - new Date(timestamp).getTime()
+    const diffMins = Math.floor(diffMs / 60000)
+    if (diffMins < 1) return { text: "Just now", stale: false }
+    if (diffMins === 1) return { text: "1 min ago", stale: false }
+    if (diffMins < 60) return { text: `${diffMins} mins ago`, stale: diffMins > 15 }
+    const diffHours = Math.floor(diffMins / 60)
+    return { text: `${diffHours} hr${diffHours > 1 ? "s" : ""} ago`, stale: true }
   }
 
   return (
@@ -428,7 +700,10 @@ export default function AdminNodesPage() {
             <Button
               size="sm"
               className="h-8 gap-1 text-xs"
-              onClick={() => setAddNodeOpen(true)}
+              onClick={() => {
+                setTestResult(null)
+                setAddNodeOpen(true)
+              }}
             >
               <Plus className="size-3.5" /> Add Proxmox Node
             </Button>
@@ -459,127 +734,338 @@ export default function AdminNodesPage() {
                   <TableHead>Region</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Active VPS</TableHead>
-                  <TableHead>Last Health Check</TableHead>
+                  <TableHead>Verification</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {nodes.map((node) => (
-                  <TableRow key={node.id}>
-                    {/* Name */}
-                    <TableCell>
-                      <div className="flex flex-col">
-                        <span className="font-semibold text-xs text-foreground flex items-center gap-1.5">
-                          {node.name}
-                          {node.allow_insecure_tls === 1 && (
-                            <Badge variant="outline" className="text-[9px] text-amber-500 border-amber-500/30 py-0">
-                              TLS Warning
-                            </Badge>
-                          )}
-                        </span>
-                        <span className="text-[11px] text-muted-foreground font-mono">
-                          PVE Node: {node.node_name}
-                        </span>
-                      </div>
-                    </TableCell>
+                {nodes.map((node) => {
+                  const verAge = formatVerificationAge(node.last_verified_at)
+                  return (
+                    <TableRow key={node.id}>
+                      {/* Name */}
+                      <TableCell>
+                        <div className="flex flex-col">
+                          <span className="font-semibold text-xs text-foreground flex items-center gap-1.5">
+                            {node.name}
+                            {node.allow_insecure_tls === 1 && (
+                              <Badge variant="outline" className="text-[9px] text-amber-500 border-amber-500/30 py-0">
+                                TLS Opt-In
+                              </Badge>
+                            )}
+                          </span>
+                          <span className="text-[11px] text-muted-foreground font-mono">
+                            PVE Node: {node.node_name}
+                          </span>
+                        </div>
+                      </TableCell>
 
-                    {/* Endpoint */}
-                    <TableCell className="font-mono text-xs text-muted-foreground">
-                      {node.hostname}:{node.port}
-                    </TableCell>
+                      {/* Endpoint */}
+                      <TableCell className="font-mono text-xs text-muted-foreground">
+                        {node.hostname}:{node.port}
+                      </TableCell>
 
-                    {/* Region */}
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        {node.flag_url ? (
-                          <img
-                            src={node.flag_url}
-                            alt={node.region}
-                            className="w-5 h-3.5 object-cover rounded-[2px] border border-border/60 shrink-0 shadow-xs"
-                          />
-                        ) : (
-                          <span className="text-xs">🌐</span>
-                        )}
-                        <Badge variant="outline" className="text-xs font-mono py-0">
-                          {node.region}
-                        </Badge>
-                      </div>
-                    </TableCell>
-
-                    {/* Status */}
-                    <TableCell>{getStatusBadge(node.status)}</TableCell>
-
-                    {/* VPS Count */}
-                    <TableCell className="font-mono text-xs font-semibold">
-                      {node.vps_count} instance(s)
-                    </TableCell>
-
-                    {/* Last Check */}
-                    <TableCell className="text-xs text-muted-foreground font-mono">
-                      {node.last_health_check ? node.last_health_check.replace("T", " ").substring(0, 16) : "Never"}
-                    </TableCell>
-
-                    {/* Actions */}
-                    <TableCell className="text-right">
-                      <div className="flex items-center justify-end gap-1.5">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleOpenEdit(node)}
-                          className="h-7 text-[11px] gap-1"
-                        >
-                          <Pencil className="size-3" /> Edit
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleCheckHealth(node.id)}
-                          disabled={checkingHealthId === node.id}
-                          className="h-7 text-[11px] gap-1"
-                        >
-                          {checkingHealthId === node.id ? (
-                            <Loader2 className="size-3 animate-spin" />
+                      {/* Region */}
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          {node.flag_url ? (
+                            <img
+                              src={node.flag_url}
+                              alt={node.region}
+                              className="w-5 h-3.5 object-cover rounded-[2px] border border-border/60 shrink-0 shadow-xs"
+                            />
                           ) : (
-                            <Activity className="size-3 text-primary" />
+                            <span className="text-xs">🌐</span>
                           )}
-                          Check Health
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleInspectCapabilities(node)}
-                          className="h-7 text-[11px] gap-1"
-                        >
-                          <Layers className="size-3" /> Capabilities
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => handleDeleteNode(node.id)}
-                          className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                          title="Delete Node"
-                        >
-                          <Trash2 className="size-3.5" />
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                          <Badge variant="outline" className="text-xs font-mono py-0">
+                            {node.region}
+                          </Badge>
+                        </div>
+                      </TableCell>
+
+                      {/* Status */}
+                      <TableCell>{getStatusBadge(node.status)}</TableCell>
+
+                      {/* VPS Count */}
+                      <TableCell className="font-mono text-xs font-semibold">
+                        {node.vps_count} instance(s)
+                      </TableCell>
+
+                      {/* Last Verification */}
+                      <TableCell>
+                        <div className="flex flex-col">
+                          <span className="text-xs font-mono text-muted-foreground flex items-center gap-1">
+                            {verAge.text}
+                            {verAge.stale && node.last_verified_at && (
+                              <Badge variant="outline" className="text-[9px] text-amber-500 border-amber-500/30 py-0">
+                                Stale
+                              </Badge>
+                            )}
+                          </span>
+                        </div>
+                      </TableCell>
+
+                      {/* Actions */}
+                      <TableCell className="text-right">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleVerifyNode(node)}
+                            disabled={verifyingNodeId === node.id}
+                            className="h-7 text-[11px] gap-1"
+                            title="Perform full 14-layer verification against Proxmox"
+                          >
+                            {verifyingNodeId === node.id ? (
+                              <Loader2 className="size-3 animate-spin" />
+                            ) : (
+                              <ShieldCheck className="size-3 text-primary" />
+                            )}
+                            Verify
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleViewDiagnostics(node)}
+                            className="h-7 text-[11px] gap-1"
+                            title="View detailed verification diagnostics and storage capabilities"
+                          >
+                            <Activity className="size-3" /> Diagnostics
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleOpenEdit(node)}
+                            className="h-7 text-[11px] gap-1"
+                          >
+                            <Pencil className="size-3" /> Edit
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleDeleteNode(node.id)}
+                            className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                            title="Delete Node"
+                          >
+                            <Trash2 className="size-3.5" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
               </TableBody>
             </Table>
           )}
         </div>
       </div>
 
-      {/* Add Proxmox Node Modal */}
+      {/* Verification Diagnostics Modal */}
+      <Dialog open={diagnosticsOpen} onOpenChange={setDiagnosticsOpen}>
+        <DialogContent className="sm:max-w-[700px] max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ShieldCheck className="size-5 text-primary" />
+              Node Diagnostics: {diagnosticsData?.nodeName}
+            </DialogTitle>
+            <DialogDescription>
+              Comprehensive 14-layer verification and discovered infrastructure capabilities.
+            </DialogDescription>
+          </DialogHeader>
+
+          {diagnosticsData ? (
+            <div className="space-y-4 py-2 text-xs">
+              {/* Summary Bar */}
+              <div className="p-3 rounded-lg border bg-muted/20 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-foreground">Status:</span>
+                  {getStatusBadge(diagnosticsData.status)}
+                </div>
+                {diagnosticsData.latencyMs !== undefined && (
+                  <div className="text-muted-foreground">
+                    Latency: <span className="font-mono font-semibold text-foreground">{diagnosticsData.latencyMs}ms</span>
+                  </div>
+                )}
+                {diagnosticsData.apiVersion && (
+                  <div className="text-muted-foreground">
+                    PVE Version: <span className="font-mono font-semibold text-foreground">v{diagnosticsData.apiVersion}</span>
+                  </div>
+                )}
+                <div className="text-muted-foreground">
+                  Node Identity:{" "}
+                  <span className="font-mono font-semibold text-foreground">
+                    {diagnosticsData.actualNodeName || diagnosticsData.expectedNodeName}
+                  </span>
+                  {diagnosticsData.expectedNodeName !== diagnosticsData.actualNodeName && diagnosticsData.actualNodeName && (
+                    <span className="text-destructive font-mono ml-1">(expected: {diagnosticsData.expectedNodeName})</span>
+                  )}
+                </div>
+              </div>
+
+              {/* 14-Layer Verification Checks */}
+              <div>
+                <h4 className="font-semibold text-foreground mb-2 flex items-center gap-1.5">
+                  <Activity className="size-3.5 text-primary" /> Layered Verification Checks
+                </h4>
+                <div className="space-y-1.5">
+                  {diagnosticsData.checks.map((c, i) => (
+                    <div
+                      key={i}
+                      className={`p-2 rounded border flex items-start justify-between gap-2 ${
+                        c.status === "passed"
+                          ? "bg-emerald-500/5 border-emerald-500/20"
+                          : c.status === "warning"
+                          ? "bg-amber-500/5 border-amber-500/20"
+                          : "bg-destructive/5 border-destructive/20"
+                      }`}
+                    >
+                      <div className="flex items-start gap-2">
+                        {c.status === "passed" ? (
+                          <CheckCircle2 className="size-3.5 text-emerald-500 shrink-0 mt-0.5" />
+                        ) : c.status === "warning" ? (
+                          <AlertTriangle className="size-3.5 text-amber-500 shrink-0 mt-0.5" />
+                        ) : (
+                          <XCircle className="size-3.5 text-destructive shrink-0 mt-0.5" />
+                        )}
+                        <div>
+                          <span className="font-semibold text-foreground">{c.name}</span>
+                          <p className="text-[11px] text-muted-foreground mt-0.5">{c.message}</p>
+                        </div>
+                      </div>
+                      <Badge
+                        variant="outline"
+                        className={`text-[9px] uppercase py-0 shrink-0 ${
+                          c.status === "passed"
+                            ? "text-emerald-500 border-emerald-500/30"
+                            : c.status === "warning"
+                            ? "text-amber-500 border-amber-500/30"
+                            : "text-destructive border-destructive/30"
+                        }`}
+                      >
+                        {c.status}
+                      </Badge>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Storage Pools & Contained Templates Breakdown */}
+              <div>
+                <h4 className="font-semibold text-foreground mb-2 flex items-center gap-1.5">
+                  <HardDrive className="size-3.5 text-primary" /> Storage Pools & Template Content
+                </h4>
+                <div className="space-y-2">
+                  {diagnosticsData.storages.map((s) => {
+                    const storageTemplates = diagnosticsData.templates.filter((t) => t.storage === s.storage)
+                    return (
+                      <div key={s.storage} className="p-3 border rounded-lg bg-card space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono font-bold text-foreground">{s.storage}</span>
+                            <Badge variant="outline" className="text-[10px] font-mono">{s.type}</Badge>
+                            <Badge
+                              variant="outline"
+                              className={`text-[9px] py-0 ${s.active ? "text-emerald-500 border-emerald-500/30" : "text-destructive border-destructive/30"}`}
+                            >
+                              {s.active ? "Active" : "Inactive"}
+                            </Badge>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            {s.supportsTemplates && (
+                              <Badge variant="outline" className="text-[9px] text-blue-500 border-blue-500/30 py-0">
+                                vztmpl (Templates)
+                              </Badge>
+                            )}
+                            {s.supportsRootfs && (
+                              <Badge variant="outline" className="text-[9px] text-purple-500 border-purple-500/30 py-0">
+                                rootdir (Rootfs)
+                              </Badge>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="text-[11px] text-muted-foreground">
+                          Content capabilities: <span className="font-mono text-foreground">{s.content.join(", ") || "none"}</span>
+                        </div>
+
+                        {/* Templates in this specific storage */}
+                        {s.supportsTemplates && (
+                          <div className="pt-1.5 border-t border-border/40">
+                            <span className="text-[11px] font-semibold text-muted-foreground block mb-1">
+                              Container Templates ({storageTemplates.length}):
+                            </span>
+                            {storageTemplates.length > 0 ? (
+                              <div className="space-y-1">
+                                {storageTemplates.map((t) => (
+                                  <div
+                                    key={t.volid}
+                                    className="p-1.5 bg-muted/40 rounded border font-mono text-[11px] flex items-center justify-between"
+                                  >
+                                    <span className="truncate max-w-[400px] text-foreground font-medium">
+                                      {t.filename}
+                                    </span>
+                                    <span className="text-muted-foreground text-[10px]">
+                                      {(t.sizeBytes / (1024 * 1024)).toFixed(1)} MB
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-[11px] text-muted-foreground italic">
+                                Storage supports templates, but no container templates were found in vztmpl.
+                              </p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+
+              {/* Network Bridges */}
+              <div>
+                <h4 className="font-semibold text-foreground mb-2 flex items-center gap-1.5">
+                  <Network className="size-3.5 text-primary" /> Discovered Network Bridges
+                </h4>
+                {diagnosticsData.bridges.length > 0 ? (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {diagnosticsData.bridges.map((b) => (
+                      <div key={b.iface} className="p-2 border rounded font-mono flex items-center justify-between">
+                        <span className="font-semibold text-foreground">{b.iface}</span>
+                        <Badge variant="outline" className={`text-[9px] py-0 ${b.active ? "text-emerald-500 border-emerald-500/30" : "text-muted-foreground"}`}>
+                          {b.active ? "Active" : "Down"}
+                        </Badge>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-muted-foreground text-xs italic">No network bridges discovered.</p>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="py-12 flex flex-col items-center justify-center gap-2 text-xs text-muted-foreground">
+              <Loader2 className="size-5 animate-spin text-primary" />
+              Loading diagnostics...
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button onClick={() => setDiagnosticsOpen(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add Proxmox VE Node Modal (Test & Discover Pattern) */}
       <Dialog open={addNodeOpen} onOpenChange={setAddNodeOpen}>
-        <DialogContent className="sm:max-w-[540px]">
+        <DialogContent className="sm:max-w-[560px] max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <HardDrive className="size-4 text-primary" /> Add Proxmox VE Hypervisor
             </DialogTitle>
             <DialogDescription>
-              Connect an authenticated Proxmox VE REST API endpoint to manage LXC containers.
+              Connect an authenticated Proxmox VE REST API endpoint and automatically discover its storage pools and bridges.
             </DialogDescription>
           </DialogHeader>
 
@@ -600,7 +1086,7 @@ export default function AdminNodesPage() {
                   placeholder="e.g. pve"
                   value={nodeName}
                   onChange={(e) => setNodeName(e.target.value)}
-                  className="text-xs"
+                  className="text-xs font-mono"
                 />
               </div>
             </div>
@@ -674,20 +1160,14 @@ export default function AdminNodesPage() {
               </div>
 
               <div className="flex items-center gap-3">
-                {/* Live Flag Preview */}
                 <div className="w-12 h-8 rounded border border-border bg-background flex items-center justify-center overflow-hidden shrink-0 shadow-xs">
                   {flagUrl ? (
-                    <img
-                      src={flagUrl}
-                      alt="Flag Preview"
-                      className="w-full h-full object-cover"
-                    />
+                    <img src={flagUrl} alt="Flag Preview" className="w-full h-full object-cover" />
                   ) : (
                     <span className="text-xs text-muted-foreground/50">🌐</span>
                   )}
                 </div>
 
-                {/* Upload Action */}
                 <input
                   type="file"
                   ref={fileInputRef}
@@ -705,7 +1185,6 @@ export default function AdminNodesPage() {
                   <Upload className="size-3.5" /> Upload Flag
                 </Button>
 
-                {/* URL or Direct Source */}
                 <Input
                   placeholder="or paste flag image URL..."
                   value={flagUrl.startsWith("data:") ? "Custom flag uploaded" : flagUrl}
@@ -713,9 +1192,6 @@ export default function AdminNodesPage() {
                   className="text-xs h-8 flex-1 font-mono"
                 />
               </div>
-              <p className="text-[11px] text-muted-foreground">
-                Upload a national or regional flag icon (PNG, SVG, WEBP, or JPG, max 1.5 MB).
-              </p>
             </div>
 
             {/* Token Credentials */}
@@ -741,28 +1217,6 @@ export default function AdminNodesPage() {
               </div>
             </div>
 
-            {/* Defaults: Storage & Bridge */}
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label>Default Storage Pool</Label>
-                <Input
-                  placeholder="local-lvm"
-                  value={defaultStorage}
-                  onChange={(e) => setDefaultStorage(e.target.value)}
-                  className="text-xs font-mono"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Default Network Bridge</Label>
-                <Input
-                  placeholder="vmbr0"
-                  value={defaultBridge}
-                  onChange={(e) => setDefaultBridge(e.target.value)}
-                  className="text-xs font-mono"
-                />
-              </div>
-            </div>
-
             {/* Self-signed TLS Toggle */}
             <div className="flex items-center justify-between p-2.5 rounded-lg border bg-amber-500/5 border-amber-500/20">
               <div className="space-y-0.5">
@@ -775,84 +1229,145 @@ export default function AdminNodesPage() {
               </div>
               <Switch checked={allowInsecureTls} onCheckedChange={setAllowInsecureTls} />
             </div>
+
+            {/* Test & Discover Action */}
+            <div className="pt-1">
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full h-9 text-xs gap-2 border-primary/40 text-primary hover:bg-primary/5"
+                onClick={handleTestConnection}
+                disabled={isTestingConnection}
+              >
+                {isTestingConnection ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Activity className="size-3.5" />
+                )}
+                Test & Discover Infrastructure
+              </Button>
+            </div>
+
+            {/* Discovered Infrastructure Section */}
+            {testResult && (
+              <div className={`p-3 rounded-lg border text-xs space-y-3 ${testResult.success ? "bg-emerald-500/5 border-emerald-500/20" : "bg-destructive/5 border-destructive/20"}`}>
+                <div className="flex items-center gap-2">
+                  {testResult.success ? (
+                    <CheckCircle2 className="size-4 text-emerald-500" />
+                  ) : (
+                    <XCircle className="size-4 text-destructive" />
+                  )}
+                  <span className="font-semibold text-foreground">{testResult.message}</span>
+                </div>
+
+                {testResult.success && (
+                  <div className="space-y-2.5 pt-1">
+                    {/* Discovered Nodes if multiple */}
+                    {testResult.nodes.length > 1 && (
+                      <div className="space-y-1">
+                        <Label className="text-[11px]">Select Cluster Target Node</Label>
+                        <Select value={nodeName} onValueChange={setNodeName}>
+                          <SelectTrigger className="h-8 text-xs font-mono">
+                            <SelectValue placeholder="Select node" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {testResult.nodes.map((n) => (
+                              <SelectItem key={n} value={n} className="font-mono text-xs">{n}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+
+                    {/* Discovered Default Template Storage */}
+                    <div className="space-y-1">
+                      <Label className="text-[11px]">Default Template Storage (vztmpl)</Label>
+                      {testResult.templateStorages.length > 0 ? (
+                        <Select value={defaultTemplateStorage} onValueChange={setDefaultTemplateStorage}>
+                          <SelectTrigger className="h-8 text-xs font-mono">
+                            <SelectValue placeholder="Select template storage" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {testResult.templateStorages.map((s) => (
+                              <SelectItem key={s} value={s} className="font-mono text-xs">
+                                {s} (supports vztmpl)
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <p className="text-[11px] text-amber-500">No storage supporting container templates was discovered.</p>
+                      )}
+                    </div>
+
+                    {/* Discovered Default Rootfs Storage */}
+                    <div className="space-y-1">
+                      <Label className="text-[11px]">Default Rootfs Storage (rootdir)</Label>
+                      {testResult.rootfsStorages.length > 0 ? (
+                        <Select value={defaultRootfsStorage} onValueChange={setDefaultRootfsStorage}>
+                          <SelectTrigger className="h-8 text-xs font-mono">
+                            <SelectValue placeholder="Select rootfs storage" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {testResult.rootfsStorages.map((s) => (
+                              <SelectItem key={s} value={s} className="font-mono text-xs">
+                                {s} (supports rootdir)
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <p className="text-[11px] text-destructive">No storage supporting rootdir was discovered.</p>
+                      )}
+                    </div>
+
+                    {/* Discovered Default Bridge */}
+                    <div className="space-y-1">
+                      <Label className="text-[11px]">Default Network Bridge</Label>
+                      {testResult.bridges.length > 0 ? (
+                        <Select value={defaultBridge} onValueChange={setDefaultBridge}>
+                          <SelectTrigger className="h-8 text-xs font-mono">
+                            <SelectValue placeholder="Select network bridge" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {testResult.bridges.map((b) => (
+                              <SelectItem key={b} value={b} className="font-mono text-xs">
+                                {b}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <p className="text-[11px] text-amber-500">No active network bridges discovered.</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           <DialogFooter>
             <Button variant="outline" onClick={() => setAddNodeOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={handleSaveNode} disabled={isTestingAndSaving}>
-              {isTestingAndSaving ? <Loader2 className="size-3.5 animate-spin mr-1.5" /> : null}
-              Verify & Connect Node
+            <Button onClick={handleSaveNode} disabled={isSavingNode}>
+              {isSavingNode ? <Loader2 className="size-3.5 animate-spin mr-1.5" /> : null}
+              Save Hypervisor Node
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Capabilities Inspection Modal */}
-      <Dialog open={capOpen} onOpenChange={setCapOpen}>
-        <DialogContent className="sm:max-w-[500px]">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Layers className="size-4 text-primary" /> Discovered Capabilities: {selectedNodeName}
-            </DialogTitle>
-            <DialogDescription>
-              Hardware storage pools and network bridges confirmed available by Proxmox.
-            </DialogDescription>
-          </DialogHeader>
-
-          {isLoadingCaps ? (
-            <div className="py-12 flex flex-col items-center justify-center gap-2 text-xs text-muted-foreground">
-              <Loader2 className="size-5 animate-spin text-primary" />
-              Inspecting Proxmox capabilities...
-            </div>
-          ) : caps ? (
-            <div className="space-y-4 py-2 text-xs">
-              <div>
-                <h4 className="font-semibold mb-1 text-foreground">Storage Pools</h4>
-                <div className="space-y-1">
-                  {caps.storages?.map((s) => (
-                    <div key={s.storage} className="p-2 border rounded flex justify-between font-mono">
-                      <span>{s.storage} ({s.type})</span>
-                      <Badge variant="outline" className="text-[10px]">{s.active ? "Active" : "Inactive"}</Badge>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <h4 className="font-semibold mb-1 text-foreground">Network Bridges</h4>
-                <div className="space-y-1">
-                  {caps.bridges?.map((b) => (
-                    <div key={b.iface} className="p-2 border rounded flex justify-between font-mono">
-                      <span>{b.iface}</span>
-                      <Badge variant="outline" className="text-[10px]">{b.active ? "Active" : "Down"}</Badge>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="py-8 text-center text-xs text-muted-foreground">
-              No capabilities could be retrieved from this node.
-            </div>
-          )}
-
-          <DialogFooter>
-            <Button onClick={() => setCapOpen(false)}>Close</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
       {/* Edit Proxmox Node Modal */}
       <Dialog open={editNodeOpen} onOpenChange={setEditNodeOpen}>
-        <DialogContent className="sm:max-w-[540px]">
+        <DialogContent className="sm:max-w-[540px] max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Pencil className="size-4 text-primary" /> Edit Proxmox Hypervisor
             </DialogTitle>
             <DialogDescription>
-              Update hypervisor configuration, region designation, and regional flag badge.
+              Update hypervisor configuration, region designation, and storage defaults.
             </DialogDescription>
           </DialogHeader>
 
@@ -897,20 +1412,14 @@ export default function AdminNodesPage() {
               </div>
 
               <div className="flex items-center gap-3">
-                {/* Live Flag Preview */}
                 <div className="w-12 h-8 rounded border border-border bg-background flex items-center justify-center overflow-hidden shrink-0 shadow-xs">
                   {editFlagUrl ? (
-                    <img
-                      src={editFlagUrl}
-                      alt="Flag Preview"
-                      className="w-full h-full object-cover"
-                    />
+                    <img src={editFlagUrl} alt="Flag Preview" className="w-full h-full object-cover" />
                   ) : (
                     <span className="text-xs text-muted-foreground/50">🌐</span>
                   )}
                 </div>
 
-                {/* Upload Action */}
                 <input
                   type="file"
                   ref={editFileInputRef}
@@ -928,7 +1437,6 @@ export default function AdminNodesPage() {
                   <Upload className="size-3.5" /> Upload Flag
                 </Button>
 
-                {/* URL or Direct Source */}
                 <Input
                   placeholder="or paste flag image URL..."
                   value={editFlagUrl.startsWith("data:") ? "Custom flag uploaded" : editFlagUrl}
@@ -936,29 +1444,97 @@ export default function AdminNodesPage() {
                   className="text-xs h-8 flex-1 font-mono"
                 />
               </div>
-              <p className="text-[11px] text-muted-foreground">
-                Upload a national or regional flag icon (PNG, SVG, WEBP, or JPG, max 1.5 MB).
-              </p>
             </div>
 
-            {/* Storage & Bridge Defaults */}
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label>Default Storage Pool</Label>
+            {/* Discover Capabilities Action */}
+            <div className="flex items-center justify-between p-2.5 rounded-lg border bg-muted/30">
+              <div className="space-y-0.5">
+                <span className="text-xs font-semibold text-foreground">Discovered Options</span>
+                <p className="text-[11px] text-muted-foreground">Refresh valid storage pools and bridges from Proxmox.</p>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs gap-1"
+                onClick={handleRefreshEditCapabilities}
+                disabled={isRefreshingEditCaps}
+              >
+                <RefreshCw className={`size-3 ${isRefreshingEditCaps ? "animate-spin" : ""}`} />
+                Query Hypervisor
+              </Button>
+            </div>
+
+            {/* Default Template Storage (vztmpl) */}
+            <div className="space-y-1.5">
+              <Label>Default Template Storage (vztmpl)</Label>
+              {editDiscoveredTemplateStorages.length > 0 ? (
+                <Select value={editDefaultTemplateStorage} onValueChange={setEditDefaultTemplateStorage}>
+                  <SelectTrigger className="text-xs font-mono">
+                    <SelectValue placeholder="Select template storage pool" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {editDiscoveredTemplateStorages.map((s) => (
+                      <SelectItem key={s} value={s} className="font-mono text-xs">{s} (vztmpl)</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
                 <Input
-                  value={editDefaultStorage}
-                  onChange={(e) => setEditDefaultStorage(e.target.value)}
+                  value={editDefaultTemplateStorage}
+                  onChange={(e) => setEditDefaultTemplateStorage(e.target.value)}
+                  placeholder="e.g. local"
                   className="text-xs font-mono"
                 />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Default Network Bridge</Label>
+              )}
+            </div>
+
+            {/* Default Rootfs Storage (rootdir) */}
+            <div className="space-y-1.5">
+              <Label>Default Rootfs Storage (rootdir)</Label>
+              {editDiscoveredRootfsStorages.length > 0 ? (
+                <Select value={editDefaultRootfsStorage} onValueChange={setEditDefaultRootfsStorage}>
+                  <SelectTrigger className="text-xs font-mono">
+                    <SelectValue placeholder="Select rootfs storage pool" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {editDiscoveredRootfsStorages.map((s) => (
+                      <SelectItem key={s} value={s} className="font-mono text-xs">{s} (rootdir)</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input
+                  value={editDefaultRootfsStorage}
+                  onChange={(e) => setEditDefaultRootfsStorage(e.target.value)}
+                  placeholder="e.g. local-lvm"
+                  className="text-xs font-mono"
+                />
+              )}
+            </div>
+
+            {/* Default Network Bridge */}
+            <div className="space-y-1.5">
+              <Label>Default Network Bridge</Label>
+              {editDiscoveredBridges.length > 0 ? (
+                <Select value={editDefaultBridge} onValueChange={setEditDefaultBridge}>
+                  <SelectTrigger className="text-xs font-mono">
+                    <SelectValue placeholder="Select network bridge" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {editDiscoveredBridges.map((b) => (
+                      <SelectItem key={b} value={b} className="font-mono text-xs">{b}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
                 <Input
                   value={editDefaultBridge}
                   onChange={(e) => setEditDefaultBridge(e.target.value)}
+                  placeholder="e.g. vmbr0"
                   className="text-xs font-mono"
                 />
-              </div>
+              )}
             </div>
 
             {/* Self-signed TLS Toggle */}

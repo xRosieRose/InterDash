@@ -14,6 +14,7 @@ import {
   Copy,
   Sparkles,
   Network,
+  Layers,
 } from "lucide-react"
 import {
   Dialog,
@@ -57,12 +58,27 @@ interface NodeOption {
   region: string
   flag_url?: string | null
   status: string
+  default_template_storage?: string | null
+  default_rootfs_storage?: string | null
+  default_storage?: string | null
+  default_bridge?: string | null
 }
 
-interface TemplateOption {
+interface DiscoveredTemplate {
   volid: string
+  storage: string
+  filename: string
   format: string
-  size: number
+  sizeBytes: number
+  osFamily?: string
+  version?: string
+}
+
+interface DiscoveredBridge {
+  iface: string
+  type: string
+  active: boolean
+  comments?: string
 }
 
 interface IpPoolOption {
@@ -79,8 +95,12 @@ export function AdminDeployModal({ open, onOpenChange, onSuccess }: AdminDeployM
 
   // Dynamic capabilities for selected node
   const [nodeCapabilitiesLoading, setNodeCapabilitiesLoading] = React.useState(false)
-  const [availableTemplates, setAvailableTemplates] = React.useState<TemplateOption[]>([])
+  const [availableTemplates, setAvailableTemplates] = React.useState<DiscoveredTemplate[]>([])
+  const [availableRootfsStorages, setAvailableRootfsStorages] = React.useState<string[]>([])
+  const [availableBridges, setAvailableBridges] = React.useState<DiscoveredBridge[]>([])
   const [availableIpPools, setAvailableIpPools] = React.useState<IpPoolOption[]>([])
+  const [noTemplatesReason, setNoTemplatesReason] = React.useState<string>("")
+  const [nodeReadiness, setNodeReadiness] = React.useState<string>("UNKNOWN")
 
   // Form states
   const [ownerUserId, setOwnerUserId] = React.useState("")
@@ -89,6 +109,9 @@ export function AdminDeployModal({ open, onOpenChange, onSuccess }: AdminDeployM
   const [name, setName] = React.useState("")
   const [description, setDescription] = React.useState("")
   const [osTemplate, setOsTemplate] = React.useState("")
+  const [rootfsStorage, setRootfsStorage] = React.useState("")
+  const [selectedBridge, setSelectedBridge] = React.useState("")
+  const [customTemplateMode, setCustomTemplateMode] = React.useState(false)
   const [ipv4PoolId, setIpv4PoolId] = React.useState<string>("auto")
   const [cpuCores, setCpuCores] = React.useState(1)
   const [memoryMb, setMemoryMb] = React.useState(1024)
@@ -141,13 +164,13 @@ export function AdminDeployModal({ open, onOpenChange, onSuccess }: AdminDeployM
 
         if (nodesRes.ok) {
           const nData = await nodesRes.json()
-          setNodes(nData.nodes || [])
-          if (nData.nodes?.length) {
-            setTargetNodeId(nData.nodes[0].id)
+          const nList = nData.nodes || []
+          setNodes(nList)
+          if (nList.length) {
+            setTargetNodeId(nList[0].id)
           }
         }
 
-        // Clean initial hostname based on timestamp
         const timeSuffix = Date.now().toString().slice(-4)
         setHostname(`vps-${timeSuffix}`)
         setName(`VPS ${timeSuffix}`)
@@ -161,40 +184,89 @@ export function AdminDeployModal({ open, onOpenChange, onSuccess }: AdminDeployM
     loadOptions()
   }, [open])
 
-  // Invalidate and fetch real templates & IP pools when targetNodeId changes
+  // When admin selects node: clear old node-dependent data immediately and discover real capabilities
   React.useEffect(() => {
     if (!targetNodeId) {
       setAvailableTemplates([])
+      setAvailableRootfsStorages([])
+      setAvailableBridges([])
       setAvailableIpPools([])
       setOsTemplate("")
+      setRootfsStorage("")
+      setSelectedBridge("")
+      setNoTemplatesReason("")
+      setNodeReadiness("UNKNOWN")
       return
     }
 
     let isMounted = true
+    // Clear immediately to prevent stale cross-node data
     setNodeCapabilitiesLoading(true)
     setAvailableTemplates([])
+    setAvailableRootfsStorages([])
+    setAvailableBridges([])
     setAvailableIpPools([])
     setOsTemplate("")
+    setRootfsStorage("")
+    setSelectedBridge("")
+    setNoTemplatesReason("")
 
     async function loadCapabilities() {
       try {
         const res = await fetch(`/api/admin/nodes/${targetNodeId}/capabilities`)
-        if (!res.ok) throw new Error("Failed to query node capabilities")
+        if (!res.ok) throw new Error("Failed to query hypervisor capabilities")
         const data = await res.json()
 
-        if (isMounted) {
-          const templates: TemplateOption[] = data.templates || []
-          setAvailableTemplates(templates)
-          if (templates.length > 0) {
-            setOsTemplate(templates[0].volid)
-          }
+        if (!isMounted) return
 
-          const pools: IpPoolOption[] = data.ipPools || []
-          setAvailableIpPools(pools)
+        const templates: DiscoveredTemplate[] = data.templates || []
+        const rootfsList: string[] = data.rootfsStorages || []
+        const bridgeList: DiscoveredBridge[] = data.bridges || []
+        const pools: IpPoolOption[] = data.ipPools || []
+        const templateStorages: string[] = data.templateStorages || []
+
+        setAvailableTemplates(templates)
+        setAvailableRootfsStorages(rootfsList)
+        setAvailableBridges(bridgeList)
+        setAvailableIpPools(pools)
+        setNodeReadiness(data.readiness || "UNKNOWN")
+
+        // Auto-select discovered template
+        if (templates.length > 0) {
+          setOsTemplate(templates[0].volid)
+          setNoTemplatesReason("")
+        } else {
+          // Precise explanation for why no templates were found
+          if (templateStorages.length === 0) {
+            setNoTemplatesReason("No active storage on this node supports container templates (vztmpl).")
+          } else if (data.permissions && data.permissions.canReadTemplates === "denied") {
+            setNoTemplatesReason("InterDash cannot read template content because the Proxmox token does not have sufficient permissions.")
+          } else {
+            setNoTemplatesReason(`Storage \`${templateStorages.join(", ")}\` supports container templates, but no templates (.tar.zst / .tar.xz) were found.`)
+          }
         }
-      } catch {
+
+        // Auto-select discovered rootfs storage
+        const selectedNode = nodes.find((n) => n.id === targetNodeId)
+        const defaultRootfs = selectedNode?.default_rootfs_storage || selectedNode?.default_storage
+        if (defaultRootfs && rootfsList.includes(defaultRootfs)) {
+          setRootfsStorage(defaultRootfs)
+        } else if (rootfsList.length > 0) {
+          setRootfsStorage(rootfsList[0])
+        }
+
+        // Auto-select discovered bridge
+        const defaultBridge = selectedNode?.default_bridge
+        if (defaultBridge && bridgeList.some((b) => b.iface === defaultBridge)) {
+          setSelectedBridge(defaultBridge)
+        } else if (bridgeList.length > 0) {
+          setSelectedBridge(bridgeList[0].iface)
+        }
+      } catch (err: unknown) {
         if (isMounted) {
-          toast.error("Could not discover LXC templates on target node.")
+          const msg = err instanceof Error ? err.message : "Capability discovery failed."
+          setNoTemplatesReason(msg)
+          toast.error("Could not discover node capabilities: " + msg)
         }
       } finally {
         if (isMounted) {
@@ -208,7 +280,7 @@ export function AdminDeployModal({ open, onOpenChange, onSuccess }: AdminDeployM
     return () => {
       isMounted = false
     }
-  }, [targetNodeId])
+  }, [targetNodeId, nodes])
 
   // Poll active provisioning job
   React.useEffect(() => {
@@ -270,13 +342,17 @@ export function AdminDeployModal({ open, onOpenChange, onSuccess }: AdminDeployM
       toast.error("Please select an available OS template from the hypervisor.")
       return
     }
+    if (!rootfsStorage) {
+      toast.error("Please select a rootfs storage pool supporting rootdir.")
+      return
+    }
 
     setIsSubmitting(true)
     setJobError(null)
     setJobStep("submitting")
 
     try {
-      // Get CSRF token
+      // CSRF token
       const csrfRes = await fetch("/api/auth/csrf")
       let csrfToken = ""
       if (csrfRes.ok) {
@@ -284,6 +360,28 @@ export function AdminDeployModal({ open, onOpenChange, onSuccess }: AdminDeployM
         csrfToken = cData.token
       }
 
+      // Step 1: Pre-flight validation against server
+      const preflightRes = await fetch("/api/admin/vps/preflight", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
+        },
+        body: JSON.stringify({
+          targetNodeId,
+          templateVolid: osTemplate,
+          rootfsStorage,
+          bridge: selectedBridge || undefined,
+          ipv4PoolId: ipv4PoolId !== "auto" ? ipv4PoolId : undefined,
+        }),
+      })
+
+      const pf = await preflightRes.json()
+      if (!preflightRes.ok || !pf.valid) {
+        throw new Error(pf.error || "Pre-flight verification failed.")
+      }
+
+      // Step 2: Submit deployment job with separate rootfsStorage & bridge
       const clientKey = `deploy-${Date.now()}-${crypto.randomUUID()}`
 
       const res = await fetch("/api/admin/vps", {
@@ -298,7 +396,9 @@ export function AdminDeployModal({ open, onOpenChange, onSuccess }: AdminDeployM
           hostname: hostname.trim().toLowerCase(),
           name: name.trim() || hostname.trim(),
           description: description.trim() || undefined,
-          osTemplate,
+          osTemplate: osTemplate.trim(),
+          storage: rootfsStorage.trim(),
+          bridge: selectedBridge.trim() || undefined,
           cpuCores,
           memoryMb,
           diskGb,
@@ -371,7 +471,7 @@ export function AdminDeployModal({ open, onOpenChange, onSuccess }: AdminDeployM
             Provision Real Proxmox VPS
           </DialogTitle>
           <DialogDescription>
-            Deploy a real LXC container directly on an authenticated Proxmox VE node.
+            Deploy an LXC container directly on an authenticated Proxmox VE hypervisor node.
           </DialogDescription>
         </DialogHeader>
 
@@ -467,6 +567,16 @@ export function AdminDeployModal({ open, onOpenChange, onSuccess }: AdminDeployM
               </div>
             ) : (
               <>
+                {/* Node Readiness Warning if degraded or unverified */}
+                {nodeReadiness === "NOT_READY" && (
+                  <div className="p-3 rounded-lg border border-destructive/30 bg-destructive/5 text-xs text-destructive flex items-start gap-2">
+                    <AlertCircle className="size-4 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-semibold">Node Not Provision-Ready:</span> This hypervisor has missing template or rootfs storage capabilities. Deployment may fail.
+                    </div>
+                  </div>
+                )}
+
                 {/* User Assignment & Target Node */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div className="space-y-1.5">
@@ -544,36 +654,136 @@ export function AdminDeployModal({ open, onOpenChange, onSuccess }: AdminDeployM
                 {/* Real Dynamic OS Template Discovery */}
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
-                    <Label>OS Template (Authoritative from Node)</Label>
-                    {nodeCapabilitiesLoading && (
-                      <span className="text-[11px] text-muted-foreground flex items-center gap-1">
-                        <Loader2 className="size-3 animate-spin" /> Querying vztmpl...
-                      </span>
-                    )}
+                    <Label className="flex items-center gap-1">
+                      <Layers className="size-3.5 text-muted-foreground" /> OS Template (Authoritative from Node)
+                    </Label>
+                    <div className="flex items-center gap-2">
+                      {nodeCapabilitiesLoading && (
+                        <span className="text-[11px] text-muted-foreground flex items-center gap-1">
+                          <Loader2 className="size-3 animate-spin" /> Loading node capabilities...
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setCustomTemplateMode(!customTemplateMode)}
+                        className="text-[11px] text-primary hover:underline cursor-pointer"
+                      >
+                        {customTemplateMode ? "Select discovered" : "Custom path"}
+                      </button>
+                    </div>
                   </div>
-                  {availableTemplates.length > 0 ? (
+
+                  {customTemplateMode ? (
+                    <div className="space-y-1">
+                      <Input
+                        placeholder="e.g. local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst"
+                        value={osTemplate}
+                        onChange={(e) => setOsTemplate(e.target.value)}
+                        className="font-mono text-xs"
+                      />
+                      <p className="text-[11px] text-muted-foreground">
+                        Enter the storage:template volume ID from Proxmox (e.g. <code className="text-foreground">local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst</code>)
+                      </p>
+                    </div>
+                  ) : availableTemplates.length > 0 ? (
                     <Select value={osTemplate} onValueChange={setOsTemplate}>
-                      <SelectTrigger>
+                      <SelectTrigger className="font-mono text-xs">
                         <SelectValue placeholder="Select discovered template" />
                       </SelectTrigger>
                       <SelectContent>
-                        {availableTemplates.map((t) => {
-                          const simpleName = t.volid.split("/").pop() || t.volid
-                          return (
-                            <SelectItem key={t.volid} value={t.volid}>
-                              {simpleName} ({Math.round(t.size / 1024 / 1024)} MB)
-                            </SelectItem>
-                          )
-                        })}
+                        {availableTemplates.map((t) => (
+                          <SelectItem key={t.volid} value={t.volid} className="font-mono text-xs">
+                            <div className="flex items-center justify-between gap-3 w-full">
+                              <span className="font-semibold text-foreground">{t.filename}</span>
+                              <span className="text-[10px] text-muted-foreground">
+                                Storage: {t.storage} • {(t.sizeBytes / (1024 * 1024)).toFixed(1)} MB
+                              </span>
+                            </div>
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                   ) : (
-                    <div className="p-3 rounded border border-dashed border-amber-500/40 bg-amber-500/5 text-xs text-amber-600 dark:text-amber-400">
-                      {nodeCapabilitiesLoading
-                        ? "Querying Proxmox storage for container templates..."
-                        : "No container templates (.tar.zst/.tar.xz) found in node's storage pools. Upload a template to Proxmox first."}
+                    <div className="space-y-2">
+                      <div className="p-3 rounded border border-dashed border-amber-500/40 bg-amber-500/5 text-xs text-amber-600 dark:text-amber-400">
+                        {nodeCapabilitiesLoading ? (
+                          <div className="flex items-center gap-2">
+                            <Loader2 className="size-3.5 animate-spin" />
+                            Loading node capabilities...
+                          </div>
+                        ) : (
+                          noTemplatesReason || "No container templates (.tar.zst/.tar.xz) found in node's storage pools."
+                        )}
+                      </div>
+                      {!nodeCapabilitiesLoading && (
+                        <Input
+                          placeholder="e.g. local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst"
+                          value={osTemplate}
+                          onChange={(e) => setOsTemplate(e.target.value)}
+                          className="font-mono text-xs"
+                        />
+                      )}
                     </div>
                   )}
+                </div>
+
+                {/* Storage & Network Decoupling: Root Disk Storage & Network Bridge */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {/* Root Disk Storage (rootdir) */}
+                  <div className="space-y-1.5">
+                    <Label className="flex items-center gap-1">
+                      <HardDrive className="size-3.5 text-muted-foreground" /> Root Disk Storage
+                    </Label>
+                    {availableRootfsStorages.length > 0 ? (
+                      <Select value={rootfsStorage} onValueChange={setRootfsStorage}>
+                        <SelectTrigger className="font-mono text-xs">
+                          <SelectValue placeholder="Select rootfs storage pool" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {availableRootfsStorages.map((s) => (
+                            <SelectItem key={s} value={s} className="font-mono text-xs">
+                              {s} (rootdir)
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <Input
+                        value={rootfsStorage}
+                        onChange={(e) => setRootfsStorage(e.target.value)}
+                        placeholder="e.g. local-lvm"
+                        className="font-mono text-xs"
+                      />
+                    )}
+                  </div>
+
+                  {/* Network Bridge */}
+                  <div className="space-y-1.5">
+                    <Label className="flex items-center gap-1">
+                      <Network className="size-3.5 text-muted-foreground" /> Network Bridge
+                    </Label>
+                    {availableBridges.length > 0 ? (
+                      <Select value={selectedBridge} onValueChange={setSelectedBridge}>
+                        <SelectTrigger className="font-mono text-xs">
+                          <SelectValue placeholder="Select network bridge" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {availableBridges.map((b) => (
+                            <SelectItem key={b.iface} value={b.iface} className="font-mono text-xs">
+                              {b.iface} {b.active ? "(Active)" : "(Down)"}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <Input
+                        value={selectedBridge}
+                        onChange={(e) => setSelectedBridge(e.target.value)}
+                        placeholder="e.g. vmbr0"
+                        className="font-mono text-xs"
+                      />
+                    )}
+                  </div>
                 </div>
 
                 {/* Hardware Resources: Cores, RAM, Disk */}
@@ -617,26 +827,24 @@ export function AdminDeployModal({ open, onOpenChange, onSuccess }: AdminDeployM
                 </div>
 
                 {/* Network / IP Pool */}
-                {availableIpPools.length > 0 && (
-                  <div className="space-y-1.5">
-                    <Label className="flex items-center gap-1">
-                      <Network className="size-3.5 text-muted-foreground" /> IPv4 Pool Allocation
-                    </Label>
-                    <Select value={ipv4PoolId} onValueChange={setIpv4PoolId}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Automatic (DHCP)" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="auto">Automatic (Hypervisor Bridge DHCP)</SelectItem>
-                        {availableIpPools.map((pool) => (
-                          <SelectItem key={pool.id} value={pool.id} disabled={pool.available_ips === 0}>
-                            {pool.name} ({pool.cidr}) — {pool.available_ips} available
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
+                <div className="space-y-1.5">
+                  <Label className="flex items-center gap-1">
+                    <Network className="size-3.5 text-muted-foreground" /> IPv4 Pool Allocation
+                  </Label>
+                  <Select value={ipv4PoolId} onValueChange={setIpv4PoolId}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select IP allocation method" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">Explicit DHCP (Bridge DHCP Mode)</SelectItem>
+                      {availableIpPools.map((pool) => (
+                        <SelectItem key={pool.id} value={pool.id} disabled={pool.available_ips === 0}>
+                          {pool.name} ({pool.cidr}) — {pool.available_ips} available
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
 
                 {/* Authentication: Root Password */}
                 <div className="space-y-1.5">
@@ -710,7 +918,9 @@ export function AdminDeployModal({ open, onOpenChange, onSuccess }: AdminDeployM
               disabled={
                 isLoadingOptions ||
                 nodes.length === 0 ||
-                availableTemplates.length === 0 ||
+                (!customTemplateMode && availableTemplates.length === 0) ||
+                !osTemplate ||
+                !rootfsStorage ||
                 nodeCapabilitiesLoading
               }
             >

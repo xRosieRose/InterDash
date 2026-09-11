@@ -118,6 +118,68 @@ describe("VPS Real Management & Lifecycle Integration Tests", () => {
     ProxmoxService.updateLxcConfig = async () => {};
     ProxmoxService.checkLxcLocked = async () => ({ locked: false });
 
+    ProxmoxService.getTemplates = async () => [
+      {
+        volid: "local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst",
+        storage: "local",
+        filename: "ubuntu-24.04-standard_24.04-2_amd64.tar.zst",
+        format: "tar.zst",
+        sizeBytes: 130 * 1024 * 1024,
+      },
+    ];
+
+    ProxmoxService.getStorageList = async () => [
+      {
+        storage: "local-lvm",
+        type: "lvmthin",
+        active: true,
+        content: ["rootdir", "images"],
+        supportsTemplates: false,
+        supportsRootfs: true,
+      },
+      {
+        storage: "local",
+        type: "dir",
+        active: true,
+        content: ["iso", "vztmpl", "backup"],
+        supportsTemplates: true,
+        supportsRootfs: false,
+      },
+    ];
+
+    ProxmoxService.getNetworkBridges = async () => [
+      {
+        iface: "vmbr0",
+        type: "bridge",
+        active: true,
+      },
+    ];
+
+    ProxmoxService.verifyNode = async (node) => ({
+      status: "healthy",
+      readiness: "PROVISION_READY",
+      reachable: true,
+      authenticated: true,
+      identityVerified: true,
+      expectedNodeName: node.nodeName,
+      actualNodeName: node.nodeName,
+      checks: [],
+      storages: [],
+      templateStorages: ["local"],
+      rootfsStorages: ["local-lvm"],
+      templates: [
+        {
+          volid: "local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst",
+          storage: "local",
+          filename: "ubuntu-24.04-standard_24.04-2_amd64.tar.zst",
+          format: "tar.zst",
+          sizeBytes: 130 * 1024 * 1024,
+        },
+      ],
+      bridges: [{ iface: "vmbr0", type: "bridge", active: true }],
+      verifiedAt: new Date().toISOString(),
+    });
+
     const app = await createApp();
     await new Promise<void>((resolve) => {
       server = app.listen(0, () => {

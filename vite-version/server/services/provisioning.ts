@@ -52,14 +52,17 @@ export class ProvisioningService {
    */
   public static getNodeConfig(nodeId: string): ProxmoxNodeConfig | null {
     const row = queryOne<any>(
-      `SELECT id, name, hostname, api_url, port, node_name, region,
+      `SELECT id, name, hostname, api_url, port, node_name, region, flag_url,
               auth_token_id, auth_token_secret_encrypted, allow_insecure_tls,
-              default_storage, default_bridge, enabled, status
+              default_storage, default_template_storage, default_rootfs_storage,
+              default_bridge, enabled, status
        FROM proxmox_nodes WHERE id = ? LIMIT 1`,
       [nodeId]
     );
 
     if (!row) return null;
+
+    const defaultRootfs = row.default_rootfs_storage || row.default_storage || null;
 
     return {
       id: row.id,
@@ -69,16 +72,19 @@ export class ProvisioningService {
       port: row.port,
       nodeName: row.node_name,
       region: row.region,
+      flagUrl: row.flag_url || null,
       authTokenId: row.auth_token_id,
       authTokenSecret: decryptCredential(row.auth_token_secret_encrypted),
       allowInsecureTls: Boolean(row.allow_insecure_tls),
-      defaultStorage: row.default_storage || "local-lvm",
-      defaultBridge: row.default_bridge || "vmbr0",
+      defaultTemplateStorage: row.default_template_storage || null,
+      defaultRootfsStorage: defaultRootfs,
+      defaultBridge: row.default_bridge || null,
+      defaultStorage: defaultRootfs || undefined,
     };
   }
 
   /**
-   * Submit a new VPS provisioning job
+   * Submit a new VPS provisioning job with submit-time preflight validation
    */
   public static async submitJob(req: ProvisioningJobRequest): Promise<{
     jobId: string;
@@ -131,19 +137,114 @@ export class ProvisioningService {
       throw err;
     }
 
-    // 3. Create job row
+    // 3. Pre-flight Validation: Verify template, storage, bridge, and IP pool
+    const effectiveStorage = req.storage || node.defaultRootfsStorage || node.defaultStorage;
+    const effectiveBridge = req.bridge || node.defaultBridge;
+
+    // Validate templates on target node
+    let discoveredTemplates: Array<{ volid: string }> = [];
+    try {
+      discoveredTemplates = await ProxmoxService.getTemplates(node);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const e = new Error(`Cannot verify container templates on node '${node.name}': ${msg}`);
+      (e as any).statusCode = 422;
+      throw e;
+    }
+
+    const templateExists = discoveredTemplates.some(
+      (t) => t.volid.toLowerCase() === req.osTemplate.trim().toLowerCase()
+    );
+
+    if (!templateExists) {
+      const e = new Error(
+        `Template '${req.osTemplate}' does not exist on target node '${node.name}'. Discovered templates: [${discoveredTemplates.map((t) => t.volid).join(", ")}]`
+      );
+      (e as any).statusCode = 422;
+      throw e;
+    }
+
+    // Validate rootfs storage on target node
+    if (effectiveStorage) {
+      try {
+        const storages = await ProxmoxService.getStorageList(node);
+        const targetStorage = storages.find(
+          (s) => s.storage.toLowerCase() === effectiveStorage.trim().toLowerCase()
+        );
+
+        if (!targetStorage) {
+          const e = new Error(
+            `Rootfs storage pool '${effectiveStorage}' was not found on target node '${node.name}'. Available: [${storages.map((s) => s.storage).join(", ")}]`
+          );
+          (e as any).statusCode = 422;
+          throw e;
+        }
+
+        if (!targetStorage.supportsRootfs) {
+          const e = new Error(
+            `Storage pool '${effectiveStorage}' does not support container root disks ('rootdir'). Content types: [${targetStorage.content.join(", ")}]`
+          );
+          (e as any).statusCode = 422;
+          throw e;
+        }
+      } catch (err: unknown) {
+        if ((err as any).statusCode === 422) throw err;
+        const msg = err instanceof Error ? err.message : String(err);
+        const e = new Error(`Failed to validate rootfs storage on node: ${msg}`);
+        (e as any).statusCode = 422;
+        throw e;
+      }
+    }
+
+    // Validate network bridge
+    if (effectiveBridge) {
+      try {
+        const bridges = await ProxmoxService.getNetworkBridges(node);
+        const bridgeExists = bridges.some(
+          (b) => b.iface.toLowerCase() === effectiveBridge.trim().toLowerCase()
+        );
+        if (!bridgeExists) {
+          const e = new Error(
+            `Network bridge '${effectiveBridge}' was not found on target node '${node.name}'. Discovered bridges: [${bridges.map((b) => b.iface).join(", ")}]`
+          );
+          (e as any).statusCode = 422;
+          throw e;
+        }
+      } catch (err: unknown) {
+        if ((err as any).statusCode === 422) throw err;
+        const msg = err instanceof Error ? err.message : String(err);
+        const e = new Error(`Failed to validate network bridge on node: ${msg}`);
+        (e as any).statusCode = 422;
+        throw e;
+      }
+    }
+
+    // Validate IP Pool availability if specified
+    if (req.ipv4PoolId) {
+      const availableIp = queryOne<any>(
+        `SELECT id FROM ip_addresses WHERE pool_id = ? AND status = 'available' LIMIT 1`,
+        [req.ipv4PoolId]
+      );
+      if (!availableIp) {
+        const e = new Error("No available IPv4 address is configured for this node in the selected pool.");
+        (e as any).statusCode = 422;
+        throw e;
+      }
+    }
+
+    // 4. Create job row
     const jobId = uuidv4();
     const specsJson = JSON.stringify({
       hostname: req.hostname,
       name: req.name || `${req.hostname} Instance`,
       description: req.description || null,
-      osTemplate: req.osTemplate,
+      osTemplate: req.osTemplate.trim(),
       cpuCores: req.cpuCores,
       memoryMb: req.memoryMb,
       swapMb: req.swapMb || 512,
       diskGb: req.diskGb,
-      storage: req.storage || node.defaultStorage,
-      bridge: req.bridge || node.defaultBridge,
+      storage: effectiveStorage,
+      bridge: effectiveBridge,
       ipv4PoolId: req.ipv4PoolId,
       startAfterCreate: req.startAfterCreate !== false,
       hasSshKey: Boolean(req.sshPublicKey),
@@ -229,9 +330,14 @@ export class ProvisioningService {
     try {
       // Step 1: Validating configuration & node
       this.updateJobStep(jobId, "allocating", "validating_configuration");
-      const health = await ProxmoxService.healthCheck(node);
-      if (!health.online) {
+      const verification = await ProxmoxService.verifyNode(node, true);
+      if (!verification.reachable) {
         throw new Error(`Target node '${node.name}' is currently offline or unreachable.`);
+      }
+      if (!verification.identityVerified) {
+        throw new Error(
+          `Target node '${node.name}' failed identity verification: ${verification.error || "node identity mismatch"}.`
+        );
       }
 
       // Step 2: Allocating VMID
@@ -248,19 +354,20 @@ export class ProvisioningService {
            LIMIT 1`,
           [specs.ipv4PoolId]
         );
-        if (ipRow) {
-          reservedIpId = ipRow.id;
-          reservedIpAddr = ipRow.ip_address;
-          execute(
-            `UPDATE ip_addresses SET status = 'reserved', reserved_at = datetime('now') WHERE id = ?`,
-            [reservedIpId]
-          );
-
-          const pool = queryOne<any>("SELECT gateway FROM ip_pools WHERE id = ?", [
-            specs.ipv4PoolId,
-          ]);
-          if (pool) gateway = pool.gateway;
+        if (!ipRow) {
+          throw new Error("No available IPv4 address is configured for this node in the selected pool.");
         }
+        reservedIpId = ipRow.id;
+        reservedIpAddr = ipRow.ip_address;
+        execute(
+          `UPDATE ip_addresses SET status = 'reserved', reserved_at = datetime('now') WHERE id = ?`,
+          [reservedIpId]
+        );
+
+        const pool = queryOne<any>("SELECT gateway FROM ip_pools WHERE id = ?", [
+          specs.ipv4PoolId,
+        ]);
+        if (pool) gateway = pool.gateway;
       }
 
       // Step 4: Creating LXC Container on Proxmox

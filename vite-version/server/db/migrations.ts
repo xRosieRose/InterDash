@@ -368,6 +368,126 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 10,
+    name: "proxmox_nodes_verification_and_storage_separation",
+    up: (db: Database) => {
+      // 1. Temporarily disable foreign keys for table recreation
+      db.run("PRAGMA foreign_keys = OFF;");
+
+      try {
+        // Check if proxmox_nodes exists
+        const tableCheck = db.exec(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='proxmox_nodes'"
+        );
+
+        if (tableCheck.length && tableCheck[0].values.length) {
+          // Create v2 table with decoupled storages and expanded status CHECK constraint
+          db.run(`
+            CREATE TABLE IF NOT EXISTS proxmox_nodes_v2 (
+              id                          TEXT PRIMARY KEY,
+              cluster_id                  TEXT REFERENCES proxmox_clusters(id) ON DELETE SET NULL,
+              name                        TEXT NOT NULL,
+              hostname                    TEXT NOT NULL,
+              api_url                     TEXT NOT NULL,
+              port                        INTEGER NOT NULL DEFAULT 8006,
+              node_name                   TEXT NOT NULL DEFAULT 'pve',
+              region                      TEXT NOT NULL DEFAULT 'default',
+              flag_url                    TEXT,
+              auth_token_id               TEXT NOT NULL,
+              auth_token_secret_encrypted TEXT NOT NULL,
+              allow_insecure_tls          INTEGER NOT NULL DEFAULT 0,
+              default_storage             TEXT,
+              default_template_storage    TEXT,
+              default_rootfs_storage      TEXT,
+              default_bridge              TEXT,
+              enabled                     INTEGER NOT NULL DEFAULT 1,
+              status                      TEXT NOT NULL DEFAULT 'unverified' CHECK(status IN ('healthy','online','offline','degraded','misconfigured','unverified','unknown')),
+              last_health_check           TEXT,
+              last_verified_at            TEXT,
+              health_info                 TEXT,
+              verification_info           TEXT,
+              created_at                  TEXT NOT NULL DEFAULT (datetime('now')),
+              updated_at                  TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+          `);
+
+          // Migrate data safely:
+          // - default_template_storage is NULL (never hardcode 'local')
+          // - default_rootfs_storage derived from existing default_storage
+          // - status mapped to healthy/degraded/offline/misconfigured/unverified/unknown
+          db.run(`
+            INSERT INTO proxmox_nodes_v2 (
+              id, cluster_id, name, hostname, api_url, port, node_name, region, flag_url,
+              auth_token_id, auth_token_secret_encrypted, allow_insecure_tls,
+              default_storage, default_template_storage, default_rootfs_storage, default_bridge,
+              enabled, status, last_health_check, last_verified_at, health_info, verification_info,
+              created_at, updated_at
+            )
+            SELECT 
+              id, cluster_id, name, hostname, api_url, port, node_name, region, flag_url,
+              auth_token_id, auth_token_secret_encrypted, allow_insecure_tls,
+              default_storage,
+              NULL,
+              default_storage,
+              default_bridge,
+              enabled,
+              CASE
+                WHEN status = 'online' THEN 'healthy'
+                WHEN status IN ('healthy','offline','degraded','misconfigured','unverified','unknown') THEN status
+                ELSE 'unverified'
+              END,
+              last_health_check,
+              last_health_check,
+              health_info,
+              health_info,
+              created_at,
+              updated_at
+            FROM proxmox_nodes;
+          `);
+
+          db.run("DROP TABLE proxmox_nodes;");
+          db.run("ALTER TABLE proxmox_nodes_v2 RENAME TO proxmox_nodes;");
+        } else {
+          // Fresh creation
+          db.run(`
+            CREATE TABLE IF NOT EXISTS proxmox_nodes (
+              id                          TEXT PRIMARY KEY,
+              cluster_id                  TEXT REFERENCES proxmox_clusters(id) ON DELETE SET NULL,
+              name                        TEXT NOT NULL,
+              hostname                    TEXT NOT NULL,
+              api_url                     TEXT NOT NULL,
+              port                        INTEGER NOT NULL DEFAULT 8006,
+              node_name                   TEXT NOT NULL DEFAULT 'pve',
+              region                      TEXT NOT NULL DEFAULT 'default',
+              flag_url                    TEXT,
+              auth_token_id               TEXT NOT NULL,
+              auth_token_secret_encrypted TEXT NOT NULL,
+              allow_insecure_tls          INTEGER NOT NULL DEFAULT 0,
+              default_storage             TEXT,
+              default_template_storage    TEXT,
+              default_rootfs_storage      TEXT,
+              default_bridge              TEXT,
+              enabled                     INTEGER NOT NULL DEFAULT 1,
+              status                      TEXT NOT NULL DEFAULT 'unverified' CHECK(status IN ('healthy','online','offline','degraded','misconfigured','unverified','unknown')),
+              last_health_check           TEXT,
+              last_verified_at            TEXT,
+              health_info                 TEXT,
+              verification_info           TEXT,
+              created_at                  TEXT NOT NULL DEFAULT (datetime('now')),
+              updated_at                  TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+          `);
+        }
+
+        // Recreate indexes
+        db.run("CREATE INDEX IF NOT EXISTS idx_proxmox_nodes_status ON proxmox_nodes(status);");
+        db.run("CREATE INDEX IF NOT EXISTS idx_proxmox_nodes_enabled ON proxmox_nodes(enabled);");
+      } finally {
+        db.run("PRAGMA foreign_keys = ON;");
+      }
+    },
+  },
 ];
 
 /**
@@ -395,6 +515,7 @@ export function runMigrations(db: Database): void {
   for (const migration of migrations) {
     if (!appliedVersions.has(migration.version)) {
       console.log(`[DB] Applying migration ${migration.version}: ${migration.name}...`);
+      db.run("PRAGMA foreign_keys = OFF;");
       db.run("BEGIN TRANSACTION;");
       try {
         migration.up(db);
@@ -408,6 +529,8 @@ export function runMigrations(db: Database): void {
         db.run("ROLLBACK;");
         console.error(`[DB] Migration ${migration.version} failed:`, err);
         throw err;
+      } finally {
+        db.run("PRAGMA foreign_keys = ON;");
       }
     }
   }

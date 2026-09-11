@@ -200,15 +200,63 @@ router.patch("/users/:id", (req: Request, res: Response) => {
 router.get("/nodes", (_req: Request, res: Response) => {
   const nodes = queryAll<any>(
     `SELECT n.id, n.cluster_id, n.name, n.hostname, n.api_url, n.port,
-            n.node_name, n.region, n.flag_url, n.allow_insecure_tls, n.default_storage,
-            n.default_bridge, n.enabled, n.status, n.last_health_check,
-            n.health_info, n.created_at, n.updated_at,
+            n.node_name, n.region, n.flag_url, n.allow_insecure_tls,
+            n.default_storage, n.default_template_storage, n.default_rootfs_storage,
+            n.default_bridge, n.enabled, n.status, n.last_health_check, n.last_verified_at,
+            n.health_info, n.verification_info, n.created_at, n.updated_at,
             (SELECT COUNT(*) FROM vps WHERE proxmox_node_id = n.id) as vps_count
      FROM proxmox_nodes n
      ORDER BY n.created_at DESC`
   );
 
   res.json({ nodes });
+});
+
+// ============================================================================
+// POST /api/admin/nodes/test-connection — Ephemeral Pre-Save Connection Test
+// ============================================================================
+router.post("/nodes/test-connection", async (req: Request, res: Response) => {
+  const {
+    name = "Test Connection",
+    hostname,
+    apiUrl,
+    port = 8006,
+    nodeName = "pve",
+    region = "default",
+    flagUrl = null,
+    authTokenId,
+    authTokenSecret,
+    allowInsecureTls = false,
+  } = req.body;
+
+  if (!hostname || !apiUrl || !authTokenId || !authTokenSecret) {
+    res.status(400).json({
+      error: "Missing required connection parameters (hostname, apiUrl, authTokenId, authTokenSecret).",
+    });
+    return;
+  }
+
+  const testConfig = {
+    id: "test",
+    name: String(name).trim(),
+    hostname: String(hostname).trim(),
+    apiUrl: String(apiUrl).trim(),
+    port: parseInt(port, 10) || 8006,
+    nodeName: String(nodeName).trim(),
+    region: String(region).trim(),
+    flagUrl: flagUrl ? String(flagUrl).trim() : null,
+    authTokenId: String(authTokenId).trim(),
+    authTokenSecret: String(authTokenSecret).trim(),
+    allowInsecureTls: Boolean(allowInsecureTls),
+  };
+
+  try {
+    const verification = await ProxmoxService.verifyNode(testConfig, true);
+    res.json({ success: true, verification });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(502).json({ error: `Connection test failed: ${msg}` });
+  }
 });
 
 // ============================================================================
@@ -226,8 +274,10 @@ router.post("/nodes", async (req: Request, res: Response) => {
     authTokenId,
     authTokenSecret,
     allowInsecureTls = false,
-    defaultStorage = "local-lvm",
-    defaultBridge = "vmbr0",
+    defaultTemplateStorage = null,
+    defaultRootfsStorage = null,
+    defaultStorage = null,
+    defaultBridge = null,
   } = req.body;
 
   if (!name || !hostname || !apiUrl || !authTokenId || !authTokenSecret) {
@@ -237,74 +287,153 @@ router.post("/nodes", async (req: Request, res: Response) => {
     return;
   }
 
+  const effectiveRootfs = defaultRootfsStorage || defaultStorage || null;
+
   const testConfig = {
     id: "test",
-    name,
-    hostname,
-    apiUrl,
+    name: String(name).trim(),
+    hostname: String(hostname).trim(),
+    apiUrl: String(apiUrl).trim(),
     port: parseInt(port, 10) || 8006,
-    nodeName,
-    region,
-    flagUrl,
-    authTokenId,
-    authTokenSecret,
+    nodeName: String(nodeName).trim(),
+    region: String(region).trim(),
+    flagUrl: flagUrl ? String(flagUrl).trim() : null,
+    authTokenId: String(authTokenId).trim(),
+    authTokenSecret: String(authTokenSecret).trim(),
     allowInsecureTls: Boolean(allowInsecureTls),
-    defaultStorage,
-    defaultBridge,
+    defaultTemplateStorage: defaultTemplateStorage ? String(defaultTemplateStorage).trim() : null,
+    defaultRootfsStorage: effectiveRootfs ? String(effectiveRootfs).trim() : null,
+    defaultBridge: defaultBridge ? String(defaultBridge).trim() : null,
   };
 
-  // Perform pre-flight connection verification
+  // Perform full pre-flight connection verification
   console.log(`[NODES] Verifying Proxmox node connection to ${apiUrl}...`);
-  const health = await ProxmoxService.healthCheck(testConfig);
+  const verification = await ProxmoxService.verifyNode(testConfig, true);
 
-  const initialStatus = health.online ? "online" : "offline";
+  const initialStatus = verification.status;
   const encryptedSecret = encryptCredential(authTokenSecret);
   const nodeId = uuidv4();
+
+  // Auto-select discovered defaults if not explicitly provided
+  const resolvedTemplateStorage =
+    defaultTemplateStorage ||
+    (verification.templateStorages.length > 0 ? verification.templateStorages[0] : null);
+  const resolvedRootfsStorage =
+    effectiveRootfs ||
+    (verification.rootfsStorages.length > 0 ? verification.rootfsStorages[0] : null);
+  const resolvedBridge =
+    defaultBridge ||
+    (verification.bridges.length > 0 ? verification.bridges[0].iface : null);
+
+  const safeSnapshot = {
+    status: verification.status,
+    apiVersion: verification.apiVersion,
+    actualNodeName: verification.actualNodeName,
+    latencyMs: verification.latencyMs,
+    templateCount: verification.templates.length,
+    templateStorages: verification.templateStorages,
+    rootfsStorages: verification.rootfsStorages,
+    bridges: verification.bridges.map((b) => b.iface),
+    checkedAt: verification.verifiedAt,
+  };
 
   execute(
     `INSERT INTO proxmox_nodes (
       id, name, hostname, api_url, port, node_name, region, flag_url, auth_token_id,
       auth_token_secret_encrypted, allow_insecure_tls, default_storage,
-      default_bridge, enabled, status, last_health_check, health_info,
+      default_template_storage, default_rootfs_storage, default_bridge,
+      enabled, status, last_health_check, last_verified_at, health_info, verification_info,
       created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, datetime('now'), ?, datetime('now'), datetime('now'))`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, datetime('now'), datetime('now'), ?, ?, datetime('now'), datetime('now'))`,
     [
       nodeId,
       name.trim(),
       hostname.trim(),
       apiUrl.trim(),
       parseInt(port, 10) || 8006,
-      nodeName.trim(),
+      (verification.actualNodeName || nodeName).trim(),
       region.trim(),
       flagUrl ? String(flagUrl).trim() : null,
       authTokenId.trim(),
       encryptedSecret,
       allowInsecureTls ? 1 : 0,
-      defaultStorage.trim(),
-      defaultBridge.trim(),
+      resolvedRootfsStorage,
+      resolvedTemplateStorage,
+      resolvedRootfsStorage,
+      resolvedBridge,
       initialStatus,
-      JSON.stringify(health),
+      JSON.stringify(safeSnapshot),
+      JSON.stringify(safeSnapshot),
     ]
   );
 
   execute(
     `INSERT INTO audit_logs (user_id, event_type, metadata)
      VALUES (?, 'proxmox_node_created', ?)`,
-    [req.user?.id, JSON.stringify({ node_id: nodeId, name, online: health.online })]
+    [
+      req.user?.id,
+      JSON.stringify({
+        node_id: nodeId,
+        name,
+        status: initialStatus,
+        provisionReady: verification.provisionReady,
+      }),
+    ]
   );
 
   res.status(201).json({
     success: true,
     nodeId,
-    health,
-    message: health.online
-      ? "Proxmox node verified and connected successfully!"
-      : `Node saved, but initial health check failed: ${health.error}`,
+    verification,
+    message: verification.provisionReady
+      ? "Proxmox node verified and connected successfully (Ready for VPS provisioning)!"
+      : `Node saved with status '${initialStatus}'. Notice: ${verification.checks.find((c) => c.status !== "passed")?.message || "Check capabilities."}`,
   });
 });
 
 // ============================================================================
-// POST /api/admin/nodes/:id/health — Live Health Check
+// POST /api/admin/nodes/:id/verify — Deep Layered Verification
+// ============================================================================
+router.post("/nodes/:id/verify", async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  const nodeConfig = ProvisioningService.getNodeConfig(id);
+  if (!nodeConfig) {
+    res.status(404).json({ error: "Node not found." });
+    return;
+  }
+
+  try {
+    const verification = await ProxmoxService.verifyNode(nodeConfig, true);
+    const safeSnapshot = {
+      status: verification.status,
+      apiVersion: verification.apiVersion,
+      actualNodeName: verification.actualNodeName,
+      latencyMs: verification.latencyMs,
+      templateCount: verification.templates.length,
+      templateStorages: verification.templateStorages,
+      rootfsStorages: verification.rootfsStorages,
+      bridges: verification.bridges.map((b) => b.iface),
+      checkedAt: verification.verifiedAt,
+    };
+
+    execute(
+      `UPDATE proxmox_nodes SET
+        status = ?, last_health_check = datetime('now'), last_verified_at = datetime('now'),
+        health_info = ?, verification_info = ?, updated_at = datetime('now')
+       WHERE id = ?`,
+      [verification.status, JSON.stringify(safeSnapshot), JSON.stringify(safeSnapshot), id]
+    );
+
+    res.json({ success: true, verification });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(502).json({ error: `Node verification failed: ${msg}` });
+  }
+});
+
+// ============================================================================
+// POST /api/admin/nodes/:id/health — Live Health Check (Backwards Compatible)
 // ============================================================================
 router.post("/nodes/:id/health", async (req: Request, res: Response) => {
   const { id } = req.params;
@@ -315,17 +444,39 @@ router.post("/nodes/:id/health", async (req: Request, res: Response) => {
     return;
   }
 
-  const health = await ProxmoxService.healthCheck(nodeConfig);
-  const newStatus = health.online ? "online" : "offline";
+  const verification = await ProxmoxService.verifyNode(nodeConfig, true);
+  const newStatus = verification.status;
+
+  const safeSnapshot = {
+    status: verification.status,
+    apiVersion: verification.apiVersion,
+    actualNodeName: verification.actualNodeName,
+    latencyMs: verification.latencyMs,
+    templateCount: verification.templates.length,
+    templateStorages: verification.templateStorages,
+    rootfsStorages: verification.rootfsStorages,
+    bridges: verification.bridges.map((b) => b.iface),
+    checkedAt: verification.verifiedAt,
+  };
 
   execute(
     `UPDATE proxmox_nodes SET
-      status = ?, last_health_check = datetime('now'), health_info = ?, updated_at = datetime('now')
+      status = ?, last_health_check = datetime('now'), last_verified_at = datetime('now'),
+      health_info = ?, verification_info = ?, updated_at = datetime('now')
      WHERE id = ?`,
-    [newStatus, JSON.stringify(health), id]
+    [newStatus, JSON.stringify(safeSnapshot), JSON.stringify(safeSnapshot), id]
   );
 
-  res.json({ success: true, health, status: newStatus });
+  const health = {
+    online: verification.status === "healthy" || verification.status === "degraded",
+    version: verification.apiVersion,
+    release: verification.apiRelease,
+    repoid: verification.repoid,
+    nodeStatus: verification.nodeStatus,
+    latencyMs: verification.latencyMs,
+  };
+
+  res.json({ success: true, health, status: newStatus, verification });
 });
 
 // ============================================================================
@@ -340,17 +491,51 @@ router.get("/nodes/:id/capabilities", async (req: Request, res: Response) => {
     return;
   }
 
-  try {
-    const storages = await ProxmoxService.getStorageList(nodeConfig);
-    const bridges = await ProxmoxService.getNetworkBridges(nodeConfig);
-    let templates: any[] = [];
-    try {
-      templates = await ProxmoxService.getTemplates(nodeConfig);
-    } catch {
-      // Storage might not support vztmpl content
-    }
+  const forceRefresh = req.query.refresh === "true";
 
-    res.json({ storages, bridges, templates });
+  try {
+    const verification = await ProxmoxService.verifyNode(nodeConfig, forceRefresh);
+
+    const ipPools = queryAll<any>(
+      `SELECT p.id, p.name, p.cidr, p.gateway,
+              COUNT(CASE WHEN a.status = 'available' THEN 1 END) as available_ips,
+              COUNT(a.id) as total_ips
+       FROM ip_pools p
+       LEFT JOIN ip_addresses a ON a.pool_id = p.id
+       WHERE p.node_id = ? OR p.node_id IS NULL
+       GROUP BY p.id`,
+      [id]
+    );
+
+    res.json({
+      node: {
+        id: nodeConfig.id,
+        name: nodeConfig.name,
+        nodeName: nodeConfig.nodeName,
+        region: nodeConfig.region,
+        status: verification.status,
+        defaultTemplateStorage: nodeConfig.defaultTemplateStorage,
+        defaultRootfsStorage: nodeConfig.defaultRootfsStorage || nodeConfig.defaultStorage,
+        defaultBridge: nodeConfig.defaultBridge,
+        lastVerifiedAt: verification.verifiedAt,
+      },
+      health: {
+        status: verification.status,
+        latencyMs: verification.latencyMs,
+        apiVersion: verification.apiVersion,
+        apiRelease: verification.apiRelease,
+        readReady: verification.readReady,
+        provisionReady: verification.provisionReady,
+      },
+      storages: verification.storages,
+      templateStorages: verification.templateStorages,
+      rootfsStorages: verification.rootfsStorages,
+      templates: verification.templates,
+      bridges: verification.bridges,
+      permissions: verification.permissions,
+      checks: verification.checks,
+      ipPools,
+    });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     res.status(502).json({ error: `Failed to query node capabilities: ${msg}` });
@@ -358,7 +543,7 @@ router.get("/nodes/:id/capabilities", async (req: Request, res: Response) => {
 });
 
 // ============================================================================
-// PATCH /api/admin/nodes/:id — Update Proxmox Node Metadata & Flag
+// PATCH /api/admin/nodes/:id — Update Proxmox Node Metadata & Settings
 // ============================================================================
 router.patch("/nodes/:id", (req: Request, res: Response) => {
   const { id } = req.params;
@@ -373,6 +558,8 @@ router.patch("/nodes/:id", (req: Request, res: Response) => {
     region,
     flagUrl,
     defaultStorage,
+    defaultTemplateStorage,
+    defaultRootfsStorage,
     defaultBridge,
     allowInsecureTls,
     enabled,
@@ -397,9 +584,17 @@ router.patch("/nodes/:id", (req: Request, res: Response) => {
     updates.push("default_storage = ?");
     params.push(String(defaultStorage).trim());
   }
+  if (defaultTemplateStorage !== undefined) {
+    updates.push("default_template_storage = ?");
+    params.push(defaultTemplateStorage ? String(defaultTemplateStorage).trim() : null);
+  }
+  if (defaultRootfsStorage !== undefined) {
+    updates.push("default_rootfs_storage = ?");
+    params.push(defaultRootfsStorage ? String(defaultRootfsStorage).trim() : null);
+  }
   if (defaultBridge !== undefined) {
     updates.push("default_bridge = ?");
-    params.push(String(defaultBridge).trim());
+    params.push(defaultBridge ? String(defaultBridge).trim() : null);
   }
   if (allowInsecureTls !== undefined) {
     updates.push("allow_insecure_tls = ?");
@@ -419,6 +614,9 @@ router.patch("/nodes/:id", (req: Request, res: Response) => {
   params.push(id);
 
   execute(`UPDATE proxmox_nodes SET ${updates.join(", ")} WHERE id = ?`, params);
+
+  // Invalidate capability cache for this node
+  ProxmoxService.invalidateCache(id);
 
   execute(
     `INSERT INTO audit_logs (user_id, event_type, metadata)
@@ -456,6 +654,177 @@ router.delete("/nodes/:id", (req: Request, res: Response) => {
   );
 
   res.json({ success: true, message: "Node deleted successfully." });
+});
+
+// ============================================================================
+// POST /api/admin/vps/preflight — Preflight Deployment Verification
+// ============================================================================
+router.post("/vps/preflight", async (req: Request, res: Response) => {
+  const {
+    ownerUserId,
+    targetNodeId,
+    hostname,
+    osTemplate,
+    templateVolid,
+    cpuCores = 1,
+    memoryMb = 1024,
+    diskGb = 25,
+    storage,
+    rootfsStorage,
+    bridge,
+    ipv4PoolId,
+  } = req.body;
+
+  const checks: Array<{ name: string; status: "passed" | "failed" | "warning"; message: string }> = [];
+
+  // Check 1: Owner User
+  if (ownerUserId) {
+    const owner = queryOne<any>("SELECT id FROM users WHERE id = ?", [ownerUserId]);
+    if (!owner) {
+      checks.push({ name: "owner", status: "failed", message: "Target owner user does not exist." });
+    } else {
+      checks.push({ name: "owner", status: "passed", message: "Owner user verified." });
+    }
+  }
+
+  // Check 2: Target Node
+  const nodeConfig = ProvisioningService.getNodeConfig(targetNodeId);
+  if (!nodeConfig) {
+    checks.push({ name: "node", status: "failed", message: "Target Proxmox node does not exist or is disabled." });
+    res.status(422).json({ valid: false, error: "Target Proxmox node does not exist or is disabled.", checks });
+    return;
+  }
+  checks.push({ name: "node", status: "passed", message: `Node '${nodeConfig.name}' active.` });
+
+  const effectiveTemplate = templateVolid || osTemplate;
+  const effectiveStorage = rootfsStorage || storage || nodeConfig.defaultRootfsStorage || nodeConfig.defaultStorage;
+
+  // Check 3: Live Node Verification & Capabilities
+  try {
+    const verification = await ProxmoxService.verifyNode(nodeConfig, true);
+    if (!verification.reachable) {
+      checks.push({ name: "connectivity", status: "failed", message: "Proxmox node is unreachable." });
+    } else if (!verification.identityVerified) {
+      checks.push({ name: "identity", status: "failed", message: `Node identity mismatch: ${verification.error || "mismatch"}` });
+    } else {
+      checks.push({ name: "connectivity", status: "passed", message: `Node is online (${verification.latencyMs}ms).` });
+    }
+
+    // Check 4: Template existence
+    if (effectiveTemplate) {
+      const templateMatch = verification.templates.find(
+        (t) => t.volid.toLowerCase() === String(effectiveTemplate).trim().toLowerCase()
+      );
+      if (!templateMatch) {
+        checks.push({
+          name: "template",
+          status: "failed",
+          message: `Template '${effectiveTemplate}' was not found on node '${nodeConfig.name}'. Discovered: [${verification.templates.map((t) => t.volid).join(", ")}]`,
+        });
+      } else {
+        checks.push({
+          name: "template",
+          status: "passed",
+          message: `Template verified in storage '${templateMatch.storage}' (${templateMatch.filename}).`,
+        });
+      }
+    }
+
+    // Check 5: Rootfs Storage
+    if (effectiveStorage) {
+      const rootfsMatch = verification.storages.find(
+        (s) => s.storage.toLowerCase() === String(effectiveStorage).trim().toLowerCase()
+      );
+      if (!rootfsMatch) {
+        checks.push({
+          name: "rootfs_storage",
+          status: "failed",
+          message: `Rootfs storage pool '${effectiveStorage}' was not found on node.`,
+        });
+      } else if (!rootfsMatch.supportsRootfs) {
+        checks.push({
+          name: "rootfs_storage",
+          status: "failed",
+          message: `Storage pool '${effectiveStorage}' does not support container root disks ('rootdir').`,
+        });
+      } else {
+        checks.push({
+          name: "rootfs_storage",
+          status: "passed",
+          message: `Rootfs storage '${effectiveStorage}' active and supports rootdir.`,
+        });
+      }
+    }
+
+    // Check 6: Network Bridge
+    const effectiveBridge = bridge || nodeConfig.defaultBridge;
+    if (effectiveBridge) {
+      const bridgeMatch = verification.bridges.find(
+        (b) => b.iface.toLowerCase() === String(effectiveBridge).trim().toLowerCase()
+      );
+      if (!bridgeMatch) {
+        checks.push({
+          name: "bridge",
+          status: "failed",
+          message: `Network bridge '${effectiveBridge}' is not available on node.`,
+        });
+      } else {
+        checks.push({
+          name: "bridge",
+          status: "passed",
+          message: `Network bridge '${effectiveBridge}' verified.`,
+        });
+      }
+    }
+
+    // Check 7: IPAM
+    if (ipv4PoolId && ipv4PoolId !== "auto") {
+      const availableIp = queryOne<any>(
+        `SELECT id FROM ip_addresses WHERE pool_id = ? AND status = 'available' LIMIT 1`,
+        [ipv4PoolId]
+      );
+      if (!availableIp) {
+        checks.push({
+          name: "ipam",
+          status: "failed",
+          message: "No available IPv4 address remaining in the selected pool.",
+        });
+      } else {
+        checks.push({ name: "ipam", status: "passed", message: "Dedicated IPv4 address available." });
+      }
+    }
+
+    // Check 8: Resource limits
+    const parsedCores = parseInt(cpuCores, 10);
+    const parsedMemory = parseInt(memoryMb, 10);
+    const parsedDisk = parseInt(diskGb, 10);
+
+    if (isNaN(parsedCores) || parsedCores < 1 || parsedCores > 64) {
+      checks.push({ name: "resources", status: "failed", message: "Cores must be between 1 and 64." });
+    } else if (isNaN(parsedMemory) || parsedMemory < 256 || parsedMemory > 131072) {
+      checks.push({ name: "resources", status: "failed", message: "Memory must be between 256 and 131072 MB." });
+    } else if (isNaN(parsedDisk) || parsedDisk < 5 || parsedDisk > 2048) {
+      checks.push({ name: "resources", status: "failed", message: "Disk must be between 5 and 2048 GB." });
+    } else {
+      checks.push({ name: "resources", status: "passed", message: "Hardware resource boundaries valid." });
+    }
+
+    const valid = checks.every((c) => c.status !== "failed");
+    if (!valid) {
+      const failedCheck = checks.find((c) => c.status === "failed");
+      res.status(422).json({
+        valid: false,
+        error: failedCheck?.message || "Preflight validation failed.",
+        checks,
+      });
+      return;
+    }
+    res.json({ valid: true, checks });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    checks.push({ name: "error", status: "failed", message: `Preflight failed: ${msg}` });
+    res.status(422).json({ valid: false, error: msg, checks });
+  }
 });
 
 // ============================================================================
@@ -570,7 +939,7 @@ router.post("/vps", async (req: Request, res: Response) => {
       memoryMb: parsedMemory,
       swapMb: parsedSwap,
       diskGb: parsedDisk,
-      storage: storage || nodeConfig.defaultStorage,
+      storage: storage || nodeConfig.defaultRootfsStorage || nodeConfig.defaultStorage,
       bridge: bridge || nodeConfig.defaultBridge,
       ipv4PoolId: ipv4PoolId || undefined,
       startAfterCreate: Boolean(startAfterCreate),

@@ -12,7 +12,7 @@ interface RateLimitEntry {
 const store = new Map<string, RateLimitEntry>();
 
 // Cleanup stale entries every 5 minutes
-setInterval(() => {
+const cleanupTimer = setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of store) {
     entry.timestamps = entry.timestamps.filter((ts) => now - ts < 300_000);
@@ -21,6 +21,7 @@ setInterval(() => {
     }
   }
 }, 300_000);
+cleanupTimer.unref();
 
 export interface RateLimitResult {
   allowed: boolean;
