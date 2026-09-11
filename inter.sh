@@ -699,6 +699,12 @@ run_updater() {
     start_pm2
   fi
 
+  # Create global 'inter' command in PATH if writable
+  if [ -d "/usr/local/bin" ] && ([ -w "/usr/local/bin" ] || [ "$(id -u)" -eq 0 ]); then
+    ln -sf "$ROOT_DIR/inter" /usr/local/bin/inter 2>/dev/null || true
+    ln -sf "$ROOT_DIR/inter.sh" /usr/local/bin/inter.sh 2>/dev/null || true
+  fi
+
   print_header "Update Complete"
   echo -e "  ${WHITE_BOLD}InterDash successfully updated to ${REMOTE_HASH}!${NC}"
   echo ""
