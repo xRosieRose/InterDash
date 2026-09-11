@@ -566,21 +566,26 @@ export default function InstanceDetailPage() {
     }
 
     ws.onclose = (e) => {
-      if (consoleState !== "failed" && consoleState !== "stopped") {
-        setConsoleState("disconnected")
-        setConsoleStatusMessage(`Session disconnected (code ${e.code}).`)
-      }
+      setConsoleState((prev) => {
+        if (prev !== "failed" && prev !== "stopped") {
+          setConsoleStatusMessage(`Session disconnected (code ${e.code}).`)
+          return "disconnected"
+        }
+        return prev
+      })
     }
-  }, [id, consoleState, sendResize, fetchConsoleDiagnostic])
+  }, [id, sendResize, fetchConsoleDiagnostic])
 
   // Connect / disconnect on tab change
   React.useEffect(() => {
-    if (activeTab === "console" && vps?.status === "running") {
-      // Delay slightly for DOM layout to stabilize fitAddon
-      const timer = setTimeout(() => {
-        connectConsole()
-      }, 100)
-      return () => clearTimeout(timer)
+    if (activeTab === "console") {
+      // Auto-connect on console tab unless container is explicitly stopped
+      if (vps?.status !== "stopped") {
+        const timer = setTimeout(() => {
+          connectConsole()
+        }, 120)
+        return () => clearTimeout(timer)
+      }
     } else {
       // Tear down when leaving console tab
       if (wsInstance.current) {
@@ -592,8 +597,9 @@ export default function InstanceDetailPage() {
         xtermInstance.current = null
       }
       setConsoleState("idle")
+      setConsoleStatusMessage("Disconnected")
     }
-  }, [activeTab, vps?.status])
+  }, [activeTab, vps?.status, connectConsole])
 
   // Window resize handler for fitAddon
   React.useEffect(() => {
@@ -613,7 +619,7 @@ export default function InstanceDetailPage() {
   if (isLoading) {
     return (
       <BaseLayout>
-        <div className="py-24 flex flex-col items-center justify-center gap-3 text-muted-foreground">
+        <div className="px-4 lg:px-6 py-24 flex flex-col items-center justify-center gap-3 text-muted-foreground">
           <Loader2 className="size-6 animate-spin text-primary" />
           <p className="text-xs">Loading instance telemetry...</p>
         </div>
@@ -624,7 +630,7 @@ export default function InstanceDetailPage() {
   if (error || !vps) {
     return (
       <BaseLayout>
-        <div className="py-20 flex flex-col items-center justify-center gap-3 text-destructive max-w-md mx-auto text-center">
+        <div className="px-4 lg:px-6 py-20 flex flex-col items-center justify-center gap-3 text-destructive max-w-md mx-auto text-center">
           <AlertTriangle className="size-8" />
           <h3 className="font-semibold text-base">Unable to load VPS</h3>
           <p className="text-xs text-muted-foreground">{error || "The requested VPS could not be found."}</p>
@@ -647,7 +653,7 @@ export default function InstanceDetailPage() {
 
   return (
     <BaseLayout>
-      <div className="space-y-6">
+      <div className="px-4 lg:px-6 space-y-6">
         {/* Navigation Breadcrumb */}
         <div className="flex items-center justify-between">
           <Link
@@ -784,7 +790,7 @@ export default function InstanceDetailPage() {
                   <RefreshCw className="size-3.5" /> Reboot
                 </Button>
               </>
-            ) : (
+            ) : isStopped ? (
               <Button
                 size="sm"
                 className="h-8 gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
@@ -798,6 +804,60 @@ export default function InstanceDetailPage() {
                 )}
                 Start VPS
               </Button>
+            ) : (
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  className="h-8 gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+                  onClick={() => handlePowerAction("start")}
+                  disabled={powerLoading}
+                >
+                  {powerLoading ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Power className="size-3.5" />
+                  )}
+                  Start VPS
+                </Button>
+
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 gap-1.5 text-xs border-destructive/40 text-destructive hover:bg-destructive/10"
+                      disabled={powerLoading}
+                    >
+                      <Power className="size-3.5" /> Stop / Shutdown
+                      <ChevronDown className="size-3 opacity-60" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem
+                      onClick={() => setConfirmDialog({ open: true, action: "stop" })}
+                      className="text-xs"
+                    >
+                      Graceful Shutdown (ACPI)
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => setConfirmDialog({ open: true, action: "force-stop" })}
+                      className="text-xs text-destructive"
+                    >
+                      Force Stop (Immediate)
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 gap-1.5 text-xs"
+                  onClick={() => setConfirmDialog({ open: true, action: "reboot" })}
+                  disabled={powerLoading}
+                >
+                  <RefreshCw className="size-3.5" /> Reboot
+                </Button>
+              </div>
             )}
           </div>
         </div>
@@ -1137,6 +1197,8 @@ export default function InstanceDetailPage() {
                         ? "text-red-400 border-red-500/30 bg-red-500/10"
                         : consoleState === "stopped"
                         ? "text-zinc-500 border-zinc-700"
+                        : consoleState === "idle" || consoleState === "disconnected"
+                        ? "text-zinc-400 border-zinc-800 bg-zinc-900/60"
                         : "text-amber-400 border-amber-500/30 bg-amber-500/10"
                     }`}
                   >
@@ -1146,7 +1208,7 @@ export default function InstanceDetailPage() {
                           ? "bg-emerald-400"
                           : consoleState === "failed"
                           ? "bg-red-400"
-                          : consoleState === "stopped"
+                          : consoleState === "stopped" || consoleState === "idle" || consoleState === "disconnected"
                           ? "bg-zinc-500"
                           : "bg-amber-400 animate-pulse"
                       }`}
@@ -1157,6 +1219,8 @@ export default function InstanceDetailPage() {
                       ? "UNAVAILABLE"
                       : consoleState === "stopped"
                       ? "VPS STOPPED"
+                      : consoleState === "idle" || consoleState === "disconnected"
+                      ? "DISCONNECTED"
                       : "CONNECTING..."}
                   </Badge>
 
@@ -1185,8 +1249,13 @@ export default function InstanceDetailPage() {
                     size="sm"
                     className="h-7 text-xs border-zinc-700 text-zinc-300 hover:bg-zinc-800"
                     onClick={connectConsole}
-                    disabled={!isRunning}
+                    disabled={
+                      consoleState === "connecting" ||
+                      consoleState === "requesting_termproxy" ||
+                      consoleState === "connecting_upstream"
+                    }
                   >
+                    <RefreshCw className={`size-3 mr-1 ${consoleState === "connecting" ? "animate-spin" : ""}`} />
                     Reconnect
                   </Button>
                 </div>
@@ -1200,14 +1269,24 @@ export default function InstanceDetailPage() {
                     <p className="text-xs text-zinc-500 max-w-sm">
                       Start the container to establish a live interactive terminal session.
                     </p>
-                    <Button
-                      size="sm"
-                      className="mt-2 bg-emerald-600 hover:bg-emerald-700 text-white"
-                      onClick={() => handlePowerAction("start")}
-                      disabled={powerLoading}
-                    >
-                      Start Container
-                    </Button>
+                    <div className="flex items-center gap-2 mt-2">
+                      <Button
+                        size="sm"
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white"
+                        onClick={() => handlePowerAction("start")}
+                        disabled={powerLoading}
+                      >
+                        Start Container
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="border-zinc-700 text-zinc-300 hover:bg-zinc-800 text-xs"
+                        onClick={connectConsole}
+                      >
+                        Connect Anyway
+                      </Button>
+                    </div>
                   </div>
                 ) : consoleError || consoleState === "failed" ? (
                   <div className="p-6 max-w-2xl mx-auto my-12 rounded-lg border border-red-500/20 bg-red-950/20 text-zinc-200 space-y-4">

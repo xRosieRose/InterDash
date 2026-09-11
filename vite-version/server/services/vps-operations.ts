@@ -652,7 +652,7 @@ export class VpsOperationsService {
           ? "running"
           : lxcStatus.status === "stopped"
           ? "stopped"
-          : "unknown";
+          : vps.status || "unknown";
 
       execute(
         `UPDATE vps SET status = ?, last_proxmox_sync_at = ?, updated_at = datetime('now') WHERE id = ?`,
@@ -667,9 +667,13 @@ export class VpsOperationsService {
         maxdiskGb: lxcStatus.maxdisk ? Math.round(lxcStatus.maxdisk / (1024 * 1024 * 1024)) : vps.disk_gb,
         lastSyncedAt: nowIso,
       };
-    } catch {
+    } catch (err: unknown) {
+      console.warn(
+        `[SYNC_STATUS] Failed for VPS ${vpsId}:`,
+        err instanceof Error ? err.message : String(err)
+      );
       return {
-        status: "unknown",
+        status: vps.status || "unknown",
         lastSyncedAt: vps.last_proxmox_sync_at || vps.updated_at,
       };
     }
