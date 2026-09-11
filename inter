@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# InterDash CLI Wrapper
+# Allows running './inter <command>' interchangeably with './inter.sh <command>'
+# ==============================================================================
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$DIR/inter.sh" "$@"
