@@ -17,6 +17,9 @@ import {
   Globe,
   Pencil,
   Network,
+  Eye,
+  EyeOff,
+  Key,
 } from "lucide-react"
 import { BaseLayout } from "@/components/layouts/base-layout"
 import { Badge } from "@/components/ui/badge"
@@ -139,6 +142,7 @@ export default function AdminNodesPage() {
   const [flagUrl, setFlagUrl] = React.useState("")
   const [authTokenId, setAuthTokenId] = React.useState("")
   const [authTokenSecret, setAuthTokenSecret] = React.useState("")
+  const [showTokenSecret, setShowTokenSecret] = React.useState(false)
   const [allowInsecureTls, setAllowInsecureTls] = React.useState(false)
 
   // Add node: Discovered capabilities state
@@ -168,6 +172,7 @@ export default function AdminNodesPage() {
   const [editNodeName, setEditNodeName] = React.useState("pve")
   const [editAuthTokenId, setEditAuthTokenId] = React.useState("")
   const [editAuthTokenSecret, setEditAuthTokenSecret] = React.useState("")
+  const [editShowTokenSecret, setEditShowTokenSecret] = React.useState(false)
   const [editRegion, setEditRegion] = React.useState("")
   const [editFlagUrl, setEditFlagUrl] = React.useState("")
   const [editDefaultTemplateStorage, setEditDefaultTemplateStorage] = React.useState("")
@@ -474,6 +479,7 @@ export default function AdminNodesPage() {
     setEditNodeName(node.node_name || "pve")
     setEditAuthTokenId(node.auth_token_id || "")
     setEditAuthTokenSecret("")
+    setEditShowTokenSecret(false)
     setEditRegion(node.region)
     setEditFlagUrl(node.flag_url || "")
     setEditDefaultTemplateStorage(node.default_template_storage || "")
@@ -501,9 +507,43 @@ export default function AdminNodesPage() {
     if (!editingNodeId) return
     setIsRefreshingEditCaps(true)
     try {
+      if (editAuthTokenSecret.trim()) {
+        const csrfRes = await fetch("/api/auth/csrf")
+        let csrfToken = ""
+        if (csrfRes.ok) {
+          const c = await csrfRes.json()
+          csrfToken = c.token
+        }
+        const testRes = await fetch("/api/admin/nodes/test-connection", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
+          },
+          body: JSON.stringify({
+            apiUrl: editApiUrl.trim(),
+            port: editPort,
+            hostname: editHostname.trim(),
+            nodeName: editNodeName.trim(),
+            authTokenId: editAuthTokenId.trim(),
+            authTokenSecret: editAuthTokenSecret.trim(),
+            allowInsecureTls: editAllowInsecureTls,
+          }),
+        })
+        const testData = await testRes.json()
+        if (!testRes.ok || !testData.success) {
+          throw new Error(testData.error || testData.message || "Credential authentication failed.")
+        }
+        setEditDiscoveredTemplateStorages(testData.templateStorages || [])
+        setEditDiscoveredRootfsStorages(testData.rootfsStorages || [])
+        setEditDiscoveredBridges((testData.bridges || []).map((b: { iface: string }) => b.iface))
+        toast.success("New credentials verified! Discovered storage pools and bridges updated.")
+        return
+      }
+
       const res = await fetch(`/api/admin/nodes/${editingNodeId}/capabilities?refresh=true`)
-      if (!res.ok) throw new Error("Failed to refresh capabilities.")
       const data = await res.json()
+      if (!res.ok) throw new Error(data.error || "Failed to refresh capabilities.")
       setEditDiscoveredTemplateStorages(data.templateStorages || [])
       setEditDiscoveredRootfsStorages(data.rootfsStorages || [])
       setEditDiscoveredBridges((data.bridges || []).map((b: { iface: string }) => b.iface))
@@ -1320,13 +1360,24 @@ export default function AdminNodesPage() {
               </div>
               <div className="space-y-1">
                 <Label className="text-xs font-bold">API Token Secret (Encrypted at Rest)</Label>
-                <Input
-                  type="password"
-                  placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                  value={authTokenSecret}
-                  onChange={(e) => setAuthTokenSecret(e.target.value)}
-                  className="text-xs font-mono"
-                />
+                <div className="relative">
+                  <Input
+                    type={showTokenSecret ? "text" : "password"}
+                    placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                    value={authTokenSecret}
+                    onChange={(e) => setAuthTokenSecret(e.target.value)}
+                    className="text-xs font-mono pr-10"
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="absolute right-0 top-0 h-full w-9 text-muted-foreground hover:text-foreground"
+                    onClick={() => setShowTokenSecret(!showTokenSecret)}
+                  >
+                    {showTokenSecret ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+                  </Button>
+                </div>
               </div>
             </div>
 
@@ -1557,6 +1608,56 @@ export default function AdminNodesPage() {
                   onChange={(e) => setEditNodeName(e.target.value)}
                   className="text-xs font-mono"
                 />
+              </div>
+            </div>
+
+            {/* API Token Credentials */}
+            <div className="space-y-3 p-3 rounded-lg border bg-muted/30">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                  <Key className="size-3.5 text-primary" /> API Token Authentication
+                </span>
+                <span className="text-[10px] text-muted-foreground">Encrypted at rest</span>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs font-medium">API Token ID</Label>
+                <Input
+                  placeholder="root@pam!interdash"
+                  value={editAuthTokenId}
+                  onChange={(e) => setEditAuthTokenId(e.target.value)}
+                  className="text-xs font-mono"
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Proxmox PVE API User and Token identifier (e.g. root@pam!tokenid).
+                </p>
+              </div>
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-medium">API Token Secret</Label>
+                </div>
+                <div className="relative">
+                  <Input
+                    type={editShowTokenSecret ? "text" : "password"}
+                    placeholder="Leave blank to keep existing encrypted secret"
+                    value={editAuthTokenSecret}
+                    onChange={(e) => setEditAuthTokenSecret(e.target.value)}
+                    className="text-xs font-mono pr-10"
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="absolute right-0 top-0 h-full w-9 text-muted-foreground hover:text-foreground"
+                    onClick={() => setEditShowTokenSecret(!editShowTokenSecret)}
+                  >
+                    {editShowTokenSecret ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+                  </Button>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  {editAuthTokenSecret
+                    ? "A new secret is entered and will overwrite the stored secret upon saving."
+                    : "Existing secret is retained securely. Enter a new secret only if you want to replace it."}
+                </p>
               </div>
             </div>
 

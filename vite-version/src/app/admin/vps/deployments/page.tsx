@@ -113,8 +113,10 @@ export default function AdminVpsDeploymentsPage() {
     <BaseLayout
       title="Provisioning Pipeline Progress"
       description="Live execution telemetry for container deployment on Proxmox VE hypervisor."
+      centered
+      maxWidth="max-w-4xl"
     >
-      <div className="px-4 lg:px-6 space-y-6 max-w-4xl pb-20">
+      <div className="px-4 lg:px-6 space-y-6 max-w-4xl mx-auto w-full pb-20">
         {/* Navigation Breadcrumb */}
         <div className="flex items-center justify-between">
           <Link

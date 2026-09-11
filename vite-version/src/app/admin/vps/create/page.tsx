@@ -421,8 +421,10 @@ export default function AdminVpsCreatePage() {
     <BaseLayout
       title="Provision Virtual Private Server"
       description="Dedicated infrastructure workspace for configuring, pre-flighting, and deploying LXC containers on Proxmox VE."
+      centered
+      maxWidth="max-w-6xl"
     >
-      <div className="px-4 lg:px-6 space-y-6 max-w-6xl pb-20">
+      <div className="px-4 lg:px-6 space-y-6 max-w-6xl mx-auto w-full pb-20">
         {/* Navigation Breadcrumb */}
         <div className="flex items-center justify-between">
           <Link
