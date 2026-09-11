@@ -340,6 +340,8 @@ router.get("/:id/console/diagnostic", async (req: Request, res: Response) => {
       res.json({
         ok: diag.ok,
         lxcStatus: diag.lxcStatus,
+        runtimeNode: diag.runtimeNode,
+        runtimeNodeSource: diag.runtimeNodeSource,
         classification: diag.classification,
         recommendedFix: diag.recommendedFix,
         message: diag.ok

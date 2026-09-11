@@ -164,24 +164,64 @@ export interface ProxmoxCreateLxcParams {
 }
 
 export type ProxmoxErrorClassification =
+  | "TERM_PROXY_501"
+  | "PROXMOX_501"
   | "PROXMOX_501_TERM_PROXY"
   | "PROXY_501"
   | "CLOUDFLARE_501"
   | "REVERSE_PROXY_501"
   | "AUTHENTICATION_FAILURE"
   | "AUTHORIZATION_FAILURE"
+  | "TERM_PROXY_AUTH_FAILURE"
+  | "TERM_PROXY_NOT_FOUND"
   | "TLS_FAILURE"
   | "TIMEOUT"
   | "CONNECTION_REFUSED"
   | "NODE_NOT_FOUND"
+  | "NODE_UNREACHABLE"
   | "LXC_NOT_FOUND"
   | "LXC_STOPPED"
   | "LXC_LOCKED"
   | "TERM_PROXY_INVALID_RESPONSE"
+  | "WEBSOCKET_FAILURE"
   | "WEBSOCKET_CONNECTION_FAILURE"
   | "WEBSOCKET_HANDSHAKE_FAILURE"
   | "UNSUPPORTED_CONSOLE_PROTOCOL"
   | "UNKNOWN_CONSOLE_FAILURE";
+
+export type LxcRuntimeTargetResult =
+  | {
+      ok: true;
+      nodeName: string;
+      vmid: number;
+      status?: string;
+      uptime?: number;
+      discoveredFrom: "direct" | "cluster";
+    }
+  | {
+      ok: false;
+      reason:
+        | "not_found"
+        | "discovery_unavailable"
+        | "authorization_failed"
+        | "node_unreachable";
+      message?: string;
+    };
+
+export interface LxcStatusResult {
+  ok: boolean;
+  status: "running" | "stopped" | "unknown";
+  runtimeNode: string;
+  runtimeNodeSource: "direct" | "cluster" | "configured";
+  name?: string;
+  cpus?: number;
+  maxmem?: number;
+  maxdisk?: number;
+  uptime?: number;
+  lastVerifiedAt?: string;
+  classification?: string;
+  error?: string;
+}
 
 export interface ConsoleDiagnosticResult {
   ok: boolean;
@@ -193,6 +233,8 @@ export interface ConsoleDiagnosticResult {
   contentType?: string;
   responseSnippet?: string;
   lxcStatus?: string;
+  runtimeNode?: string;
+  runtimeNodeSource?: "direct" | "cluster" | "configured";
   proxmoxVersion?: string;
   latencyMs: number;
   classification: ProxmoxErrorClassification;
@@ -1566,7 +1608,8 @@ export class ProxmoxService {
    */
   public static async createLxc(
     node: ProxmoxNodeConfig,
-    params: ProxmoxCreateLxcParams
+    params: ProxmoxCreateLxcParams,
+    runtimeNode?: string
   ): Promise<{ upid: string; vmid: number }> {
     const rootfsStorage =
       params.storage || node.defaultRootfsStorage || node.defaultStorage;
@@ -1621,10 +1664,11 @@ export class ProxmoxService {
       payload.description = params.description;
     }
 
+    const target = runtimeNode || node.nodeName;
     const res = await this.request<string>(
       node,
       "POST",
-      `/api2/json/nodes/${encodeURIComponent(node.nodeName)}/lxc`,
+      `/api2/json/nodes/${encodeURIComponent(target)}/lxc`,
       payload
     );
 
@@ -1639,12 +1683,14 @@ export class ProxmoxService {
    */
   public static async startLxc(
     node: ProxmoxNodeConfig,
-    vmid: number
+    vmid: number,
+    runtimeNode?: string
   ): Promise<{ upid: string }> {
+    const target = runtimeNode || node.nodeName;
     const res = await this.request<string>(
       node,
       "POST",
-      `/api2/json/nodes/${encodeURIComponent(node.nodeName)}/lxc/${vmid}/status/start`
+      `/api2/json/nodes/${encodeURIComponent(target)}/lxc/${vmid}/status/start`
     );
     return { upid: typeof res.data === "string" ? res.data : String(res.data) };
   }
@@ -1654,12 +1700,14 @@ export class ProxmoxService {
    */
   public static async shutdownLxc(
     node: ProxmoxNodeConfig,
-    vmid: number
+    vmid: number,
+    runtimeNode?: string
   ): Promise<{ upid: string }> {
+    const target = runtimeNode || node.nodeName;
     const res = await this.request<string>(
       node,
       "POST",
-      `/api2/json/nodes/${encodeURIComponent(node.nodeName)}/lxc/${vmid}/status/shutdown`
+      `/api2/json/nodes/${encodeURIComponent(target)}/lxc/${vmid}/status/shutdown`
     );
     return { upid: typeof res.data === "string" ? res.data : String(res.data) };
   }
@@ -1669,12 +1717,14 @@ export class ProxmoxService {
    */
   public static async stopLxc(
     node: ProxmoxNodeConfig,
-    vmid: number
+    vmid: number,
+    runtimeNode?: string
   ): Promise<{ upid: string }> {
+    const target = runtimeNode || node.nodeName;
     const res = await this.request<string>(
       node,
       "POST",
-      `/api2/json/nodes/${encodeURIComponent(node.nodeName)}/lxc/${vmid}/status/stop`
+      `/api2/json/nodes/${encodeURIComponent(target)}/lxc/${vmid}/status/stop`
     );
     return { upid: typeof res.data === "string" ? res.data : String(res.data) };
   }
@@ -1684,12 +1734,14 @@ export class ProxmoxService {
    */
   public static async rebootLxc(
     node: ProxmoxNodeConfig,
-    vmid: number
+    vmid: number,
+    runtimeNode?: string
   ): Promise<{ upid: string }> {
+    const target = runtimeNode || node.nodeName;
     const res = await this.request<string>(
       node,
       "POST",
-      `/api2/json/nodes/${encodeURIComponent(node.nodeName)}/lxc/${vmid}/status/reboot`
+      `/api2/json/nodes/${encodeURIComponent(target)}/lxc/${vmid}/status/reboot`
     );
     return { upid: typeof res.data === "string" ? res.data : String(res.data) };
   }
@@ -1700,12 +1752,14 @@ export class ProxmoxService {
   public static async destroyLxc(
     node: ProxmoxNodeConfig,
     vmid: number,
-    purge = true
+    purge = true,
+    runtimeNode?: string
   ): Promise<{ upid: string }> {
+    const target = runtimeNode || node.nodeName;
     const res = await this.request<string>(
       node,
       "DELETE",
-      `/api2/json/nodes/${encodeURIComponent(node.nodeName)}/lxc/${vmid}?purge=${purge ? 1 : 0}`
+      `/api2/json/nodes/${encodeURIComponent(target)}/lxc/${vmid}?purge=${purge ? 1 : 0}`
     );
     return { upid: typeof res.data === "string" ? res.data : String(res.data) };
   }
@@ -1715,12 +1769,14 @@ export class ProxmoxService {
    */
   public static async getLxcConfig(
     node: ProxmoxNodeConfig,
-    vmid: number
+    vmid: number,
+    runtimeNode?: string
   ): Promise<Record<string, unknown>> {
+    const target = runtimeNode || node.nodeName;
     const res = await this.request<Record<string, unknown>>(
       node,
       "GET",
-      `/api2/json/nodes/${encodeURIComponent(node.nodeName)}/lxc/${vmid}/config`
+      `/api2/json/nodes/${encodeURIComponent(target)}/lxc/${vmid}/config`
     );
     return res.data || {};
   }
@@ -1731,12 +1787,14 @@ export class ProxmoxService {
   public static async updateLxcConfig(
     node: ProxmoxNodeConfig,
     vmid: number,
-    configPayload: Record<string, unknown>
+    configPayload: Record<string, unknown>,
+    runtimeNode?: string
   ): Promise<void> {
+    const target = runtimeNode || node.nodeName;
     await this.request(
       node,
       "PUT",
-      `/api2/json/nodes/${encodeURIComponent(node.nodeName)}/lxc/${vmid}/config`,
+      `/api2/json/nodes/${encodeURIComponent(target)}/lxc/${vmid}/config`,
       configPayload
     );
   }
@@ -1747,9 +1805,10 @@ export class ProxmoxService {
   public static async setLxcPassword(
     node: ProxmoxNodeConfig,
     vmid: number,
-    password: string
+    password: string,
+    runtimeNode?: string
   ): Promise<void> {
-    await this.updateLxcConfig(node, vmid, { password });
+    await this.updateLxcConfig(node, vmid, { password }, runtimeNode);
   }
 
   /**
@@ -1757,10 +1816,11 @@ export class ProxmoxService {
    */
   public static async checkLxcLocked(
     node: ProxmoxNodeConfig,
-    vmid: number
+    vmid: number,
+    runtimeNode?: string
   ): Promise<{ locked: boolean; lockName?: string }> {
     try {
-      const config = await this.getLxcConfig(node, vmid);
+      const config = await this.getLxcConfig(node, vmid, runtimeNode);
       if (config.lock && typeof config.lock === "string" && config.lock.trim().length > 0) {
         return { locked: true, lockName: config.lock.trim() };
       }
@@ -1785,12 +1845,122 @@ export class ProxmoxService {
   }
 
   /**
+   * Authoritatively resolve the current runtime hypervisor node hosting an LXC container.
+   *
+   * Flow:
+   * 1. Try configured node: GET /api2/json/nodes/{nodeName}/lxc/{vmid}/status/current
+   *    If 200 OK: return { ok: true, nodeName: node.nodeName, vmid, status, uptime, discoveredFrom: "direct" }
+   * 2. If genuine not-found / location failure (404, or node mismatch):
+   *    Query cluster resource inventory: GET /api2/json/cluster/resources?type=vm
+   *    Filter explicitly for item.type === "lxc" && Number(item.vmid) === Number(vmid)
+   * 3. If found:
+   *    return actual runtime node { ok: true, nodeName: item.node, discoveredFrom: "cluster" }
+   * 4. If not found on any cluster node:
+   *    return typed failure { ok: false, reason: "not_found" }
+   * 5. If cluster query itself fails:
+   *    return typed failure without collapsing into not_found
+   */
+  public static async resolveLxcRuntimeTarget(
+    node: ProxmoxNodeConfig,
+    vmid: number
+  ): Promise<LxcRuntimeTargetResult> {
+    // 1. Try configured node first
+    try {
+      const res = await this.request<{
+        status?: "running" | "stopped";
+        uptime?: number;
+      }>(
+        node,
+        "GET",
+        `/api2/json/nodes/${encodeURIComponent(node.nodeName)}/lxc/${vmid}/status/current`
+      );
+
+      return {
+        ok: true,
+        nodeName: node.nodeName,
+        vmid,
+        status: res.data?.status,
+        uptime: res.data?.uptime,
+        discoveredFrom: "direct",
+      };
+    } catch {
+      // Direct query failed (e.g. 404 container not on this node, or node name mismatch)
+      // Fall through to cluster discovery
+    }
+
+    // 2. Query cluster resource inventory
+    try {
+      const clusterRes = await this.request<
+        Array<{
+          id: string;
+          type: string;
+          vmid: number | string;
+          node: string;
+          status?: string;
+          uptime?: number;
+        }>
+      >(node, "GET", "/api2/json/cluster/resources?type=vm");
+
+      const items = Array.isArray(clusterRes.data) ? clusterRes.data : [];
+      const match = items.find(
+        (it) => it.type === "lxc" && Number(it.vmid) === Number(vmid)
+      );
+
+      if (match && match.node) {
+        return {
+          ok: true,
+          nodeName: match.node,
+          vmid,
+          status: match.status,
+          uptime: match.uptime,
+          discoveredFrom: "cluster",
+        };
+      }
+
+      return {
+        ok: false,
+        reason: "not_found",
+        message: `Container ${vmid} was not found in Proxmox cluster resources.`,
+      };
+    } catch (clusterErr: unknown) {
+      if (clusterErr instanceof ProxmoxRequestError) {
+        if (clusterErr.statusCode === 401 || clusterErr.statusCode === 403) {
+          return {
+            ok: false,
+            reason: "authorization_failed",
+            message: clusterErr.message,
+          };
+        }
+        if (clusterErr.isConnRefused || clusterErr.isTimeout || clusterErr.isTlsError) {
+          return {
+            ok: false,
+            reason: "node_unreachable",
+            message: clusterErr.message,
+          };
+        }
+      }
+      return {
+        ok: false,
+        reason: "discovery_unavailable",
+        message: clusterErr instanceof Error ? clusterErr.message : String(clusterErr),
+      };
+    }
+  }
+
+  /**
    * Request a termproxy ticket for real interactive console sessions
    */
   public static async createLxcTermProxy(
     node: ProxmoxNodeConfig,
-    vmid: number
-  ): Promise<{ port: number; ticket: string; upid: string; user: string }> {
+    vmid: number,
+    runtimeNode?: string
+  ): Promise<{ port: number; ticket: string; upid: string; user: string; runtimeNode: string }> {
+    let targetNode = runtimeNode;
+    if (!targetNode) {
+      const resolved = await this.resolveLxcRuntimeTarget(node, vmid);
+      targetNode = resolved.ok ? resolved.nodeName : node.nodeName;
+    }
+
     const res = await this.request<{
       port?: number | string;
       ticket?: string;
@@ -1799,7 +1969,7 @@ export class ProxmoxService {
     }>(
       node,
       "POST",
-      `/api2/json/nodes/${encodeURIComponent(node.nodeName)}/lxc/${vmid}/termproxy`
+      `/api2/json/nodes/${encodeURIComponent(targetNode)}/lxc/${vmid}/termproxy`
     );
 
     if (!res.data) {
@@ -1832,6 +2002,7 @@ export class ProxmoxService {
       ticket: ticket.trim(),
       upid: res.data.upid || "",
       user: res.data.user || "root@pam",
+      runtimeNode: targetNode,
     };
   }
 
@@ -1845,11 +2016,17 @@ export class ProxmoxService {
     const startTime = Date.now();
     const endpoint = resolveProxmoxEndpoint(node.apiUrl, node.hostname, node.port);
 
-    // 1. Verify container exists and check status
+    // 1. Verify container exists and check status with cluster awareness
     let lxcStatus: string = "unknown";
+    let runtimeNode: string = node.nodeName;
+    let runtimeNodeSource: "direct" | "cluster" | "configured" = "configured";
+
     try {
       const statusRes = await this.getLxcStatus(node, vmid);
       lxcStatus = statusRes.status;
+      runtimeNode = statusRes.runtimeNode;
+      runtimeNodeSource = statusRes.runtimeNodeSource;
+
       if (lxcStatus === "stopped") {
         return {
           ok: false,
@@ -1858,9 +2035,26 @@ export class ProxmoxService {
           proxyType: "direct",
           statusCode: 200,
           lxcStatus,
+          runtimeNode,
+          runtimeNodeSource,
           latencyMs: Date.now() - startTime,
           classification: "LXC_STOPPED",
           recommendedFix: "VPS is stopped. Start it to open the console.",
+        };
+      }
+      if (!statusRes.ok && statusRes.classification === "LXC_NOT_FOUND") {
+        return {
+          ok: false,
+          endpoint: endpoint.displayTarget,
+          proxied: false,
+          proxyType: "direct",
+          statusCode: 404,
+          lxcStatus: "not_found",
+          runtimeNode,
+          runtimeNodeSource,
+          latencyMs: Date.now() - startTime,
+          classification: "LXC_NOT_FOUND",
+          recommendedFix: "The Proxmox container was not found on this hypervisor node or cluster.",
         };
       }
     } catch (err: unknown) {
@@ -1873,6 +2067,8 @@ export class ProxmoxService {
             proxyType: err.proxyType,
             statusCode: 404,
             lxcStatus: "not_found",
+            runtimeNode,
+            runtimeNodeSource,
             latencyMs: Date.now() - startTime,
             classification: "LXC_NOT_FOUND",
             recommendedFix: "The Proxmox container was not found on this hypervisor node.",
@@ -1890,7 +2086,7 @@ export class ProxmoxService {
 
     // 3. Attempt createLxcTermProxy
     try {
-      const termproxy = await this.createLxcTermProxy(node, vmid);
+      const termproxy = await this.createLxcTermProxy(node, vmid, runtimeNode);
       const latencyMs = Date.now() - startTime;
       return {
         ok: true,
@@ -1899,6 +2095,8 @@ export class ProxmoxService {
         proxyType: "direct",
         statusCode: 200,
         lxcStatus,
+        runtimeNode: termproxy.runtimeNode,
+        runtimeNodeSource,
         proxmoxVersion: pveVersion,
         latencyMs,
         classification: "PROXMOX_501_TERM_PROXY",
@@ -1932,6 +2130,8 @@ export class ProxmoxService {
           contentType: err.contentType,
           responseSnippet: err.safeBodySnippet,
           lxcStatus,
+          runtimeNode,
+          runtimeNodeSource,
           proxmoxVersion: pveVersion,
           latencyMs,
           classification: err.classification,
@@ -1946,10 +2146,12 @@ export class ProxmoxService {
         proxied: false,
         proxyType: "direct",
         lxcStatus,
+        runtimeNode,
+        runtimeNodeSource,
         proxmoxVersion: pveVersion,
         latencyMs,
         classification: "UNKNOWN_CONSOLE_FAILURE",
-        responseSnippet: msg,
+        recommendedFix: msg,
       };
     }
   }
@@ -2001,19 +2203,16 @@ export class ProxmoxService {
   }
 
   /**
-   * Query the live status of an LXC container
+   * Query the live status of an LXC container with authoritative cluster-aware runtime resolution.
    */
   public static async getLxcStatus(
     node: ProxmoxNodeConfig,
-    vmid: number
-  ): Promise<{
-    status: "running" | "stopped" | "unknown";
-    name?: string;
-    cpus?: number;
-    maxmem?: number;
-    maxdisk?: number;
-    uptime?: number;
-  }> {
+    vmid: number,
+    runtimeNode?: string
+  ): Promise<LxcStatusResult> {
+    const effectiveNode = runtimeNode || node.nodeName;
+
+    // Step 1: Query the node's current container status
     try {
       const res = await this.request<{
         status: "running" | "stopped";
@@ -2025,11 +2224,71 @@ export class ProxmoxService {
       }>(
         node,
         "GET",
-        `/api2/json/nodes/${encodeURIComponent(node.nodeName)}/lxc/${vmid}/status/current`
+        `/api2/json/nodes/${encodeURIComponent(effectiveNode)}/lxc/${vmid}/status/current`
       );
-      return res.data;
-    } catch {
-      return { status: "unknown" };
+
+      return {
+        ok: true,
+        status: res.data.status,
+        runtimeNode: effectiveNode,
+        runtimeNodeSource: runtimeNode ? "direct" : "configured",
+        name: res.data.name,
+        cpus: res.data.cpus,
+        maxmem: res.data.maxmem,
+        maxdisk: res.data.maxdisk,
+        uptime: res.data.uptime,
+        lastVerifiedAt: new Date().toISOString(),
+      };
+    } catch (err: unknown) {
+      // Step 2: If runtimeNode was not pinned and direct query failed, attempt cluster resolution
+      if (!runtimeNode) {
+        const target = await this.resolveLxcRuntimeTarget(node, vmid);
+        if (target.ok && target.nodeName !== effectiveNode) {
+          try {
+            const res = await this.request<{
+              status: "running" | "stopped";
+              name?: string;
+              cpus?: number;
+              maxmem?: number;
+              maxdisk?: number;
+              uptime?: number;
+            }>(
+              node,
+              "GET",
+              `/api2/json/nodes/${encodeURIComponent(target.nodeName)}/lxc/${vmid}/status/current`
+            );
+
+            return {
+              ok: true,
+              status: res.data.status,
+              runtimeNode: target.nodeName,
+              runtimeNodeSource: "cluster",
+              name: res.data.name,
+              cpus: res.data.cpus,
+              maxmem: res.data.maxmem,
+              maxdisk: res.data.maxdisk,
+              uptime: res.data.uptime,
+              lastVerifiedAt: new Date().toISOString(),
+            };
+          } catch (retryErr: unknown) {
+            err = retryErr;
+          }
+        }
+      }
+
+      // Step 3: Return structured failure without throwing or swallowing diagnostic info
+      const classification =
+        err instanceof ProxmoxRequestError ? err.classification : "UNKNOWN_CONSOLE_FAILURE";
+      const errorMsg = err instanceof Error ? err.message : String(err);
+
+      return {
+        ok: false,
+        status: "unknown",
+        runtimeNode: effectiveNode,
+        runtimeNodeSource: "configured",
+        classification,
+        error: errorMsg,
+      };
     }
   }
 }

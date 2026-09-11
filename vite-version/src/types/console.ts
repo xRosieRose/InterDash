@@ -9,6 +9,7 @@
 export type ConsoleState =
   | "idle"
   | "connecting"
+  | "checking_runtime"
   | "checking_vps"
   | "requesting_termproxy"
   | "termproxy_ready"

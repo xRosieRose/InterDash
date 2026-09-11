@@ -96,18 +96,30 @@ export default function InstanceDetailPage() {
   const [vps, setVps] = React.useState<VpsRecord | null>(null)
   const [isLoading, setIsLoading] = React.useState(true)
   const [isRefreshing, setIsRefreshing] = React.useState(false)
-  const [error, setError] = React.useState<string | null>(null)
   const [copiedField, setCopiedField] = React.useState<string | null>(null)
 
-  // Live telemetry
-  const [telemetry, setTelemetry] = React.useState<{
+  // Separated Error Architecture (Phase 2)
+  const [pageLoadError, setPageLoadError] = React.useState<string | null>(null)
+  const [runtimeSyncError, setRuntimeSyncError] = React.useState<string | null>(null)
+  const [operationsSyncError, setOperationsSyncError] = React.useState<string | null>(null)
+
+  // Live hypervisor runtime state (Phase 11)
+  const [runtime, setRuntime] = React.useState<{
+    status?: string
     uptime?: number
     cpus?: number
     memoryMb?: number
     maxmemMb?: number
     maxdiskGb?: number
-    lastSyncedAt?: string
-  } | null>(null)
+    runtimeNode?: string
+    runtimeNodeSource?: "direct" | "cluster" | "configured"
+    lastVerifiedAt?: string
+    fresh: boolean
+    error?: string | null
+  }>({
+    fresh: true,
+    error: null,
+  })
 
   // Power action state
   const [powerLoading, setPowerLoading] = React.useState(false)
@@ -169,8 +181,8 @@ export default function InstanceDetailPage() {
     return {}
   }
 
-  // Load VPS details
-  const fetchVps = React.useCallback(async (showToast = false) => {
+  // 1. Initial Load: VPS metadata (does not depend on runtime telemetry)
+  const loadVps = React.useCallback(async (showToast = false) => {
     if (!id) return
     try {
       if (showToast) setIsRefreshing(true)
@@ -184,43 +196,89 @@ export default function InstanceDetailPage() {
       setVps(data.instance)
       setEditName(data.instance.name || "")
       setEditDescription(data.instance.description || "")
+      setPageLoadError(null)
 
       if (showToast) toast.success("Instance details synchronized.")
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
-      setError(msg)
+      // Only set pageLoadError if no VPS loaded yet
+      setPageLoadError((prev) => (vps ? prev : msg))
       if (showToast) toast.error(msg)
     } finally {
       setIsLoading(false)
-      setIsRefreshing(false)
+      if (showToast) setIsRefreshing(false)
     }
-  }, [id])
+  }, [id, vps])
 
-  // Load live status & telemetry
-  const fetchTelemetry = React.useCallback(async () => {
+  // 2. Background Runtime Status: Polls only /api/vps/:id/status (Phase 10 & 12)
+  const loadRuntimeStatus = React.useCallback(async (showToast = false) => {
     if (!id) return
     try {
       const res = await fetch(`/api/vps/${id}/status`)
       if (res.ok) {
         const data = await res.json()
-        setTelemetry(data)
-        if (data.status && vps && vps.status !== data.status) {
-          setVps((prev) => (prev ? { ...prev, status: data.status } : null))
+        setRuntime({
+          status: data.status,
+          uptime: data.uptime,
+          cpus: data.cpus,
+          memoryMb: data.memoryMb,
+          maxmemMb: data.maxMemoryMb || data.maxmem,
+          maxdiskGb: data.maxDiskGb || data.maxdisk,
+          runtimeNode: data.runtimeNode,
+          runtimeNodeSource: data.runtimeNodeSource,
+          lastVerifiedAt: data.lastVerifiedAt || (data.fresh ? new Date().toISOString() : undefined),
+          fresh: data.fresh !== false,
+          error: data.fresh === false ? (data.error || "Hypervisor node unreachable") : null,
+        })
+        if (data.fresh !== false) {
+          setRuntimeSyncError(null)
+          if (showToast) toast.success("Hypervisor runtime status verified.")
+        } else {
+          setRuntimeSyncError(data.error || "Current hypervisor state could not be refreshed.")
+          if (showToast) toast.error(data.error || "Hypervisor unreachable.")
         }
+      } else {
+        const errText = await res.text()
+        let msg = "Current hypervisor state could not be refreshed."
+        try {
+          const parsed = JSON.parse(errText)
+          if (parsed.error) msg = parsed.error
+        } catch {}
+        setRuntime((prev) => ({
+          ...prev,
+          fresh: false,
+          error: msg,
+        }))
+        setRuntimeSyncError(msg)
+        if (showToast) toast.error(msg)
       }
-    } catch {}
-  }, [id, vps])
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setRuntime((prev) => ({
+        ...prev,
+        fresh: false,
+        error: msg,
+      }))
+      setRuntimeSyncError(msg)
+      if (showToast) toast.error(msg)
+    }
+  }, [id])
 
-  // Load operations
-  const fetchOperations = React.useCallback(async () => {
+  // 3. Load Operations History (Phase 33)
+  const loadOperations = React.useCallback(async () => {
     if (!id) return
     try {
       const res = await fetch(`/api/vps/${id}/operations`)
       if (res.ok) {
         const data = await res.json()
         setOperations(data.operations || [])
+        setOperationsSyncError(null)
+      } else {
+        setOperationsSyncError("Operation history unavailable.")
       }
-    } catch {}
+    } catch (err: unknown) {
+      setOperationsSyncError("Operation history unavailable.")
+    }
   }, [id])
 
   // Fetch backend console diagnostic
@@ -240,11 +298,50 @@ export default function InstanceDetailPage() {
     }
   }, [id])
 
+  // EXACTLY ONE INITIAL LOADING SEQUENCE ON VPS ID CHANGE (Phase 1)
   React.useEffect(() => {
-    fetchVps()
-    fetchTelemetry()
-    fetchOperations()
-  }, [fetchVps, fetchTelemetry, fetchOperations])
+    if (!id) return
+    setIsLoading(true)
+    loadVps()
+    loadRuntimeStatus()
+    loadOperations()
+  }, [id])
+
+  // 15-SECOND BACKGROUND RUNTIME POLLING (Phase 1 & Phase 12)
+  React.useEffect(() => {
+    if (!id) return
+
+    let intervalId: NodeJS.Timeout | null = null
+
+    const startPolling = () => {
+      if (intervalId) clearInterval(intervalId)
+      intervalId = setInterval(() => {
+        if (document.visibilityState === "visible") {
+          loadRuntimeStatus()
+        }
+      }, 15000)
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        loadRuntimeStatus()
+        startPolling()
+      } else {
+        if (intervalId) {
+          clearInterval(intervalId)
+          intervalId = null
+        }
+      }
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+    startPolling()
+
+    return () => {
+      if (intervalId) clearInterval(intervalId)
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+    }
+  }, [id, loadRuntimeStatus])
 
   // Load node templates via user-authorized reinstall endpoint (Fixes Part 29)
   React.useEffect(() => {
@@ -287,9 +384,9 @@ export default function InstanceDetailPage() {
       if (!res.ok) throw new Error(data.error || "Operation failed.")
 
       toast.success(`Power command '${action}' completed.`)
-      await fetchVps()
-      await fetchTelemetry()
-      await fetchOperations()
+      await loadVps()
+      await loadRuntimeStatus()
+      await loadOperations()
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       toast.error(msg)
@@ -321,7 +418,7 @@ export default function InstanceDetailPage() {
       if (!res.ok) throw new Error(data.error || "Failed to update metadata.")
 
       toast.success("Display Name & Description updated.")
-      await fetchVps()
+      await loadVps()
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       toast.error(msg)
@@ -356,7 +453,7 @@ export default function InstanceDetailPage() {
       toast.success("Root password updated successfully on hypervisor.")
       setPasswordDialogOpen(false)
       setNewPassword("")
-      await fetchOperations()
+      await loadOperations()
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       toast.error(msg)
@@ -396,9 +493,9 @@ export default function InstanceDetailPage() {
       toast.success("VPS reinstalled and restored successfully.")
       setReinstallDialogOpen(false)
       setConfirmHostnameInput("")
-      await fetchVps()
-      await fetchTelemetry()
-      await fetchOperations()
+      await loadVps()
+      await loadRuntimeStatus()
+      await loadOperations()
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       toast.error(msg)
@@ -499,9 +596,9 @@ export default function InstanceDetailPage() {
 
     ws.onopen = () => {
       // NOTE: InterDash WebSocket is open, but do NOT mark as "Connected to Hypervisor" yet!
-      setConsoleState("checking_vps")
-      setConsoleStatusMessage("Checking container runtime status...")
-      term.writeln("\x1b[38;5;244m[InterDash gateway established. Checking hypervisor status...]\x1b[0m")
+      setConsoleState("checking_runtime")
+      setConsoleStatusMessage("Checking VPS runtime state...")
+      term.writeln("\x1b[38;5;244m[InterDash gateway established. Checking VPS runtime state...]\x1b[0m")
     }
 
     ws.onmessage = (event) => {
@@ -576,16 +673,14 @@ export default function InstanceDetailPage() {
     }
   }, [id, sendResize, fetchConsoleDiagnostic])
 
-  // Connect / disconnect on tab change
+  // Connect / disconnect on tab change (Phase 1 & Console Independence)
   React.useEffect(() => {
     if (activeTab === "console") {
-      // Auto-connect on console tab unless container is explicitly stopped
-      if (vps?.status !== "stopped") {
-        const timer = setTimeout(() => {
-          connectConsole()
-        }, 120)
-        return () => clearTimeout(timer)
-      }
+      // Connect when entering console tab
+      const timer = setTimeout(() => {
+        connectConsole()
+      }, 120)
+      return () => clearTimeout(timer)
     } else {
       // Tear down when leaving console tab
       if (wsInstance.current) {
@@ -599,7 +694,7 @@ export default function InstanceDetailPage() {
       setConsoleState("idle")
       setConsoleStatusMessage("Disconnected")
     }
-  }, [activeTab, vps?.status, connectConsole])
+  }, [activeTab, connectConsole])
 
   // Window resize handler for fitAddon
   React.useEffect(() => {
@@ -616,7 +711,7 @@ export default function InstanceDetailPage() {
     return () => window.removeEventListener("resize", handleResize)
   }, [sendResize])
 
-  if (isLoading) {
+  if (isLoading && !vps) {
     return (
       <BaseLayout>
         <div className="px-4 lg:px-6 py-24 flex flex-col items-center justify-center gap-3 text-muted-foreground">
@@ -627,18 +722,18 @@ export default function InstanceDetailPage() {
     )
   }
 
-  if (error || !vps) {
+  if (pageLoadError && !vps) {
     return (
       <BaseLayout>
         <div className="px-4 lg:px-6 py-20 flex flex-col items-center justify-center gap-3 text-destructive max-w-md mx-auto text-center">
           <AlertTriangle className="size-8" />
           <h3 className="font-semibold text-base">Unable to load VPS</h3>
-          <p className="text-xs text-muted-foreground">{error || "The requested VPS could not be found."}</p>
+          <p className="text-xs text-muted-foreground">{pageLoadError}</p>
           <div className="flex gap-2 mt-2">
             <Button variant="outline" size="sm" onClick={() => navigate("/instances")}>
               <ChevronLeft className="size-4 mr-1" /> Back to Instances
             </Button>
-            <Button size="sm" onClick={() => fetchVps(true)}>
+            <Button size="sm" onClick={() => loadVps(true)}>
               Retry
             </Button>
           </div>
@@ -647,8 +742,13 @@ export default function InstanceDetailPage() {
     )
   }
 
-  const isRunning = vps.status === "running"
-  const isStopped = vps.status === "stopped"
+  if (!vps) {
+    return null
+  }
+
+  const currentStatus = runtime.status || vps.status
+  const isRunning = currentStatus === "running"
+  const isStopped = currentStatus === "stopped"
   const isBusy = Boolean(vps.lock_state)
 
   return (
@@ -667,10 +767,13 @@ export default function InstanceDetailPage() {
             variant="outline"
             size="sm"
             className="h-8 gap-1 text-xs"
-            onClick={() => {
-              fetchVps(true)
-              fetchTelemetry()
-              fetchOperations()
+            onClick={async () => {
+              setIsRefreshing(true)
+              try {
+                await Promise.all([loadVps(true), loadRuntimeStatus(true), loadOperations()])
+              } finally {
+                setIsRefreshing(false)
+              }
             }}
             disabled={isRefreshing}
           >
@@ -678,6 +781,33 @@ export default function InstanceDetailPage() {
             <span>Refresh Status</span>
           </Button>
         </div>
+
+        {/* Subtle Runtime Sync Warning (Phase 2 & Phase 13) */}
+        {(!runtime.fresh || runtimeSyncError) && (
+          <div className="p-3 rounded-md bg-amber-500/10 border border-amber-500/25 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-amber-600 dark:text-amber-400">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="size-4 shrink-0" />
+              <span>
+                Current hypervisor state could not be refreshed.{" "}
+                {runtime.lastVerifiedAt ? (
+                  <span className="text-muted-foreground font-mono">
+                    Last verified: {new Date(runtime.lastVerifiedAt).toLocaleTimeString()}
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground">Displaying last known state.</span>
+                )}
+              </span>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs border-amber-500/30 text-amber-600 dark:text-amber-400 hover:bg-amber-500/20 shrink-0 self-start sm:self-auto"
+              onClick={() => loadRuntimeStatus(true)}
+            >
+              <RefreshCw className="size-3 mr-1.5" /> Retry Sync
+            </Button>
+          </div>
+        )}
 
         {/* Management Header Card — Strong Visual Hierarchy */}
         <div className="p-6 rounded-lg border border-border bg-card shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
@@ -723,8 +853,18 @@ export default function InstanceDetailPage() {
                       : "bg-amber-500 animate-pulse"
                   }`}
                 />
-                {isBusy ? `Busy (${vps.lock_state})` : vps.status}
+                {isBusy ? `Busy (${vps.lock_state})` : currentStatus}
               </Badge>
+
+              {!runtime.fresh && (
+                <Badge
+                  variant="outline"
+                  className="text-[11px] gap-1 text-amber-600 dark:text-amber-400 border-amber-500/30 bg-amber-500/10"
+                >
+                  <AlertTriangle className="size-3" />
+                  <span>Stale Telemetry</span>
+                </Badge>
+              )}
 
               <Badge variant="outline" className="font-mono text-xs text-muted-foreground">
                 CT {vps.proxmox_vmid}
@@ -739,6 +879,11 @@ export default function InstanceDetailPage() {
                   />
                 )}
                 <span>{vps.node_name || "Proxmox Node"} · {vps.node_region || "default"}</span>
+                {runtime.runtimeNode && runtime.runtimeNode !== vps.node_name && (
+                  <span className="text-primary font-mono text-[10px] ml-1">
+                    (Target: {runtime.runtimeNode})
+                  </span>
+                )}
               </Badge>
             </div>
           </div>
@@ -981,6 +1126,11 @@ export default function InstanceDetailPage() {
                         />
                       )}
                       <span>{vps.node_name || "Proxmox Node"} ({vps.node_region || "default"})</span>
+                      {runtime.runtimeNode && runtime.runtimeNode !== vps.node_name && (
+                        <Badge variant="outline" className="text-[10px] text-primary border-primary/30 ml-1">
+                          Runtime: {runtime.runtimeNode} ({runtime.runtimeNodeSource || "cluster"})
+                        </Badge>
+                      )}
                     </span>
                   </div>
 
@@ -1090,33 +1240,49 @@ export default function InstanceDetailPage() {
                 <CardContent className="space-y-3 text-xs">
                   <div className="flex items-center justify-between py-1.5 border-b">
                     <span className="text-muted-foreground">Container State</span>
-                    <Badge
-                      variant={isRunning ? "default" : isStopped ? "secondary" : "outline"}
-                      className="text-[11px] capitalize"
-                    >
-                      {vps.status}
-                    </Badge>
+                    <div className="flex items-center gap-1.5">
+                      <Badge
+                        variant={isRunning ? "default" : isStopped ? "secondary" : "outline"}
+                        className="text-[11px] capitalize"
+                      >
+                        {currentStatus}
+                      </Badge>
+                      {!runtime.fresh && (
+                        <Badge variant="outline" className="text-[10px] text-amber-500 border-amber-500/30">
+                          Stale
+                        </Badge>
+                      )}
+                    </div>
                   </div>
 
                   <div className="flex items-center justify-between py-1.5 border-b">
                     <span className="text-muted-foreground">Uptime</span>
                     <span className="font-mono font-medium">
-                      {formatUptime(telemetry?.uptime)}
+                      {formatUptime(runtime.uptime)}
                     </span>
                   </div>
 
                   <div className="flex items-center justify-between py-1.5 border-b">
                     <span className="text-muted-foreground">Hypervisor Status</span>
-                    <span className="font-medium text-emerald-500 flex items-center gap-1.5">
-                      <span className="size-2 rounded-full bg-emerald-500" />
-                      Online & Verified
-                    </span>
+                    {runtime.fresh ? (
+                      <span className="font-medium text-emerald-500 flex items-center gap-1.5">
+                        <span className="size-2 rounded-full bg-emerald-500" />
+                        Online & Verified
+                      </span>
+                    ) : (
+                      <span className="font-medium text-amber-500 flex items-center gap-1.5">
+                        <span className="size-2 rounded-full bg-amber-500" />
+                        Sync Degraded
+                      </span>
+                    )}
                   </div>
 
                   <div className="flex items-center justify-between py-1.5">
                     <span className="text-muted-foreground">Last Proxmox Sync</span>
                     <span className="font-mono text-[11px] text-muted-foreground">
-                      {vps.last_proxmox_sync_at
+                      {runtime.lastVerifiedAt
+                        ? new Date(runtime.lastVerifiedAt).toLocaleString()
+                        : vps.last_proxmox_sync_at
                         ? new Date(vps.last_proxmox_sync_at).toLocaleString()
                         : "Never"}
                     </span>
@@ -1135,7 +1301,14 @@ export default function InstanceDetailPage() {
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  {operations.length === 0 ? (
+                  {operationsSyncError ? (
+                    <div className="flex flex-col items-center justify-center py-6 gap-2 text-xs text-muted-foreground">
+                      <p>{operationsSyncError}</p>
+                      <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => loadOperations()}>
+                        Retry
+                      </Button>
+                    </div>
+                  ) : operations.length === 0 ? (
                     <p className="text-xs text-muted-foreground py-6 text-center">
                       No lifecycle operations recorded yet.
                     </p>

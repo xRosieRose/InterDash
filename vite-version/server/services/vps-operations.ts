@@ -62,6 +62,42 @@ export class VpsOperationsService {
   }
 
   /**
+   * Helper: Resolve VPS, associated Proxmox Node config, and authoritative runtime cluster node.
+   * Never mutates proxmox_nodes.node_name.
+   */
+  public static async resolveVpsAndRuntimeTarget(vpsId: string): Promise<{
+    vps: any;
+    node: ProxmoxNodeConfig;
+    runtimeNode: string;
+    runtimeNodeSource: "direct" | "cluster" | "configured";
+  }> {
+    const { vps, node } = this.resolveVpsAndNode(vpsId);
+    const target = await ProxmoxService.resolveLxcRuntimeTarget(node, vps.proxmox_vmid);
+
+    if (target.ok) {
+      return {
+        vps,
+        node,
+        runtimeNode: target.nodeName,
+        runtimeNodeSource: target.discoveredFrom,
+      };
+    }
+
+    if (target.reason === "not_found") {
+      const err = new Error(`VPS container ${vps.proxmox_vmid} was not found on hypervisor cluster.`);
+      (err as any).statusCode = 404;
+      throw err;
+    }
+
+    return {
+      vps,
+      node,
+      runtimeNode: node.nodeName,
+      runtimeNodeSource: "configured",
+    };
+  }
+
+  /**
    * Atomically claim an operation lock for a VPS.
    * Throws 409 Conflict if an active operation is already running.
    */
@@ -163,10 +199,10 @@ export class VpsOperationsService {
    * Power action: start
    */
   public static async start(vpsId: string, userId: string): Promise<OperationResult> {
-    const { vps, node } = this.resolveVpsAndNode(vpsId);
+    const { vps, node, runtimeNode } = await this.resolveVpsAndRuntimeTarget(vpsId);
 
-    // Check hypervisor lock
-    const pveLock = await ProxmoxService.checkLxcLocked(node, vps.proxmox_vmid);
+    // Check hypervisor lock on runtime node
+    const pveLock = await ProxmoxService.checkLxcLocked(node, vps.proxmox_vmid, runtimeNode);
     if (pveLock.locked) {
       const err = new Error(`VPS is locked on hypervisor (${pveLock.lockName || "busy"}).`);
       (err as any).statusCode = 409;
@@ -176,14 +212,14 @@ export class VpsOperationsService {
     const opId = this.claimOperation(vpsId, userId, "start");
 
     try {
-      // Check current live status
-      const current = await ProxmoxService.getLxcStatus(node, vps.proxmox_vmid);
-      if (current.status === "running") {
+      // Check current live status on runtime node
+      const current = await ProxmoxService.getLxcStatus(node, vps.proxmox_vmid, runtimeNode);
+      if (current.ok && current.status === "running") {
         execute(
           `UPDATE vps SET status = 'running', last_proxmox_sync_at = datetime('now') WHERE id = ?`,
           [vpsId]
         );
-        this.completeOperation(opId, vpsId, { status: "running", alreadyRunning: true });
+        this.completeOperation(opId, vpsId, { status: "running", alreadyRunning: true, runtimeNode });
         return { operationId: opId, vpsId, type: "start", status: "completed" };
       }
 
@@ -191,7 +227,7 @@ export class VpsOperationsService {
         "UPDATE vps_operations SET current_step = 'sending_start_signal' WHERE id = ?",
         [opId]
       );
-      const { upid } = await ProxmoxService.startLxc(node, vps.proxmox_vmid);
+      const { upid } = await ProxmoxService.startLxc(node, vps.proxmox_vmid, runtimeNode);
 
       execute(
         "UPDATE vps_operations SET status = 'waiting_for_proxmox_task', current_step = 'waiting_for_task' WHERE id = ?",
@@ -199,21 +235,21 @@ export class VpsOperationsService {
       );
       await ProxmoxService.waitForProxmoxTask(node, upid, 45_000, 1_500);
 
-      // Verify live status
-      const verified = await ProxmoxService.getLxcStatus(node, vps.proxmox_vmid);
-      const finalStatus = verified.status === "running" ? "running" : "stopped";
+      // Verify live status on runtime node
+      const verified = await ProxmoxService.getLxcStatus(node, vps.proxmox_vmid, runtimeNode);
+      const finalStatus = verified.ok && verified.status === "running" ? "running" : "stopped";
 
       execute(
         `UPDATE vps SET status = ?, last_proxmox_sync_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
         [finalStatus, vpsId]
       );
 
-      this.completeOperation(opId, vpsId, { finalStatus });
+      this.completeOperation(opId, vpsId, { finalStatus, runtimeNode });
 
       execute(
         `INSERT INTO audit_logs (user_id, event_type, metadata)
          VALUES (?, 'vps_started', ?)`,
-        [userId, JSON.stringify({ vps_id: vpsId, vmid: vps.proxmox_vmid })]
+        [userId, JSON.stringify({ vps_id: vpsId, vmid: vps.proxmox_vmid, runtime_node: runtimeNode })]
       );
 
       return { operationId: opId, vpsId, type: "start", status: "completed" };
@@ -232,9 +268,9 @@ export class VpsOperationsService {
     userId: string,
     force = false
   ): Promise<OperationResult> {
-    const { vps, node } = this.resolveVpsAndNode(vpsId);
+    const { vps, node, runtimeNode } = await this.resolveVpsAndRuntimeTarget(vpsId);
 
-    const pveLock = await ProxmoxService.checkLxcLocked(node, vps.proxmox_vmid);
+    const pveLock = await ProxmoxService.checkLxcLocked(node, vps.proxmox_vmid, runtimeNode);
     if (pveLock.locked) {
       const err = new Error(`VPS is locked on hypervisor (${pveLock.lockName || "busy"}).`);
       (err as any).statusCode = 409;
@@ -244,13 +280,13 @@ export class VpsOperationsService {
     const opId = this.claimOperation(vpsId, userId, "stop", { force });
 
     try {
-      const current = await ProxmoxService.getLxcStatus(node, vps.proxmox_vmid);
-      if (current.status === "stopped") {
+      const current = await ProxmoxService.getLxcStatus(node, vps.proxmox_vmid, runtimeNode);
+      if (current.ok && current.status === "stopped") {
         execute(
           `UPDATE vps SET status = 'stopped', last_proxmox_sync_at = datetime('now') WHERE id = ?`,
           [vpsId]
         );
-        this.completeOperation(opId, vpsId, { status: "stopped", alreadyStopped: true });
+        this.completeOperation(opId, vpsId, { status: "stopped", alreadyStopped: true, runtimeNode });
         return { operationId: opId, vpsId, type: "stop", status: "completed" };
       }
 
@@ -260,8 +296,8 @@ export class VpsOperationsService {
       );
 
       const { upid } = force
-        ? await ProxmoxService.stopLxc(node, vps.proxmox_vmid)
-        : await ProxmoxService.shutdownLxc(node, vps.proxmox_vmid);
+        ? await ProxmoxService.stopLxc(node, vps.proxmox_vmid, runtimeNode)
+        : await ProxmoxService.shutdownLxc(node, vps.proxmox_vmid, runtimeNode);
 
       execute(
         "UPDATE vps_operations SET status = 'waiting_for_proxmox_task', current_step = 'waiting_for_task' WHERE id = ?",
@@ -269,20 +305,20 @@ export class VpsOperationsService {
       );
       await ProxmoxService.waitForProxmoxTask(node, upid, 60_000, 1_500);
 
-      const verified = await ProxmoxService.getLxcStatus(node, vps.proxmox_vmid);
-      const finalStatus = verified.status === "running" ? "running" : "stopped";
+      const verified = await ProxmoxService.getLxcStatus(node, vps.proxmox_vmid, runtimeNode);
+      const finalStatus = verified.ok && verified.status === "stopped" ? "stopped" : "running";
 
       execute(
         `UPDATE vps SET status = ?, last_proxmox_sync_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
         [finalStatus, vpsId]
       );
 
-      this.completeOperation(opId, vpsId, { finalStatus, forced: force });
+      this.completeOperation(opId, vpsId, { finalStatus, forced: force, runtimeNode });
 
       execute(
         `INSERT INTO audit_logs (user_id, event_type, metadata)
          VALUES (?, 'vps_stopped', ?)`,
-        [userId, JSON.stringify({ vps_id: vpsId, vmid: vps.proxmox_vmid, forced: force })]
+        [userId, JSON.stringify({ vps_id: vpsId, vmid: vps.proxmox_vmid, forced: force, runtime_node: runtimeNode })]
       );
 
       return { operationId: opId, vpsId, type: "stop", status: "completed" };
@@ -297,9 +333,9 @@ export class VpsOperationsService {
    * Power action: reboot
    */
   public static async reboot(vpsId: string, userId: string): Promise<OperationResult> {
-    const { vps, node } = this.resolveVpsAndNode(vpsId);
+    const { vps, node, runtimeNode } = await this.resolveVpsAndRuntimeTarget(vpsId);
 
-    const pveLock = await ProxmoxService.checkLxcLocked(node, vps.proxmox_vmid);
+    const pveLock = await ProxmoxService.checkLxcLocked(node, vps.proxmox_vmid, runtimeNode);
     if (pveLock.locked) {
       const err = new Error(`VPS is locked on hypervisor (${pveLock.lockName || "busy"}).`);
       (err as any).statusCode = 409;
@@ -313,7 +349,7 @@ export class VpsOperationsService {
         "UPDATE vps_operations SET current_step = 'sending_reboot_signal' WHERE id = ?",
         [opId]
       );
-      const { upid } = await ProxmoxService.rebootLxc(node, vps.proxmox_vmid);
+      const { upid } = await ProxmoxService.rebootLxc(node, vps.proxmox_vmid, runtimeNode);
 
       execute(
         "UPDATE vps_operations SET status = 'waiting_for_proxmox_task', current_step = 'waiting_for_task' WHERE id = ?",
@@ -321,20 +357,20 @@ export class VpsOperationsService {
       );
       await ProxmoxService.waitForProxmoxTask(node, upid, 60_000, 2_000);
 
-      const verified = await ProxmoxService.getLxcStatus(node, vps.proxmox_vmid);
-      const finalStatus = verified.status === "running" ? "running" : "stopped";
+      const verified = await ProxmoxService.getLxcStatus(node, vps.proxmox_vmid, runtimeNode);
+      const finalStatus = verified.ok && verified.status === "running" ? "running" : "stopped";
 
       execute(
         `UPDATE vps SET status = ?, last_proxmox_sync_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
         [finalStatus, vpsId]
       );
 
-      this.completeOperation(opId, vpsId, { finalStatus });
+      this.completeOperation(opId, vpsId, { finalStatus, runtimeNode });
 
       execute(
         `INSERT INTO audit_logs (user_id, event_type, metadata)
          VALUES (?, 'vps_rebooted', ?)`,
-        [userId, JSON.stringify({ vps_id: vpsId, vmid: vps.proxmox_vmid })]
+        [userId, JSON.stringify({ vps_id: vpsId, vmid: vps.proxmox_vmid, runtime_node: runtimeNode })]
       );
 
       return { operationId: opId, vpsId, type: "reboot", status: "completed" };
@@ -359,9 +395,9 @@ export class VpsOperationsService {
       throw err;
     }
 
-    const { vps, node } = this.resolveVpsAndNode(vpsId);
+    const { vps, node, runtimeNode } = await this.resolveVpsAndRuntimeTarget(vpsId);
 
-    const pveLock = await ProxmoxService.checkLxcLocked(node, vps.proxmox_vmid);
+    const pveLock = await ProxmoxService.checkLxcLocked(node, vps.proxmox_vmid, runtimeNode);
     if (pveLock.locked) {
       const err = new Error(`VPS is locked on hypervisor (${pveLock.lockName || "busy"}).`);
       (err as any).statusCode = 409;
@@ -377,20 +413,20 @@ export class VpsOperationsService {
         [opId]
       );
 
-      await ProxmoxService.setLxcPassword(node, vps.proxmox_vmid, newPassword);
+      await ProxmoxService.setLxcPassword(node, vps.proxmox_vmid, newPassword, runtimeNode);
 
       execute(
         `UPDATE vps SET updated_at = datetime('now') WHERE id = ?`,
         [vpsId]
       );
 
-      this.completeOperation(opId, vpsId, { updated: true });
+      this.completeOperation(opId, vpsId, { updated: true, runtimeNode });
 
       // Audit log does NOT contain the password
       execute(
         `INSERT INTO audit_logs (user_id, event_type, metadata)
          VALUES (?, 'vps_password_changed', ?)`,
-        [userId, JSON.stringify({ vps_id: vpsId, vmid: vps.proxmox_vmid })]
+        [userId, JSON.stringify({ vps_id: vpsId, vmid: vps.proxmox_vmid, runtime_node: runtimeNode })]
       );
 
       return { operationId: opId, vpsId, type: "password_reset", status: "completed" };
@@ -478,7 +514,7 @@ export class VpsOperationsService {
       confirmHostname: string;
     }
   ): Promise<OperationResult> {
-    const { vps, node } = this.resolveVpsAndNode(vpsId);
+    const { vps, node, runtimeNode } = await this.resolveVpsAndRuntimeTarget(vpsId);
 
     // Strict validation: exact hostname confirmation required
     if (!params.confirmHostname || params.confirmHostname.trim() !== vps.hostname.trim()) {
@@ -495,7 +531,7 @@ export class VpsOperationsService {
       throw err;
     }
 
-    const pveLock = await ProxmoxService.checkLxcLocked(node, vps.proxmox_vmid);
+    const pveLock = await ProxmoxService.checkLxcLocked(node, vps.proxmox_vmid, runtimeNode);
     if (pveLock.locked) {
       const err = new Error(`VPS is locked on hypervisor (${pveLock.lockName || "busy"}).`);
       (err as any).statusCode = 409;
@@ -506,6 +542,7 @@ export class VpsOperationsService {
     const opId = this.claimOperation(vpsId, userId, "reinstall", {
       template: params.template,
       targetVmid: vps.proxmox_vmid,
+      runtimeNode,
     });
 
     let oldContainerDestroyed = false;
@@ -516,10 +553,10 @@ export class VpsOperationsService {
         "UPDATE vps_operations SET current_step = 'stopping_existing_container' WHERE id = ?",
         [opId]
       );
-      const currentStatus = await ProxmoxService.getLxcStatus(node, vps.proxmox_vmid);
-      if (currentStatus.status === "running") {
+      const currentStatus = await ProxmoxService.getLxcStatus(node, vps.proxmox_vmid, runtimeNode);
+      if (currentStatus.ok && currentStatus.status === "running") {
         try {
-          const stopRes = await ProxmoxService.stopLxc(node, vps.proxmox_vmid);
+          const stopRes = await ProxmoxService.stopLxc(node, vps.proxmox_vmid, runtimeNode);
           await ProxmoxService.waitForProxmoxTask(node, stopRes.upid, 45_000, 1_500);
         } catch (stopErr) {
           console.warn(`[REINSTALL] Stop prior to destroy had warning:`, stopErr);
@@ -531,11 +568,11 @@ export class VpsOperationsService {
         "UPDATE vps_operations SET current_step = 'destroying_old_rootfs' WHERE id = ?",
         [opId]
       );
-      const destroyRes = await ProxmoxService.destroyLxc(node, vps.proxmox_vmid, true);
+      const destroyRes = await ProxmoxService.destroyLxc(node, vps.proxmox_vmid, true, runtimeNode);
       await ProxmoxService.waitForProxmoxTask(node, destroyRes.upid, 60_000, 2_000);
       oldContainerDestroyed = true;
 
-      // 3. Recreate container with same VMID, same IP, and same resource limits
+      // 3. Recreate container with same VMID, same IP, and same resource limits on the runtime node
       execute(
         "UPDATE vps_operations SET current_step = 'recreating_container' WHERE id = ?",
         [opId]
@@ -545,22 +582,26 @@ export class VpsOperationsService {
         ? `${vps.ipv4_address}/24`
         : undefined;
 
-      const createRes = await ProxmoxService.createLxc(node, {
-        vmid: vps.proxmox_vmid,
-        hostname: vps.hostname,
-        ostemplate: params.template,
-        cores: vps.cpu_cores,
-        memoryMb: vps.memory_mb,
-        swapMb: vps.swap_mb,
-        diskGb: vps.disk_gb,
-        storage: node.defaultStorage,
-        bridge: node.defaultBridge,
-        ipv4: net0Ip,
-        password: params.rootPassword,
-        sshPublicKeys: params.sshKey,
-        description: vps.description || `Managed by InterDash for ${vps.hostname}`,
-        startAfterCreate: true,
-      });
+      const createRes = await ProxmoxService.createLxc(
+        node,
+        {
+          vmid: vps.proxmox_vmid,
+          hostname: vps.hostname,
+          ostemplate: params.template,
+          cores: vps.cpu_cores,
+          memoryMb: vps.memory_mb,
+          swapMb: vps.swap_mb,
+          diskGb: vps.disk_gb,
+          storage: node.defaultStorage,
+          bridge: node.defaultBridge,
+          ipv4: net0Ip,
+          password: params.rootPassword,
+          sshPublicKeys: params.sshKey,
+          description: vps.description || `Managed by InterDash for ${vps.hostname}`,
+          startAfterCreate: true,
+        },
+        runtimeNode
+      );
 
       execute(
         "UPDATE vps_operations SET status = 'waiting_for_proxmox_task', current_step = 'waiting_for_creation' WHERE id = ?",
@@ -573,7 +614,7 @@ export class VpsOperationsService {
         "UPDATE vps_operations SET current_step = 'verifying_reinstalled_container' WHERE id = ?",
         [opId]
       );
-      const verified = await ProxmoxService.getLxcStatus(node, vps.proxmox_vmid);
+      const verified = await ProxmoxService.getLxcStatus(node, vps.proxmox_vmid, runtimeNode);
 
       // 5. Update database record
       execute(
@@ -581,13 +622,14 @@ export class VpsOperationsService {
           os_image_id = ?, status = ?, last_proxmox_sync_at = datetime('now'),
           updated_at = datetime('now')
          WHERE id = ?`,
-        [params.template, verified.status === "running" ? "running" : "stopped", vpsId]
+        [params.template, verified.ok && verified.status === "running" ? "running" : "stopped", vpsId]
       );
 
       this.completeOperation(opId, vpsId, {
         template: params.template,
         vmid: vps.proxmox_vmid,
         finalStatus: verified.status,
+        runtimeNode,
       });
 
       execute(
@@ -599,6 +641,7 @@ export class VpsOperationsService {
             vps_id: vpsId,
             vmid: vps.proxmox_vmid,
             template: params.template,
+            runtime_node: runtimeNode,
           }),
         ]
       );
@@ -613,14 +656,14 @@ export class VpsOperationsService {
       this.failOperation(
         opId,
         vpsId,
-        recoveryRequired ? "REINSTALL_RECOVERY_REQUIRED" : "REINSTALL_FAILED",
+        "REINSTALL_FAILED",
         msg,
         recoveryRequired
       );
 
       if (recoveryRequired) {
         execute(
-          `UPDATE vps SET status = 'error', lock_state = 'recovery_required', updated_at = datetime('now') WHERE id = ?`,
+          `UPDATE vps SET status = 'recovery_required', updated_at = datetime('now') WHERE id = ?`,
           [vpsId]
         );
       }
@@ -630,51 +673,92 @@ export class VpsOperationsService {
   }
 
   /**
-   * Synchronize live status & telemetry directly from Proxmox VE
+   * Synchronize live status & telemetry directly from Proxmox VE.
+   * If Proxmox is unreachable or returns an error, NEVER overwrite existing
+   * valid database status with 'unknown'. Preserve known state and report fresh: false.
    */
   public static async syncStatus(vpsId: string): Promise<{
     status: string;
+    runtimeNode: string;
+    runtimeNodeSource: "direct" | "cluster" | "configured";
     uptime?: number;
     cpus?: number;
     memoryMb?: number;
     maxmemMb?: number;
     maxdiskGb?: number;
+    lastVerifiedAt?: string;
     lastSyncedAt: string;
+    fresh: boolean;
+    error?: string;
   }> {
-    const { vps, node } = this.resolveVpsAndNode(vpsId);
+    const { vps, node, runtimeNode, runtimeNodeSource } = await this.resolveVpsAndRuntimeTarget(vpsId);
 
     try {
-      const lxcStatus = await ProxmoxService.getLxcStatus(node, vps.proxmox_vmid);
-      const nowIso = new Date().toISOString();
+      const lxcStatus = await ProxmoxService.getLxcStatus(node, vps.proxmox_vmid, runtimeNode);
 
-      const newStatus =
-        lxcStatus.status === "running"
-          ? "running"
-          : lxcStatus.status === "stopped"
-          ? "stopped"
-          : vps.status || "unknown";
+      if (lxcStatus.ok && (lxcStatus.status === "running" || lxcStatus.status === "stopped")) {
+        const nowIso = new Date().toISOString();
+        const newStatus = lxcStatus.status;
 
-      execute(
-        `UPDATE vps SET status = ?, last_proxmox_sync_at = ?, updated_at = datetime('now') WHERE id = ?`,
-        [newStatus, nowIso, vpsId]
-      );
+        execute(
+          `UPDATE vps SET status = ?, last_proxmox_sync_at = ?, updated_at = datetime('now') WHERE id = ?`,
+          [newStatus, nowIso, vpsId]
+        );
 
-      return {
-        status: newStatus,
-        uptime: lxcStatus.uptime,
-        cpus: lxcStatus.cpus || vps.cpu_cores,
-        maxmemMb: lxcStatus.maxmem ? Math.round(lxcStatus.maxmem / (1024 * 1024)) : vps.memory_mb,
-        maxdiskGb: lxcStatus.maxdisk ? Math.round(lxcStatus.maxdisk / (1024 * 1024 * 1024)) : vps.disk_gb,
-        lastSyncedAt: nowIso,
-      };
-    } catch (err: unknown) {
+        return {
+          status: newStatus,
+          runtimeNode: lxcStatus.runtimeNode,
+          runtimeNodeSource: lxcStatus.runtimeNodeSource,
+          uptime: lxcStatus.uptime,
+          cpus: lxcStatus.cpus || vps.cpu_cores,
+          memoryMb: lxcStatus.maxmem ? Math.round(lxcStatus.maxmem / (1024 * 1024)) : vps.memory_mb,
+          maxmemMb: lxcStatus.maxmem ? Math.round(lxcStatus.maxmem / (1024 * 1024)) : vps.memory_mb,
+          maxdiskGb: lxcStatus.maxdisk ? Math.round(lxcStatus.maxdisk / (1024 * 1024 * 1024)) : vps.disk_gb,
+          lastVerifiedAt: lxcStatus.lastVerifiedAt || nowIso,
+          lastSyncedAt: nowIso,
+          fresh: true,
+        };
+      }
+
+      // Proxmox returned a non-OK status (e.g. node unreachable, container not found, error)
+      // DO NOT OVERWRITE DATABASE STATUS WITH "unknown"! Preserve last known valid status.
       console.warn(
-        `[SYNC_STATUS] Failed for VPS ${vpsId}:`,
-        err instanceof Error ? err.message : String(err)
+        `[SYNC_STATUS] Proxmox check returned unverified state for VPS ${vpsId} (node=${lxcStatus.runtimeNode}):`,
+        lxcStatus.error || lxcStatus.classification
       );
+
       return {
         status: vps.status || "unknown",
+        runtimeNode: lxcStatus.runtimeNode || runtimeNode,
+        runtimeNodeSource: lxcStatus.runtimeNodeSource || runtimeNodeSource,
+        uptime: undefined,
+        cpus: vps.cpu_cores,
+        memoryMb: vps.memory_mb,
+        maxmemMb: vps.memory_mb,
+        maxdiskGb: vps.disk_gb,
+        lastVerifiedAt: vps.last_proxmox_sync_at || undefined,
         lastSyncedAt: vps.last_proxmox_sync_at || vps.updated_at,
+        fresh: false,
+        error: lxcStatus.error || lxcStatus.classification || "Unable to refresh current hypervisor state.",
+      };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[SYNC_STATUS] Exception syncing status for VPS ${vpsId}:`, msg);
+
+      // Preserve last known valid status
+      return {
+        status: vps.status || "unknown",
+        runtimeNode,
+        runtimeNodeSource,
+        uptime: undefined,
+        cpus: vps.cpu_cores,
+        memoryMb: vps.memory_mb,
+        maxmemMb: vps.memory_mb,
+        maxdiskGb: vps.disk_gb,
+        lastVerifiedAt: vps.last_proxmox_sync_at || undefined,
+        lastSyncedAt: vps.last_proxmox_sync_at || vps.updated_at,
+        fresh: false,
+        error: msg,
       };
     }
   }

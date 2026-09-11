@@ -133,7 +133,7 @@ export function saveToDisk(): void {
 export function cleanExpiredSessions(): void {
   const database = getDb();
   const result = database.run(
-    "DELETE FROM sessions WHERE expires_at < datetime('now')"
+    "DELETE FROM sessions WHERE datetime(expires_at) < datetime('now')"
   );
   saveToDisk();
 }

@@ -9,6 +9,9 @@ import crypto from "node:crypto";
 import type { Request, Response, NextFunction } from "express";
 import { getDb, saveToDisk } from "../db/index.js";
 import { config } from "../config.js";
+import { parseDatabaseTimestampUtc } from "../utils/timestamp.js";
+
+export { parseDatabaseTimestampUtc };
 
 /** User object attached to req.user by auth middleware */
 export interface AuthUser {
@@ -99,7 +102,7 @@ export function requireAuth(
   }
 
   const sessionData = row[0].values[0];
-  const expiresAt = new Date(sessionData[1] as string);
+  const expiresAt = parseDatabaseTimestampUtc(sessionData[1] as string);
 
   // Check expiration
   if (expiresAt < new Date()) {
@@ -179,24 +182,27 @@ export function optionalAuth(
             u.avatar_hash, u.role, u.status, s.id as session_id, s.expires_at
      FROM sessions s
      JOIN users u ON s.user_id = u.id
-     WHERE s.token_hash = ? AND s.expires_at > datetime('now') AND u.status = 'active'
+     WHERE s.token_hash = ? AND datetime(s.expires_at) > datetime('now') AND u.status = 'active'
      LIMIT 1`,
     [tokenHash]
   );
 
   if (row.length && row[0].values.length) {
     const d = row[0].values[0];
-    req.user = {
-      id: d[0] as string,
-      discord_id: d[1] as string,
-      username: d[2] as string,
-      global_name: d[3] as string | null,
-      email: d[4] as string | null,
-      avatar_hash: d[5] as string | null,
-      role: d[6] as AuthUser["role"],
-      status: d[7] as AuthUser["status"],
-    };
-    req.sessionId = d[8] as string;
+    const expiresAt = parseDatabaseTimestampUtc(d[9] as string);
+    if (expiresAt > new Date()) {
+      req.user = {
+        id: d[0] as string,
+        discord_id: d[1] as string,
+        username: d[2] as string,
+        global_name: d[3] as string | null,
+        email: d[4] as string | null,
+        avatar_hash: d[5] as string | null,
+        role: d[6] as AuthUser["role"],
+        status: d[7] as AuthUser["status"],
+      };
+      req.sessionId = d[8] as string;
+    }
   }
 
   next();

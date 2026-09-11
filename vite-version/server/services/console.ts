@@ -41,7 +41,7 @@ const IDLE_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 export type ConsoleState =
   | "idle"
   | "connecting"
-  | "checking_vps"
+  | "checking_runtime"
   | "requesting_termproxy"
   | "termproxy_ready"
   | "connecting_upstream"
@@ -125,7 +125,7 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
         return;
       }
 
-      // 3. Resolve Proxmox node
+      // 3. Resolve Proxmox node configuration
       const node = ProvisioningService.getNodeConfig(vps.proxmox_node_id);
       if (!node) {
         socket.write("HTTP/1.1 502 Bad Gateway\r\n\r\n");
@@ -169,22 +169,54 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
         );
 
         try {
-          // STEP 1: Verify container state
+          // STEP 1: Authoritative Runtime Target Resolution & State Check
           sendControl({
             type: "status",
-            state: "checking_vps",
-            message: "Checking container runtime status...",
+            state: "checking_runtime",
+            message: "Checking VPS runtime state...",
           });
 
-          let lxcStatus = "unknown";
-          try {
-            const statusRes = await ProxmoxService.getLxcStatus(node, vps.proxmox_vmid);
-            lxcStatus = statusRes.status;
-          } catch (statusErr: unknown) {
-            console.warn(`[CONSOLE] Could not query container status for VPS ${vpsId}:`, statusErr);
+          const runtimeTarget = await ProxmoxService.resolveLxcRuntimeTarget(node, vps.proxmox_vmid);
+          if (!runtimeTarget.ok) {
+            let code = "UNKNOWN_CONSOLE_FAILURE";
+            let msg = "Failed to locate VPS on hypervisor cluster.";
+            if (runtimeTarget.reason === "not_found") {
+              code = "CONSOLE_LXC_NOT_FOUND";
+              msg = `LXC container ${vps.proxmox_vmid} not found on Proxmox cluster.`;
+            } else if (runtimeTarget.reason === "node_unreachable" || runtimeTarget.reason === "discovery_unavailable") {
+              code = "CONSOLE_NODE_UNREACHABLE";
+              msg = `Unable to contact hypervisor node '${node.nodeName}'.`;
+            } else if (runtimeTarget.reason === "authorization_failed") {
+              code = "TERM_PROXY_AUTH_FAILURE";
+              msg = "Proxmox API authorization failed.";
+            }
+
+            sendControl({
+              type: "error",
+              state: "failed",
+              code,
+              message: msg,
+            });
+            clientWs.close(1008, msg);
+            return;
           }
 
-          if (lxcStatus === "stopped") {
+          const runtimeNode = runtimeTarget.nodeName;
+
+          // Query live status on resolved runtime node
+          const statusRes = await ProxmoxService.getLxcStatus(node, vps.proxmox_vmid, runtimeNode);
+          if (!statusRes.ok) {
+            sendControl({
+              type: "error",
+              state: "failed",
+              code: "CONSOLE_NODE_UNREACHABLE",
+              message: statusRes.error || "Unable to verify container status on hypervisor.",
+            });
+            clientWs.close(1011, "Hypervisor status check failed");
+            return;
+          }
+
+          if (statusRes.status === "stopped") {
             sendControl({
               type: "error",
               state: "stopped",
@@ -195,14 +227,27 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
             return;
           }
 
-          // STEP 2: Request termproxy ticket from Proxmox
+          // Check if container is locked by a Proxmox task
+          const isLocked = await ProxmoxService.checkLxcLocked(node, vps.proxmox_vmid, runtimeNode);
+          if (isLocked) {
+            sendControl({
+              type: "error",
+              state: "busy",
+              code: "CONSOLE_LXC_LOCKED",
+              message: "VPS is currently locked by a Proxmox background operation.",
+            });
+            clientWs.close(1000, "VPS locked");
+            return;
+          }
+
+          // STEP 2: Request termproxy ticket targeting runtimeNode
           sendControl({
             type: "status",
             state: "requesting_termproxy",
-            message: "Requesting Proxmox terminal proxy ticket...",
+            message: "Requesting Proxmox terminal proxy...",
           });
 
-          const termproxy = await ProxmoxService.createLxcTermProxy(node, vps.proxmox_vmid);
+          const termproxy = await ProxmoxService.createLxcTermProxy(node, vps.proxmox_vmid, runtimeNode);
 
           sendControl({
             type: "status",
@@ -210,7 +255,7 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
             message: "Termproxy ticket acquired.",
           });
 
-          // STEP 3: Connect upstream WebSocket to Proxmox VE
+          // STEP 3: Connect upstream WebSocket to Proxmox VE targeting runtimeNode
           sendControl({
             type: "status",
             state: "connecting_upstream",
@@ -225,7 +270,7 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
               : `:${endpoint.port}`;
           const cleanBase = `${wsProtocol}://${endpoint.hostname}${wsPort}${endpoint.pathname}`;
           const upstreamUrl = `${cleanBase}/api2/json/nodes/${encodeURIComponent(
-            node.nodeName
+            runtimeNode
           )}/lxc/${vps.proxmox_vmid}/vncwebsocket?port=${termproxy.port}&vncticket=${encodeURIComponent(
             termproxy.ticket
           )}`;
