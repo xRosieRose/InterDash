@@ -1655,8 +1655,8 @@ export default function AdminNodesPage() {
                 </div>
                 <p className="text-[11px] text-muted-foreground">
                   {editAuthTokenSecret
-                    ? "A new secret is entered and will overwrite the stored secret upon saving."
-                    : "Existing secret is retained securely. Enter a new secret only if you want to replace it."}
+                    ? "✓ New secret entered and will be encrypted upon saving."
+                    : "⚠️ Existing stored secret is currently kept. If authentication is failing, you MUST paste the new Secret UUID here."}
                 </p>
               </div>
             </div>
