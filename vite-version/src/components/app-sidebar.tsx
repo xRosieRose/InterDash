@@ -9,6 +9,7 @@ import {
   Users,
   HardDrive,
   Settings,
+  PlusCircle,
 } from "lucide-react"
 import { Link } from "react-router-dom"
 import { Logo } from "@/components/logo"
@@ -85,6 +86,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
           title: "Overview",
           url: "/admin/overview",
           icon: LayoutDashboard,
+        },
+        {
+          title: "Create VPS",
+          url: "/admin/vps/create",
+          icon: PlusCircle,
         },
         {
           title: "Users",

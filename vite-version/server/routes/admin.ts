@@ -15,7 +15,7 @@ import crypto from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import { v4 as uuidv4 } from "uuid";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { queryAll, queryOne, execute } from "../db/index.js";
+import { queryAll, queryOne, execute, transaction } from "../db/index.js";
 import { ProxmoxService, resolveProxmoxEndpoint } from "../services/proxmox.js";
 import { encryptCredential, decryptCredential } from "../services/crypto.js";
 import { ProvisioningService } from "../services/provisioning.js";
@@ -689,32 +689,95 @@ router.patch("/nodes/:id", (req: Request, res: Response) => {
 });
 
 // ============================================================================
-// DELETE /api/admin/nodes/:id — Delete Proxmox Node (Guarded)
+// DELETE /api/admin/nodes/:id — Delete Proxmox Node (Guarded & Atomic)
 // ============================================================================
 router.delete("/nodes/:id", (req: Request, res: Response) => {
   const { id } = req.params;
 
-  const activeVpsCount = queryOne<any>(
-    "SELECT COUNT(*) as count FROM vps WHERE proxmox_node_id = ?",
-    [id]
-  )?.count;
-
-  if (activeVpsCount > 0) {
-    res.status(400).json({
-      error: `Cannot delete node: ${activeVpsCount} active VPS instance(s) are currently assigned to this node. Reassign or terminate them first.`,
-    });
+  const targetNode = queryOne<any>("SELECT id, name FROM proxmox_nodes WHERE id = ?", [id]);
+  if (!targetNode) {
+    res.status(404).json({ error: "Proxmox node not found." });
     return;
   }
 
-  execute("DELETE FROM proxmox_nodes WHERE id = ?", [id]);
+  try {
+    transaction(() => {
+      // 1. Dependency checks: Count active VPS instances
+      const activeVpsCount =
+        queryOne<any>("SELECT COUNT(*) as count FROM vps WHERE proxmox_node_id = ?", [id])
+          ?.count || 0;
 
-  execute(
-    `INSERT INTO audit_logs (user_id, event_type, metadata)
-     VALUES (?, 'proxmox_node_removed', ?)`,
-    [req.user?.id, JSON.stringify({ node_id: id })]
-  );
+      // 2. Count active provisioning jobs
+      const activeJobsCount =
+        queryOne<any>(
+          `SELECT COUNT(*) as count FROM provisioning_jobs
+           WHERE target_node_id = ?
+             AND status IN ('queued','allocating','creating','configuring','starting','verifying')`,
+          [id]
+        )?.count || 0;
 
-  res.json({ success: true, message: "Node deleted successfully." });
+      // 3. Count active VPS operations on instances belonging to this node
+      const activeOpsCount =
+        queryOne<any>(
+          `SELECT COUNT(*) as count FROM vps_operations o
+           JOIN vps v ON o.vps_id = v.id
+           WHERE v.proxmox_node_id = ?
+             AND o.status IN ('queued','running','waiting_for_proxmox_task')`,
+          [id]
+        )?.count || 0;
+
+      const ipPoolCount =
+        queryOne<any>("SELECT COUNT(*) as count FROM ip_pools WHERE node_id = ?", [id])
+          ?.count || 0;
+
+      if (activeVpsCount > 0 || activeJobsCount > 0 || activeOpsCount > 0) {
+        let msg = `This Proxmox node cannot be removed because ${activeVpsCount} VPS instance(s) are still assigned to it.`;
+        if (activeJobsCount > 0) {
+          msg = `This Proxmox node cannot be removed because ${activeJobsCount} provisioning job(s) are currently in progress.`;
+        } else if (activeOpsCount > 0) {
+          msg = `This Proxmox node cannot be removed because ${activeOpsCount} management operation(s) are active on its instances.`;
+        }
+
+        const conflictErr = new Error(msg);
+        (conflictErr as any).statusCode = 409;
+        (conflictErr as any).dependencies = {
+          vpsCount: activeVpsCount,
+          provisioningJobCount: activeJobsCount,
+          activeOperationCount: activeOpsCount,
+          ipPoolCount,
+        };
+        throw conflictErr;
+      }
+
+      // Safe deletion: clean up child pools and addresses if no VPS instances remain
+      execute(
+        `DELETE FROM ip_addresses WHERE pool_id IN (SELECT id FROM ip_pools WHERE node_id = ?)`,
+        [id]
+      );
+      execute("DELETE FROM ip_pools WHERE node_id = ?", [id]);
+      execute("DELETE FROM provisioning_jobs WHERE target_node_id = ?", [id]);
+      execute("DELETE FROM proxmox_nodes WHERE id = ?", [id]);
+
+      ProxmoxService.invalidateCache(id);
+
+      execute(
+        `INSERT INTO audit_logs (user_id, event_type, metadata)
+         VALUES (?, 'proxmox_node_deleted', ?)`,
+        [req.user?.id, JSON.stringify({ node_id: id, node_name: targetNode.name, vps_count: 0 })]
+      );
+    });
+
+    res.status(204).end();
+  } catch (err: any) {
+    if (err.statusCode === 409) {
+      res.status(409).json({
+        error: err.message,
+        dependencies: err.dependencies,
+      });
+      return;
+    }
+    res.status(err.statusCode || 500).json({ error: err.message || "Failed to delete node." });
+  }
 });
 
 // ============================================================================

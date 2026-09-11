@@ -32,6 +32,7 @@ import adminRoutes from "./routes/admin.js";
 import settingsRoutes from "./routes/settings.js";
 import { setupConsoleWebSocket } from "./services/console.js";
 import { ProvisioningService } from "./services/provisioning.js";
+import { VpsOperationsService } from "./services/vps-operations.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -311,6 +312,11 @@ export async function main() {
   // Reconcile any interrupted provisioning jobs across server restarts
   await ProvisioningService.reconcileInterruptedJobs().catch((err) => {
     console.error("[PROVISIONING] Startup reconciliation error:", err);
+  });
+
+  // Reconcile any in-flight VPS lifecycle operations across server restarts
+  await VpsOperationsService.reconcileInterruptedOperations().catch((err) => {
+    console.error("[VPS-OPS] Startup reconciliation error:", err);
   });
 
   // Session Cleanup (every 15 minutes)

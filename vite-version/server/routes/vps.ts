@@ -257,6 +257,41 @@ router.post("/:id/reinstall", async (req: Request, res: Response) => {
 });
 
 // ============================================================================
+// DELETE /api/vps/:id — Real VPS Deletion (Hypervisor Destroy & IPAM Release)
+// ============================================================================
+router.delete("/:id", async (req: Request, res: Response) => {
+  if (!req.user) {
+    res.status(401).json({ error: "Authentication required." });
+    return;
+  }
+
+  const { id } = req.params;
+  const { confirmHostname } = req.body || {};
+
+  try {
+    const vps = verifyVpsOwnership(id, req.user);
+
+    // Hostname confirmation check
+    if (confirmHostname && confirmHostname.trim() !== vps.hostname.trim()) {
+      res.status(400).json({
+        error: `Confirmation mismatch: You must enter the exact VPS hostname '${vps.hostname}' to delete.`,
+      });
+      return;
+    }
+
+    // Initiate async deletion with 202 Accepted
+    const result = VpsOperationsService.startDelete(id, req.user.id, confirmHostname);
+    res.status(202).json({
+      operationId: result.operationId,
+      status: result.status,
+      message: "VPS deletion initiated.",
+    });
+  } catch (err: any) {
+    res.status(err.statusCode || 500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
 // GET /api/vps/:id/operations — Operation History
 // ============================================================================
 router.get("/:id/operations", (req: Request, res: Response) => {
@@ -271,6 +306,49 @@ router.get("/:id/operations", (req: Request, res: Response) => {
     verifyVpsOwnership(id, req.user);
     const operations = VpsOperationsService.getOperations(id);
     res.json({ operations });
+  } catch (err: any) {
+    res.status(err.statusCode || 500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// GET /api/vps/:id/operations/:operationId — Query Specific Operation State
+// ============================================================================
+router.get("/:id/operations/:operationId", (req: Request, res: Response) => {
+  if (!req.user) {
+    res.status(401).json({ error: "Authentication required." });
+    return;
+  }
+
+  const { id, operationId } = req.params;
+
+  try {
+    // Check operation directly in case VPS row was finalized/deleted
+    const operation = VpsOperationsService.getOperation(operationId);
+    if (!operation) {
+      res.status(404).json({ error: "Operation not found." });
+      return;
+    }
+
+    // Verify actor is admin or owner
+    if (operation.requested_by_user_id !== req.user.id && req.user.role !== "admin") {
+      res.status(403).json({ error: "Access denied." });
+      return;
+    }
+
+    res.json({
+      operationId: operation.id,
+      vpsId: operation.vps_id || id,
+      type: operation.operation_type,
+      status: operation.status,
+      currentStep: operation.current_step,
+      errorCode: operation.error_code,
+      error: operation.error_message,
+      createdAt: operation.created_at,
+      startedAt: operation.started_at,
+      completedAt: operation.completed_at,
+      result: operation.result_json ? JSON.parse(operation.result_json) : null,
+    });
   } catch (err: any) {
     res.status(err.statusCode || 500).json({ error: err.message });
   }

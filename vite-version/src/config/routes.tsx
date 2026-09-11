@@ -20,6 +20,8 @@ const AdminOverview = lazy(() => import("@/app/admin/overview/page"))
 const AdminUsers = lazy(() => import("@/app/admin/users/page"))
 const AdminNodes = lazy(() => import("@/app/admin/nodes/page"))
 const AdminSettings = lazy(() => import("@/app/admin/settings/page"))
+const AdminVpsCreate = lazy(() => import("@/app/admin/vps/create/page"))
+const AdminVpsDeployments = lazy(() => import("@/app/admin/vps/deployments/page"))
 
 // Auth pages
 const SignIn = lazy(() => import("@/app/auth/sign-in/page"))
@@ -133,6 +135,22 @@ export const routes: RouteConfig[] = [
     element: (
       <ProtectedRoute requireAdmin>
         <AdminSettings />
+      </ProtectedRoute>
+    ),
+  },
+  {
+    path: "/admin/vps/create",
+    element: (
+      <ProtectedRoute requireAdmin>
+        <AdminVpsCreate />
+      </ProtectedRoute>
+    ),
+  },
+  {
+    path: "/admin/vps/deployments/:jobId",
+    element: (
+      <ProtectedRoute requireAdmin>
+        <AdminVpsDeployments />
       </ProtectedRoute>
     ),
   },

@@ -375,9 +375,11 @@ export default function InstancesPage() {
                   id="tour-provision"
                   size="sm"
                   className="h-9 gap-1 text-xs shrink-0"
-                  onClick={() => setAdminDeployOpen(true)}
+                  asChild
                 >
-                  <Plus className="size-3.5" /> Provision VPS
+                  <Link to="/admin/vps/create">
+                    <Plus className="size-3.5" /> Provision VPS
+                  </Link>
                 </Button>
               )}
             </div>

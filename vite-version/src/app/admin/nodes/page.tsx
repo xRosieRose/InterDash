@@ -186,6 +186,21 @@ export default function AdminNodesPage() {
   const [diagnosticsData, setDiagnosticsData] = React.useState<VerificationModalData | null>(null)
   const [verifyingNodeId, setVerifyingNodeId] = React.useState<string | null>(null)
 
+  // Delete Node Dialog State
+  const [deleteDialogOpen, setDeleteDialogOpen] = React.useState(false)
+  const [nodeToDelete, setNodeToDelete] = React.useState<ProxmoxNode | null>(null)
+  const [confirmNodeNameInput, setConfirmNodeNameInput] = React.useState("")
+  const [isDeletingNode, setIsDeletingNode] = React.useState(false)
+  const [deleteConflictError, setDeleteConflictError] = React.useState<{
+    message: string
+    dependencies?: {
+      vpsCount?: number
+      provisioningJobCount?: number
+      activeOperationCount?: number
+      ipPoolCount?: number
+    }
+  } | null>(null)
+
   const fetchNodes = React.useCallback(async (showToast = false) => {
     try {
       if (showToast) setIsRefreshing(true)
@@ -552,8 +567,47 @@ export default function AdminNodesPage() {
     }
   }
 
-  const handleDeleteNode = async (nodeId: string) => {
-    if (!confirm("Are you sure you want to remove this Proxmox node integration?")) return
+  const handleToggleEnabled = async (node: ProxmoxNode) => {
+    const nextEnabled = node.enabled === 1 ? 0 : 1
+    try {
+      const csrfRes = await fetch("/api/auth/csrf")
+      let csrfToken = ""
+      if (csrfRes.ok) {
+        const c = await csrfRes.json()
+        csrfToken = c.token
+      }
+      const res = await fetch(`/api/admin/nodes/${node.id}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
+        },
+        body: JSON.stringify({ enabled: nextEnabled }),
+      })
+      if (!res.ok) throw new Error("Failed to update node status.")
+      toast.success(nextEnabled === 1 ? `Node '${node.name}' enabled for deployments.` : `Node '${node.name}' disabled / draining.`)
+      fetchNodes()
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Error updating node status")
+    }
+  }
+
+  const handleOpenDelete = (node: ProxmoxNode) => {
+    setNodeToDelete(node)
+    setConfirmNodeNameInput("")
+    setDeleteConflictError(null)
+    setDeleteDialogOpen(true)
+  }
+
+  const handleConfirmDeleteNode = async () => {
+    if (!nodeToDelete) return
+    if (confirmNodeNameInput.trim() !== nodeToDelete.name.trim()) {
+      toast.error("Please type the exact node name to confirm deletion.")
+      return
+    }
+
+    setIsDeletingNode(true)
+    setDeleteConflictError(null)
     try {
       const csrfRes = await fetch("/api/auth/csrf")
       let csrfToken = ""
@@ -562,20 +616,35 @@ export default function AdminNodesPage() {
         csrfToken = c.token
       }
 
-      const res = await fetch(`/api/admin/nodes/${nodeId}`, {
+      const res = await fetch(`/api/admin/nodes/${nodeToDelete.id}`, {
         method: "DELETE",
         headers: {
           ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
         },
       })
 
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || "Failed to delete node.")
+      if (res.status === 204) {
+        toast.success(`Node '${nodeToDelete.name}' removed successfully.`)
+        setDeleteDialogOpen(false)
+        setNodeToDelete(null)
+        fetchNodes()
+        return
+      }
 
-      toast.success("Node deleted.")
-      fetchNodes()
+      const data = await res.json()
+      if (res.status === 409) {
+        setDeleteConflictError({
+          message: data.error || "Cannot delete node with active dependencies.",
+          dependencies: data.dependencies,
+        })
+        toast.error(data.error || "Node deletion blocked by active dependencies.")
+      } else {
+        throw new Error(data.error || "Failed to delete node.")
+      }
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : "Error deleting node")
+    } finally {
+      setIsDeletingNode(false)
     }
   }
 
@@ -635,7 +704,14 @@ export default function AdminNodesPage() {
     reader.readAsDataURL(file)
   }
 
-  const getStatusBadge = (status: string) => {
+  const getStatusBadge = (status: string, enabled?: number) => {
+    if (enabled === 0) {
+      return (
+        <Badge variant="outline" className="border-zinc-500/30 bg-zinc-500/10 text-zinc-400 gap-1 text-[10px] py-0">
+          Disabled / Drain
+        </Badge>
+      )
+    }
     switch (status) {
       case "healthy":
         return (
@@ -803,7 +879,7 @@ export default function AdminNodesPage() {
                       </TableCell>
 
                       {/* Status */}
-                      <TableCell>{getStatusBadge(node.status)}</TableCell>
+                      <TableCell>{getStatusBadge(node.status, node.enabled)}</TableCell>
 
                       {/* VPS Count */}
                       <TableCell className="font-mono text-xs font-semibold">
@@ -861,10 +937,21 @@ export default function AdminNodesPage() {
                           </Button>
                           <Button
                             variant="ghost"
+                            size="sm"
+                            onClick={() => handleToggleEnabled(node)}
+                            className={`h-7 text-[11px] gap-1 ${
+                              node.enabled === 1 ? "text-muted-foreground" : "text-amber-500 font-medium"
+                            }`}
+                            title={node.enabled === 1 ? "Disable node (prevent new deployments / drain)" : "Enable node"}
+                          >
+                            {node.enabled === 1 ? "Disable" : "Enable"}
+                          </Button>
+                          <Button
+                            variant="ghost"
                             size="icon"
-                            onClick={() => handleDeleteNode(node.id)}
-                            className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                            title="Delete Node"
+                            onClick={() => handleOpenDelete(node)}
+                            className="h-7 w-7 text-muted-foreground hover:text-destructive cursor-pointer"
+                            title={node.vps_count > 0 ? "Node has active instances (remove instances first)" : "Delete Node"}
                           >
                             <Trash2 className="size-3.5" />
                           </Button>
@@ -1640,6 +1727,141 @@ export default function AdminNodesPage() {
             <Button onClick={handleSaveEdit} disabled={isSavingEdit}>
               {isSavingEdit ? <Loader2 className="size-3.5 animate-spin mr-1.5" /> : null}
               Save Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Hypervisor Node Confirmation Dialog */}
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <DialogContent className="sm:max-w-[480px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <Trash2 className="size-5" /> Remove Proxmox Hypervisor
+            </DialogTitle>
+            <DialogDescription className="text-xs">
+              Permanently remove hypervisor integration <strong className="text-foreground">{nodeToDelete?.name}</strong> from InterDash.
+            </DialogDescription>
+          </DialogHeader>
+
+          {nodeToDelete && (
+            <div className="space-y-3 py-2 text-xs">
+              {/* Node Summary */}
+              <div className="p-3 rounded-lg border bg-muted/30 space-y-1.5 font-mono text-[11px]">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground font-sans">Node Name:</span>
+                  <span className="font-semibold text-foreground">{nodeToDelete.name}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground font-sans">PVE Node:</span>
+                  <span className="text-foreground">{nodeToDelete.node_name}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground font-sans">Endpoint:</span>
+                  <span className="text-foreground">{nodeToDelete.hostname}:{nodeToDelete.port}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground font-sans">Region:</span>
+                  <span className="text-foreground">{nodeToDelete.region}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground font-sans">Active VPS Instances:</span>
+                  <span className={`font-semibold ${nodeToDelete.vps_count > 0 ? "text-destructive" : "text-emerald-500"}`}>
+                    {nodeToDelete.vps_count} instance(s)
+                  </span>
+                </div>
+              </div>
+
+              {/* Dependency Warning if node has VPS */}
+              {nodeToDelete.vps_count > 0 ? (
+                <div className="p-3 rounded-lg border border-destructive/30 bg-destructive/10 text-destructive text-xs space-y-1">
+                  <p className="font-semibold flex items-center gap-1.5">
+                    <AlertTriangle className="size-4 shrink-0" />
+                    Deletion Blocked by Active Instances
+                  </p>
+                  <p className="text-muted-foreground text-[11px] leading-relaxed">
+                    This hypervisor node currently has {nodeToDelete.vps_count} assigned VPS instance(s).
+                    All instances must be migrated or deleted before this integration can be safely removed.
+                  </p>
+                </div>
+              ) : (
+                <div className="p-3 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400 text-xs space-y-1">
+                  <p className="font-semibold flex items-center gap-1.5">
+                    <AlertTriangle className="size-4 shrink-0" />
+                    Warning: Irreversible Action
+                  </p>
+                  <p className="text-muted-foreground text-[11px] leading-relaxed">
+                    This action will remove API credentials, cached storage records, and network assignments for this node.
+                  </p>
+                </div>
+              )}
+
+              {/* Conflict Error from backend */}
+              {deleteConflictError && (
+                <div className="p-3 rounded bg-destructive/10 border border-destructive/30 text-destructive space-y-1.5">
+                  <p className="font-semibold flex items-center gap-1.5">
+                    <AlertTriangle className="size-4 shrink-0" /> {deleteConflictError.message}
+                  </p>
+                  {deleteConflictError.dependencies && (
+                    <ul className="text-[11px] list-disc list-inside space-y-0.5 text-muted-foreground">
+                      {deleteConflictError.dependencies.vpsCount !== undefined && deleteConflictError.dependencies.vpsCount > 0 && (
+                        <li>Active VPS: {deleteConflictError.dependencies.vpsCount}</li>
+                      )}
+                      {deleteConflictError.dependencies.provisioningJobCount !== undefined && deleteConflictError.dependencies.provisioningJobCount > 0 && (
+                        <li>Pending Provisioning Jobs: {deleteConflictError.dependencies.provisioningJobCount}</li>
+                      )}
+                      {deleteConflictError.dependencies.activeOperationCount !== undefined && deleteConflictError.dependencies.activeOperationCount > 0 && (
+                        <li>Running Operations: {deleteConflictError.dependencies.activeOperationCount}</li>
+                      )}
+                      {deleteConflictError.dependencies.ipPoolCount !== undefined && deleteConflictError.dependencies.ipPoolCount > 0 && (
+                        <li>Configured IP Pools: {deleteConflictError.dependencies.ipPoolCount}</li>
+                      )}
+                    </ul>
+                  )}
+                </div>
+              )}
+
+              {/* Exact Name Confirmation Input */}
+              {nodeToDelete.vps_count === 0 && (
+                <div className="space-y-1.5 pt-1">
+                  <Label className="text-xs">
+                    Type <code className="font-mono text-destructive font-semibold">{nodeToDelete.name}</code> to confirm:
+                  </Label>
+                  <Input
+                    value={confirmNodeNameInput}
+                    onChange={(e) => setConfirmNodeNameInput(e.target.value)}
+                    placeholder={nodeToDelete.name}
+                    className="font-mono text-xs border-destructive/40"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setDeleteDialogOpen(false)
+                setNodeToDelete(null)
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={handleConfirmDeleteNode}
+              disabled={
+                isDeletingNode ||
+                !nodeToDelete ||
+                nodeToDelete.vps_count > 0 ||
+                confirmNodeNameInput.trim() !== nodeToDelete.name.trim()
+              }
+            >
+              {isDeletingNode && <Loader2 className="size-3 animate-spin mr-1.5" />}
+              Permanently Remove Node
             </Button>
           </DialogFooter>
         </DialogContent>

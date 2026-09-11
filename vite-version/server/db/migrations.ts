@@ -528,6 +528,75 @@ export const migrations: Migration[] = [
       }
     },
   },
+  {
+    version: 12,
+    name: "vps_runtime_freshness_and_delete_operations",
+    up: (db: Database) => {
+      // 1. Helper to safely add column if not exists
+      const safeAddColumn = (table: string, columnDef: string) => {
+        try {
+          db.run(`ALTER TABLE ${table} ADD COLUMN ${columnDef};`);
+        } catch {
+          // column already exists
+        }
+      };
+
+      // Extend vps with runtime freshness and error tracking fields
+      safeAddColumn("vps", "runtime_sync_error_code TEXT DEFAULT NULL");
+      safeAddColumn("vps", "runtime_sync_error TEXT DEFAULT NULL");
+      safeAddColumn("vps", "runtime_state_fresh INTEGER NOT NULL DEFAULT 1");
+      safeAddColumn("vps", "runtime_node_name TEXT DEFAULT NULL");
+      safeAddColumn("vps", "runtime_node_last_seen_at TEXT DEFAULT NULL");
+
+      // 2. Rebuild vps_operations to expand operation_type CHECK constraint to include 'delete' and 'force_stop'
+      db.run("PRAGMA foreign_keys = OFF;");
+      try {
+        const tableCheck = db.exec(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='vps_operations'"
+        );
+
+        if (tableCheck.length && tableCheck[0].values.length) {
+          db.run(`
+            CREATE TABLE IF NOT EXISTS vps_operations_v2 (
+              id                    TEXT PRIMARY KEY,
+              vps_id                TEXT,
+              requested_by_user_id  TEXT NOT NULL REFERENCES users(id),
+              operation_type        TEXT NOT NULL CHECK(operation_type IN ('start','stop','force_stop','reboot','reinstall','password_reset','rename','update_description','sync_status','console','delete','hostname_update')),
+              status                TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','waiting_for_proxmox_task','completed','failed','cancelled','recovery_required')),
+              current_step          TEXT NOT NULL DEFAULT 'queued',
+              params_json           TEXT,
+              result_json           TEXT,
+              error_code            TEXT,
+              error_message         TEXT,
+              started_at            TEXT NOT NULL DEFAULT (datetime('now')),
+              completed_at          TEXT,
+              created_at            TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+          `);
+
+          db.run(`
+            INSERT OR IGNORE INTO vps_operations_v2 (
+              id, vps_id, requested_by_user_id, operation_type, status, current_step,
+              params_json, result_json, error_code, error_message, started_at, completed_at, created_at
+            )
+            SELECT
+              id, vps_id, requested_by_user_id, operation_type, status, current_step,
+              params_json, result_json, error_code, error_message, started_at, completed_at, created_at
+            FROM vps_operations;
+          `);
+
+          db.run("DROP TABLE vps_operations;");
+          db.run("ALTER TABLE vps_operations_v2 RENAME TO vps_operations;");
+
+          db.run("CREATE INDEX IF NOT EXISTS idx_vps_operations_vps_id ON vps_operations(vps_id);");
+          db.run("CREATE INDEX IF NOT EXISTS idx_vps_operations_status ON vps_operations(status);");
+          db.run("CREATE INDEX IF NOT EXISTS idx_vps_operations_created_at ON vps_operations(created_at);");
+        }
+      } finally {
+        db.run("PRAGMA foreign_keys = ON;");
+      }
+    },
+  },
 ];
 
 /**

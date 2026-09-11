@@ -10,7 +10,7 @@
     "start": "tsx server/index.ts",
     "start:prod": "NODE_ENV=production tsx server/index.ts",
     "create-admin": "tsx server/scripts/create-admin.ts",
-    "test": "node --import tsx --test --test-concurrency=1 server/__tests__/auth.test.ts server/__tests__/control_plane.test.ts server/__tests__/vps_management.test.ts server/__tests__/proxmox_verification.test.ts server/__tests__/console_termproxy.test.ts server/__tests__/runtime_resolution_and_session.test.ts",
+    "test": "node --import tsx --test --test-concurrency=1 server/__tests__/auth.test.ts server/__tests__/control_plane.test.ts server/__tests__/vps_management.test.ts server/__tests__/proxmox_verification.test.ts server/__tests__/console_termproxy.test.ts server/__tests__/runtime_resolution_and_session.test.ts server/__tests__/node_and_vps_deletion.test.ts",
     "lint": "eslint .",
     "preview": "vite preview"
   },
