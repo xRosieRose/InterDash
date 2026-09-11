@@ -15,6 +15,7 @@ import {
   Sparkles,
   Network,
   Layers,
+  RefreshCw,
 } from "lucide-react"
 import {
   Dialog,
@@ -211,10 +212,20 @@ export function AdminDeployModal({ open, onOpenChange, onSuccess }: AdminDeployM
     setSelectedBridge("")
     setNoTemplatesReason("")
 
-    async function loadCapabilities() {
+    async function loadCapabilities(force = false) {
       try {
-        const res = await fetch(`/api/admin/nodes/${targetNodeId}/capabilities`)
-        if (!res.ok) throw new Error("Failed to query hypervisor capabilities")
+        const url = `/api/admin/nodes/${targetNodeId}/capabilities${force ? "?refresh=true" : ""}`
+        const res = await fetch(url)
+        if (!res.ok) {
+          let detail = `Server returned HTTP ${res.status}`
+          try {
+            const errData = await res.json()
+            detail = errData.error || errData.message || detail
+          } catch {
+            // non-JSON response
+          }
+          throw new Error(detail)
+        }
         const data = await res.json()
 
         if (!isMounted) return
@@ -229,7 +240,7 @@ export function AdminDeployModal({ open, onOpenChange, onSuccess }: AdminDeployM
         setAvailableRootfsStorages(rootfsList)
         setAvailableBridges(bridgeList)
         setAvailableIpPools(pools)
-        setNodeReadiness(data.readiness || "UNKNOWN")
+        setNodeReadiness(data.health?.provisionReady ? "PROVISION_READY" : "NOT_READY")
 
         // Auto-select discovered template
         if (templates.length > 0) {
@@ -237,7 +248,13 @@ export function AdminDeployModal({ open, onOpenChange, onSuccess }: AdminDeployM
           setNoTemplatesReason("")
         } else {
           // Precise explanation for why no templates were found
-          if (templateStorages.length === 0) {
+          if (data.health?.status === "offline" || data.node?.status === "offline") {
+            const failCheck = data.checks?.find((c: any) => c.status === "failed")
+            setNoTemplatesReason(failCheck?.message || "Proxmox hypervisor is offline or unreachable.")
+          } else if (data.health?.status === "misconfigured" || data.node?.status === "misconfigured") {
+            const failCheck = data.checks?.find((c: any) => c.status === "failed")
+            setNoTemplatesReason(failCheck?.message || "Proxmox node identity or credentials are misconfigured.")
+          } else if (templateStorages.length === 0) {
             setNoTemplatesReason("No active storage on this node supports container templates (vztmpl).")
           } else if (data.permissions && data.permissions.canReadTemplates === "denied") {
             setNoTemplatesReason("InterDash cannot read template content because the Proxmox token does not have sufficient permissions.")
@@ -712,7 +729,39 @@ export function AdminDeployModal({ open, onOpenChange, onSuccess }: AdminDeployM
                             Loading node capabilities...
                           </div>
                         ) : (
-                          noTemplatesReason || "No container templates (.tar.zst/.tar.xz) found in node's storage pools."
+                          <div className="space-y-2">
+                            <div>{noTemplatesReason || "No container templates (.tar.zst/.tar.xz) found in node's storage pools."}</div>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-6 text-[11px] px-2 gap-1 text-foreground border-border/80"
+                              onClick={() => {
+                                if (!targetNodeId) return
+                                setNodeCapabilitiesLoading(true)
+                                fetch(`/api/admin/nodes/${targetNodeId}/capabilities?refresh=true`)
+                                  .then((r) => r.json())
+                                  .then((data) => {
+                                    const t: DiscoveredTemplate[] = data.templates || []
+                                    setAvailableTemplates(t)
+                                    setAvailableRootfsStorages(data.rootfsStorages || [])
+                                    setAvailableBridges(data.bridges || [])
+                                    setAvailableIpPools(data.ipPools || [])
+                                    if (t.length > 0) {
+                                      setOsTemplate(t[0].volid)
+                                      setNoTemplatesReason("")
+                                    } else {
+                                      const failCheck = data.checks?.find((c: any) => c.status === "failed")
+                                      setNoTemplatesReason(failCheck?.message || "No templates found on node.")
+                                    }
+                                  })
+                                  .catch((e: unknown) => setNoTemplatesReason(e instanceof Error ? e.message : String(e)))
+                                  .finally(() => setNodeCapabilitiesLoading(false))
+                              }}
+                            >
+                              <RefreshCw className="size-3" /> Retry Discovery
+                            </Button>
+                          </div>
                         )}
                       </div>
                       {!nodeCapabilitiesLoading && (

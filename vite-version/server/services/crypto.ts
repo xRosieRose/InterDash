@@ -49,22 +49,31 @@ export function decryptCredential(encryptedPayload: string): string {
   if (!encryptedPayload) return "";
   const parts = encryptedPayload.split(":");
   if (parts.length !== 3) {
-    // If not in encrypted format (e.g. legacy/plain), return as-is for safety or throw
+    // If not in encrypted format (e.g. legacy/plain), return as-is for compatibility
     return encryptedPayload;
   }
 
-  const [ivHex, authTagHex, encryptedText] = parts;
-  const key = getMasterKey();
-  const iv = Buffer.from(ivHex, "hex");
-  const authTag = Buffer.from(authTagHex, "hex");
+  try {
+    const [ivHex, authTagHex, encryptedText] = parts;
+    const key = getMasterKey();
+    const iv = Buffer.from(ivHex, "hex");
+    const authTag = Buffer.from(authTagHex, "hex");
 
-  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv, {
-    authTagLength: AUTH_TAG_LENGTH,
-  });
-  decipher.setAuthTag(authTag);
+    if (authTag.length !== AUTH_TAG_LENGTH) {
+      return encryptedPayload;
+    }
 
-  let decrypted = decipher.update(encryptedText, "hex", "utf8");
-  decrypted += decipher.final("utf8");
+    const decipher = crypto.createDecipheriv(ALGORITHM, key, iv, {
+      authTagLength: AUTH_TAG_LENGTH,
+    });
+    decipher.setAuthTag(authTag);
 
-  return decrypted;
+    let decrypted = decipher.update(encryptedText, "hex", "utf8");
+    decrypted += decipher.final("utf8");
+
+    return decrypted;
+  } catch {
+    // Return original payload if decryption fails (e.g. secret mismatch or unencrypted)
+    return encryptedPayload;
+  }
 }

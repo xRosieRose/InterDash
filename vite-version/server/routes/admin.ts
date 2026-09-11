@@ -483,29 +483,41 @@ router.post("/nodes/:id/health", async (req: Request, res: Response) => {
 // GET /api/admin/nodes/:id/capabilities — Discover Node Templates & Storage
 // ============================================================================
 router.get("/nodes/:id/capabilities", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const nodeConfig = ProvisioningService.getNodeConfig(id);
-
-  if (!nodeConfig) {
-    res.status(404).json({ error: "Node not found." });
-    return;
-  }
-
-  const forceRefresh = req.query.refresh === "true";
-
   try {
+    const { id } = req.params;
+    let nodeConfig: ReturnType<typeof ProvisioningService.getNodeConfig> = null;
+    try {
+      nodeConfig = ProvisioningService.getNodeConfig(id);
+    } catch (cfgErr: unknown) {
+      const msg = cfgErr instanceof Error ? cfgErr.message : String(cfgErr);
+      res.status(500).json({ error: `Failed to load hypervisor node configuration: ${msg}` });
+      return;
+    }
+
+    if (!nodeConfig) {
+      res.status(404).json({ error: `Proxmox node '${id}' not found in database.` });
+      return;
+    }
+
+    const forceRefresh = req.query.refresh === "true";
     const verification = await ProxmoxService.verifyNode(nodeConfig, forceRefresh);
 
-    const ipPools = queryAll<any>(
-      `SELECT p.id, p.name, p.cidr, p.gateway,
-              COUNT(CASE WHEN a.status = 'available' THEN 1 END) as available_ips,
-              COUNT(a.id) as total_ips
-       FROM ip_pools p
-       LEFT JOIN ip_addresses a ON a.pool_id = p.id
-       WHERE p.node_id = ? OR p.node_id IS NULL
-       GROUP BY p.id`,
-      [id]
-    );
+    let ipPools: any[] = [];
+    try {
+      ipPools = queryAll<any>(
+        `SELECT p.id, p.name, p.cidr, p.gateway,
+                COUNT(CASE WHEN a.status = 'available' THEN 1 END) as available_ips,
+                COUNT(a.id) as total_ips
+         FROM ip_pools p
+         LEFT JOIN ip_addresses a ON a.pool_id = p.id
+         WHERE p.node_id = ? OR p.node_id IS NULL
+         GROUP BY p.id`,
+        [id]
+      );
+    } catch {
+      // Non-critical: allow capabilities to return even if IPAM query encounters an issue
+      ipPools = [];
+    }
 
     res.json({
       node: {
