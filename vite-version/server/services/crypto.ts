@@ -9,6 +9,8 @@
  */
 
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { config } from "../config.js";
 
 const ALGORITHM = "aes-256-gcm";
@@ -17,10 +19,34 @@ const AUTH_TAG_LENGTH = 16;
 
 /**
  * Derives a 32-byte key using SHA-256 over the server secret.
+ * Falls back to a persistent keyfile in data/.encryption_key so that
+ * server reboots/reloads never invalidate encrypted credentials when SESSION_SECRET is unset.
  */
 function getMasterKey(): Buffer {
-  const secret = process.env.ENCRYPTION_KEY || config.sessionSecret;
-  return crypto.createHash("sha256").update(secret).digest();
+  if (process.env.ENCRYPTION_KEY && process.env.ENCRYPTION_KEY.trim()) {
+    return crypto.createHash("sha256").update(process.env.ENCRYPTION_KEY.trim()).digest();
+  }
+  if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.trim()) {
+    return crypto.createHash("sha256").update(process.env.SESSION_SECRET.trim()).digest();
+  }
+
+  // Persistent keyfile fallback in data directory
+  const keyFilePath = path.resolve(process.cwd(), "data", ".encryption_key");
+  try {
+    if (fs.existsSync(keyFilePath)) {
+      const stored = fs.readFileSync(keyFilePath, "utf8").trim();
+      if (stored.length >= 32) {
+        return crypto.createHash("sha256").update(stored).digest();
+      }
+    }
+    const generated = crypto.randomBytes(32).toString("hex");
+    const dir = path.dirname(keyFilePath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(keyFilePath, generated, { mode: 0o600 });
+    return crypto.createHash("sha256").update(generated).digest();
+  } catch {
+    return crypto.createHash("sha256").update(config.sessionSecret).digest();
+  }
 }
 
 /**
