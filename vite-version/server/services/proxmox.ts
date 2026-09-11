@@ -504,7 +504,7 @@ export class ProxmoxService {
 
   /**
    * Discover available storage pools on the Proxmox node.
-   * Normalizes content types into supportsTemplates (vztmpl) and supportsRootfs (rootdir).
+   * Normalizes content types into supportsTemplates (vztmpl) and supportsRootfs (rootdir/images).
    */
   public static async getStorageList(
     node: ProxmoxNodeConfig
@@ -574,7 +574,7 @@ export class ProxmoxService {
         active,
         content: contentList,
         supportsTemplates: contentList.includes("vztmpl"),
-        supportsRootfs: contentList.includes("rootdir"),
+        supportsRootfs: contentList.includes("rootdir") || contentList.includes("images"),
         totalBytes: typeof s.total === "number" ? s.total : undefined,
         usedBytes: typeof s.used === "number" ? s.used : undefined,
         availBytes: typeof s.avail === "number" ? s.avail : undefined,
@@ -1029,6 +1029,10 @@ export class ProxmoxService {
           message: `No storage pools discovered for node '${node.nodeName}'. Verify API token storage permissions.`,
         });
       } else {
+        console.log(`[VERIFY] Storage discovery for '${node.nodeName}': ${storages.length} pool(s) found`);
+        for (const s of storages) {
+          console.log(`[VERIFY]   Pool '${s.storage}': type=${s.type}, active=${s.active}, content=[${s.content.join(',')}], vztmpl=${s.supportsTemplates}, rootdir=${s.supportsRootfs}`);
+        }
         checks.push({
           name: "storage_discovery",
           status: "passed",
@@ -1051,6 +1055,7 @@ export class ProxmoxService {
     const templateStorages = storages
       .filter((s) => s.active && s.supportsTemplates)
       .map((s) => s.storage);
+    console.log(`[VERIFY] Template-capable storages for '${node.nodeName}': [${templateStorages.join(', ')}] (${templateStorages.length} found)`);
 
     if (templateStorages.length > 0) {
       checks.push({
@@ -1073,6 +1078,10 @@ export class ProxmoxService {
     try {
       templates = await this.getTemplates(node);
       permissions.canListTemplates = "verified";
+      console.log(`[VERIFY] Template discovery for '${node.nodeName}': ${templates.length} template(s) found`);
+      for (const t of templates) {
+        console.log(`[VERIFY]   Template: volid='${t.volid}', storage='${t.storage}', filename='${t.filename}'`);
+      }
 
       if (templates.length > 0) {
         checks.push({
@@ -1112,19 +1121,20 @@ export class ProxmoxService {
     const rootfsStorages = storages
       .filter((s) => s.active && s.supportsRootfs)
       .map((s) => s.storage);
+    console.log(`[VERIFY] Rootfs-capable storages for '${node.nodeName}': [${rootfsStorages.join(', ')}] (${rootfsStorages.length} found)`);
 
     if (rootfsStorages.length > 0) {
       checks.push({
         name: "rootfs_storage_discovery",
         status: "passed",
-        message: `Storage pool(s) supporting container root disks (rootdir): ${rootfsStorages.join(", ")}.`,
+        message: `Storage pool(s) supporting container root disks (rootdir/images): ${rootfsStorages.join(", ")}.`,
         details: { rootfsStorages },
       });
     } else {
       checks.push({
         name: "rootfs_storage_discovery",
         status: "warning",
-        message: `No active storage pool on node '${node.nodeName}' is configured with content type 'rootdir'.`,
+        message: `No active storage pool on node '${node.nodeName}' is configured with content type 'rootdir' or 'images'.`,
       });
     }
 
@@ -1205,6 +1215,13 @@ export class ProxmoxService {
     // LAYER 14: Aggregate Operational Readiness
     // --------------------------------------------------------------------------
     const readReady = Boolean(reachable && authenticated && identityVerified);
+    console.log(`[VERIFY] Provision readiness checks for '${node.nodeName}':
+  readReady=${readReady} (reachable=${reachable}, authenticated=${authenticated}, identityVerified=${identityVerified})
+  templateStorages=${templateStorages.length}
+  templates=${templates.length}
+  rootfsStorages=${rootfsStorages.length}
+  bridges=${bridges.length}
+  canAllocateVmid=${permissions.canAllocateVmid}`);
     const provisionReady = Boolean(
       readReady &&
       templateStorages.length > 0 &&
@@ -1213,6 +1230,7 @@ export class ProxmoxService {
       bridges.length > 0 &&
       permissions.canAllocateVmid === "verified"
     );
+    console.log(`[VERIFY] Final provisionReady for '${node.nodeName}': ${provisionReady}`);
 
     const isTargetOffline = Boolean(
       matchedNode && matchedNode.status && matchedNode.status !== "online"

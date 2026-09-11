@@ -183,7 +183,7 @@ export class ProvisioningService {
 
         if (!targetStorage.supportsRootfs) {
           const e = new Error(
-            `Storage pool '${effectiveStorage}' does not support container root disks ('rootdir'). Content types: [${targetStorage.content.join(", ")}]`
+            `Storage pool '${effectiveStorage}' does not support container root disks ('rootdir' or 'images'). Content types: [${targetStorage.content.join(", ")}]`
           );
           (e as any).statusCode = 422;
           throw e;

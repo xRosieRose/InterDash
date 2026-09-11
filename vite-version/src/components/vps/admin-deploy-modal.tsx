@@ -102,6 +102,7 @@ export function AdminDeployModal({ open, onOpenChange, onSuccess }: AdminDeployM
   const [availableIpPools, setAvailableIpPools] = React.useState<IpPoolOption[]>([])
   const [noTemplatesReason, setNoTemplatesReason] = React.useState<string>("")
   const [nodeReadiness, setNodeReadiness] = React.useState<string>("UNKNOWN")
+  const [diagnosticChecks, setDiagnosticChecks] = React.useState<Array<{name: string; status: string; message: string}>>([])
 
   // Form states
   const [ownerUserId, setOwnerUserId] = React.useState("")
@@ -241,6 +242,7 @@ export function AdminDeployModal({ open, onOpenChange, onSuccess }: AdminDeployM
         setAvailableBridges(bridgeList)
         setAvailableIpPools(pools)
         setNodeReadiness(data.health?.provisionReady ? "PROVISION_READY" : "NOT_READY")
+        setDiagnosticChecks(data.checks || [])
 
         // Auto-select discovered template
         if (templates.length > 0) {
@@ -586,11 +588,25 @@ export function AdminDeployModal({ open, onOpenChange, onSuccess }: AdminDeployM
               <>
                 {/* Node Readiness Warning if degraded or unverified */}
                 {nodeReadiness === "NOT_READY" && (
-                  <div className="p-3 rounded-lg border border-destructive/30 bg-destructive/5 text-xs text-destructive flex items-start gap-2">
-                    <AlertCircle className="size-4 shrink-0 mt-0.5" />
-                    <div>
-                      <span className="font-semibold">Node Not Provision-Ready:</span> This hypervisor has missing template or rootfs storage capabilities. Deployment may fail.
+                  <div className="p-3 rounded-lg border border-destructive/30 bg-destructive/5 text-xs text-destructive flex flex-col gap-2">
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="size-4 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="font-semibold">Node Not Provision-Ready:</span> One or more capability checks have not passed.
+                      </div>
                     </div>
+                    {diagnosticChecks.filter(c => c.status === "failed" || c.status === "warning").length > 0 && (
+                      <div className="ml-6 space-y-1 text-[11px] opacity-90">
+                        {diagnosticChecks
+                          .filter(c => c.status === "failed" || c.status === "warning")
+                          .map((c, i) => (
+                            <div key={i} className="flex items-start gap-1.5">
+                              <span className={c.status === "failed" ? "text-red-500" : "text-yellow-500"}>●</span>
+                              <span><span className="font-medium">{c.name}:</span> {c.message}</span>
+                            </div>
+                          ))}
+                      </div>
+                    )}
                   </div>
                 )}
 
