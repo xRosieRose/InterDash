@@ -788,7 +788,8 @@ export default function InstanceDetailPage() {
             <div className="flex items-center gap-2">
               <AlertTriangle className="size-4 shrink-0" />
               <span>
-                Current hypervisor state could not be refreshed.{" "}
+                Current hypervisor state could not be refreshed
+                {runtime.error ? ` (${runtime.error})` : ""}.{" "}
                 {runtime.lastVerifiedAt ? (
                   <span className="text-muted-foreground font-mono">
                     Last verified: {new Date(runtime.lastVerifiedAt).toLocaleTimeString()}

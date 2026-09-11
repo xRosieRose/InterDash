@@ -188,7 +188,7 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
               msg = `Unable to contact hypervisor node '${node.nodeName}'.`;
             } else if (runtimeTarget.reason === "authorization_failed") {
               code = "TERM_PROXY_AUTH_FAILURE";
-              msg = "Proxmox API authorization failed.";
+              msg = runtimeTarget.message || "Proxmox API authorization failed. Check token permissions and ensure Privilege Separation is unchecked in Proxmox.";
             }
 
             sendControl({

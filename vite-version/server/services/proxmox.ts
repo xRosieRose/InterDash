@@ -1883,7 +1883,16 @@ export class ProxmoxService {
         uptime: res.data?.uptime,
         discoveredFrom: "direct",
       };
-    } catch {
+    } catch (err: unknown) {
+      if (err instanceof ProxmoxRequestError) {
+        if (err.statusCode === 401 || err.statusCode === 403) {
+          return {
+            ok: false,
+            reason: "authorization_failed",
+            message: err.message || "Proxmox API authorization failed. Check token permissions and privilege separation.",
+          };
+        }
+      }
       // Direct query failed (e.g. 404 container not on this node, or node name mismatch)
       // Fall through to cluster discovery
     }
