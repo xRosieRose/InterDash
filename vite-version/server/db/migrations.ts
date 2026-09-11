@@ -488,6 +488,46 @@ export const migrations: Migration[] = [
       }
     },
   },
+  {
+    version: 11,
+    name: "sync_node_ports_from_api_urls",
+    up: (db: Database) => {
+      // Find all nodes in proxmox_nodes and adjust ports if the api_url is a domain or standard URL without explicit :8006
+      const nodesResult = db.exec("SELECT id, api_url, port, hostname FROM proxmox_nodes;");
+      if (nodesResult.length && nodesResult[0].values.length) {
+        for (const row of nodesResult[0].values) {
+          const id = row[0] as string;
+          const apiUrl = (row[1] as string) || "";
+          const currentPort = row[2] as number;
+          const currentHost = (row[3] as string) || "";
+
+          try {
+            const rawUrl = /^https?:\/\//i.test(apiUrl) ? apiUrl : `https://${apiUrl}`;
+            const parsed = new URL(rawUrl);
+            const isHttps = parsed.protocol === "https:";
+            let correctedPort: number;
+
+            if (parsed.port) {
+              correctedPort = parseInt(parsed.port, 10);
+            } else if (currentPort === 8006) {
+              // Legacy schema default was 8006, but the URL didn't specify :8006 (e.g. https://pve-pe.kinetichost.pro)
+              correctedPort = isHttps ? 443 : 80;
+            } else {
+              correctedPort = currentPort;
+            }
+
+            const cleanHost = parsed.hostname || currentHost;
+            db.run(
+              "UPDATE proxmox_nodes SET port = ?, hostname = ? WHERE id = ?;",
+              [correctedPort, cleanHost, id]
+            );
+          } catch {
+            // Ignore unparseable
+          }
+        }
+      }
+    },
+  },
 ];
 
 /**

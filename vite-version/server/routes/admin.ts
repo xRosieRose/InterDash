@@ -16,7 +16,7 @@ import { Router, type Request, type Response } from "express";
 import { v4 as uuidv4 } from "uuid";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { queryAll, queryOne, execute } from "../db/index.js";
-import { ProxmoxService } from "../services/proxmox.js";
+import { ProxmoxService, resolveProxmoxEndpoint } from "../services/proxmox.js";
 import { encryptCredential, decryptCredential } from "../services/crypto.js";
 import { ProvisioningService } from "../services/provisioning.js";
 
@@ -198,9 +198,9 @@ router.patch("/users/:id", (req: Request, res: Response) => {
 // GET /api/admin/nodes — List Proxmox Nodes (Secrets Stripped)
 // ============================================================================
 router.get("/nodes", (_req: Request, res: Response) => {
-  const nodes = queryAll<any>(
+  const rows = queryAll<any>(
     `SELECT n.id, n.cluster_id, n.name, n.hostname, n.api_url, n.port,
-            n.node_name, n.region, n.flag_url, n.allow_insecure_tls,
+            n.node_name, n.region, n.flag_url, n.auth_token_id, n.allow_insecure_tls,
             n.default_storage, n.default_template_storage, n.default_rootfs_storage,
             n.default_bridge, n.enabled, n.status, n.last_health_check, n.last_verified_at,
             n.health_info, n.verification_info, n.created_at, n.updated_at,
@@ -208,6 +208,15 @@ router.get("/nodes", (_req: Request, res: Response) => {
      FROM proxmox_nodes n
      ORDER BY n.created_at DESC`
   );
+
+  const nodes = rows.map((n) => {
+    const endpoint = resolveProxmoxEndpoint(n.api_url, n.hostname, n.port);
+    return {
+      ...n,
+      hostname: endpoint.hostname,
+      port: endpoint.port,
+    };
+  });
 
   res.json({ nodes });
 });
@@ -220,7 +229,7 @@ router.post("/nodes/test-connection", async (req: Request, res: Response) => {
     name = "Test Connection",
     hostname,
     apiUrl,
-    port = 8006,
+    port,
     nodeName = "pve",
     region = "default",
     flagUrl = null,
@@ -229,19 +238,21 @@ router.post("/nodes/test-connection", async (req: Request, res: Response) => {
     allowInsecureTls = false,
   } = req.body;
 
-  if (!hostname || !apiUrl || !authTokenId || !authTokenSecret) {
+  if (!apiUrl || !authTokenId || !authTokenSecret) {
     res.status(400).json({
-      error: "Missing required connection parameters (hostname, apiUrl, authTokenId, authTokenSecret).",
+      error: "Missing required connection parameters (apiUrl, authTokenId, authTokenSecret).",
     });
     return;
   }
 
+  const endpoint = resolveProxmoxEndpoint(String(apiUrl).trim(), hostname, port);
+
   const testConfig = {
     id: "test",
     name: String(name).trim(),
-    hostname: String(hostname).trim(),
+    hostname: endpoint.hostname,
     apiUrl: String(apiUrl).trim(),
-    port: parseInt(port, 10) || 8006,
+    port: endpoint.port,
     nodeName: String(nodeName).trim(),
     region: String(region).trim(),
     flagUrl: flagUrl ? String(flagUrl).trim() : null,
@@ -267,7 +278,7 @@ router.post("/nodes", async (req: Request, res: Response) => {
     name,
     hostname,
     apiUrl,
-    port = 8006,
+    port,
     nodeName = "pve",
     region = "default",
     flagUrl = null,
@@ -280,21 +291,22 @@ router.post("/nodes", async (req: Request, res: Response) => {
     defaultBridge = null,
   } = req.body;
 
-  if (!name || !hostname || !apiUrl || !authTokenId || !authTokenSecret) {
+  if (!name || !apiUrl || !authTokenId || !authTokenSecret) {
     res.status(400).json({
-      error: "Missing required node configuration fields (name, hostname, apiUrl, authTokenId, authTokenSecret).",
+      error: "Missing required node configuration fields (name, apiUrl, authTokenId, authTokenSecret).",
     });
     return;
   }
 
   const effectiveRootfs = defaultRootfsStorage || defaultStorage || null;
+  const endpoint = resolveProxmoxEndpoint(String(apiUrl).trim(), hostname, port);
 
   const testConfig = {
     id: "test",
     name: String(name).trim(),
-    hostname: String(hostname).trim(),
+    hostname: endpoint.hostname,
     apiUrl: String(apiUrl).trim(),
-    port: parseInt(port, 10) || 8006,
+    port: endpoint.port,
     nodeName: String(nodeName).trim(),
     region: String(region).trim(),
     flagUrl: flagUrl ? String(flagUrl).trim() : null,
@@ -307,7 +319,7 @@ router.post("/nodes", async (req: Request, res: Response) => {
   };
 
   // Perform full pre-flight connection verification
-  console.log(`[NODES] Verifying Proxmox node connection to ${apiUrl}...`);
+  console.log(`[NODES] Verifying Proxmox node connection to ${endpoint.displayTarget}...`);
   const verification = await ProxmoxService.verifyNode(testConfig, true);
 
   const initialStatus = verification.status;
@@ -348,9 +360,9 @@ router.post("/nodes", async (req: Request, res: Response) => {
     [
       nodeId,
       name.trim(),
-      hostname.trim(),
+      endpoint.hostname,
       apiUrl.trim(),
-      parseInt(port, 10) || 8006,
+      endpoint.port,
       (verification.actualNodeName || nodeName).trim(),
       region.trim(),
       flagUrl ? String(flagUrl).trim() : null,
@@ -567,6 +579,12 @@ router.patch("/nodes/:id", (req: Request, res: Response) => {
 
   const {
     name,
+    hostname,
+    apiUrl,
+    port,
+    nodeName,
+    authTokenId,
+    authTokenSecret,
     region,
     flagUrl,
     defaultStorage,
@@ -583,6 +601,37 @@ router.patch("/nodes/:id", (req: Request, res: Response) => {
   if (name !== undefined) {
     updates.push("name = ?");
     params.push(String(name).trim());
+  }
+  if (apiUrl !== undefined) {
+    const rawApiUrl = String(apiUrl).trim();
+    const endpoint = resolveProxmoxEndpoint(rawApiUrl, hostname, port);
+    updates.push("api_url = ?");
+    params.push(rawApiUrl);
+    updates.push("port = ?");
+    params.push(endpoint.port);
+    updates.push("hostname = ?");
+    params.push(endpoint.hostname);
+  } else {
+    if (hostname !== undefined) {
+      updates.push("hostname = ?");
+      params.push(String(hostname).trim());
+    }
+    if (port !== undefined) {
+      updates.push("port = ?");
+      params.push(parseInt(port, 10));
+    }
+  }
+  if (nodeName !== undefined) {
+    updates.push("node_name = ?");
+    params.push(String(nodeName).trim());
+  }
+  if (authTokenId !== undefined) {
+    updates.push("auth_token_id = ?");
+    params.push(String(authTokenId).trim());
+  }
+  if (authTokenSecret !== undefined && String(authTokenSecret).trim() !== "") {
+    updates.push("auth_token_secret_encrypted = ?");
+    params.push(encryptCredential(String(authTokenSecret).trim()));
   }
   if (region !== undefined) {
     updates.push("region = ?");

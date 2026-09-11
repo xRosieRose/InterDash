@@ -26,7 +26,7 @@ import { URL } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import { queryOne, execute } from "../db/index.js";
 import { hashToken } from "../middleware/auth.js";
-import { ProxmoxService } from "./proxmox.js";
+import { ProxmoxService, resolveProxmoxEndpoint } from "./proxmox.js";
 import { ProvisioningService } from "./provisioning.js";
 
 const IDLE_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
@@ -131,7 +131,13 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
           const termproxy = await ProxmoxService.createLxcTermProxy(node, vps.proxmox_vmid);
 
           // 6. Connect upstream WebSocket to Proxmox VE
-          const cleanBase = node.apiUrl.replace(/^http/i, "ws").replace(/\/+$/, "");
+          const endpoint = resolveProxmoxEndpoint(node.apiUrl, node.hostname, node.port);
+          const wsProtocol = endpoint.isHttps ? "wss" : "ws";
+          const wsPort =
+            (endpoint.isHttps && endpoint.port === 443) || (!endpoint.isHttps && endpoint.port === 80)
+              ? ""
+              : `:${endpoint.port}`;
+          const cleanBase = `${wsProtocol}://${endpoint.hostname}${wsPort}${endpoint.pathname}`;
           const upstreamUrl = `${cleanBase}/api2/json/nodes/${encodeURIComponent(
             node.nodeName
           )}/lxc/${vps.proxmox_vmid}/vncwebsocket?port=${termproxy.port}&vncticket=${encodeURIComponent(

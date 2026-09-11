@@ -221,6 +221,77 @@ export function parseTemplatePresentationMetadata(filename: string): {
   return { osFamily, version, architecture };
 }
 
+export interface ResolvedProxmoxEndpoint {
+  protocol: "https:" | "http:";
+  isHttps: boolean;
+  hostname: string;
+  port: number;
+  pathname: string;
+  displayTarget: string;
+}
+
+/**
+ * Resolves the effective target endpoint, protocol, port, and display string for a Proxmox hypervisor.
+ *
+ * Rules:
+ * 1. If apiUrl explicitly contains a port (e.g. "https://domain:8006" or "http://ip:8080"), that port is authoritative.
+ * 2. If apiUrl does NOT contain a port (e.g. "https://pve-pe.kinetichost.pro"):
+ *    - If configuredPort is non-default (e.g. custom reverse proxy port like 8443), use it.
+ *    - NEVER force legacy default 8006 when apiUrl specifies a clean domain URL without a port!
+ *    - Default standard HTTPS port to 443, standard HTTP port to 80.
+ * 3. displayTarget formats cleanly without default ports (e.g. "pve-pe.kinetichost.pro" instead of "pve-pe.kinetichost.pro:8006").
+ */
+export function resolveProxmoxEndpoint(
+  apiUrl: string,
+  configuredHostname?: string,
+  configuredPort?: number
+): ResolvedProxmoxEndpoint {
+  let rawUrl = (apiUrl || "").trim();
+  if (!rawUrl && configuredHostname) {
+    rawUrl = configuredHostname.trim();
+  }
+  if (!/^https?:\/\//i.test(rawUrl)) {
+    rawUrl = `https://${rawUrl}`;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    parsed = new URL("https://localhost");
+  }
+
+  const isHttps = parsed.protocol === "https:";
+  const protocol: "https:" | "http:" = isHttps ? "https:" : "http:";
+  const hostname = parsed.hostname || configuredHostname || "localhost";
+
+  let port: number;
+  if (parsed.port) {
+    port = parseInt(parsed.port, 10);
+  } else if (
+    configuredPort !== undefined &&
+    configuredPort !== null &&
+    Number(configuredPort) !== 8006 &&
+    Number(configuredPort) !== (isHttps ? 443 : 80)
+  ) {
+    port = Number(configuredPort);
+  } else {
+    port = isHttps ? 443 : 80;
+  }
+
+  const isStandardPort = (isHttps && port === 443) || (!isHttps && port === 80);
+  const displayTarget = isStandardPort ? hostname : `${hostname}:${port}`;
+
+  return {
+    protocol,
+    isHttps,
+    hostname,
+    port,
+    pathname: parsed.pathname.replace(/\/+$/, ""),
+    displayTarget,
+  };
+}
+
 export class ProxmoxService {
   /**
    * Short-lived in-memory cache for node capability results (30-60s TTL)
@@ -272,11 +343,9 @@ export class ProxmoxService {
     timeoutMs = 15000
   ): Promise<{ status: number; data: T }> {
     return new Promise((resolve, reject) => {
-      const cleanBase = node.apiUrl.replace(/\/+$/, "");
-      const fullUrlStr = `${cleanBase}${path.startsWith("/") ? path : `/${path}`}`;
-      let parsed: URL;
+      let endpoint: ResolvedProxmoxEndpoint;
       try {
-        parsed = new URL(fullUrlStr);
+        endpoint = resolveProxmoxEndpoint(node.apiUrl, node.hostname, node.port);
       } catch (err: unknown) {
         return reject(
           new ProxmoxRequestError(
@@ -285,8 +354,7 @@ export class ProxmoxService {
         );
       }
 
-      const isHttps = parsed.protocol === "https:";
-      const client = isHttps ? https : http;
+      const client = endpoint.isHttps ? https : http;
       const postData = body ? JSON.stringify(body) : "";
 
       const headers: Record<string, string> = {
@@ -299,18 +367,20 @@ export class ProxmoxService {
         headers["Content-Length"] = Buffer.byteLength(postData).toString();
       }
 
-      const agent = isHttps
+      const agent = endpoint.isHttps
         ? new https.Agent({
             rejectUnauthorized: !node.allowInsecureTls,
           })
         : undefined;
 
+      const fullPath = `${endpoint.pathname}${path.startsWith("/") ? path : `/${path}`}`;
+
       const req = client.request(
         {
-          protocol: parsed.protocol,
-          hostname: parsed.hostname,
-          port: parsed.port || node.port || (isHttps ? 8006 : 80),
-          path: parsed.pathname + parsed.search,
+          protocol: endpoint.protocol,
+          hostname: endpoint.hostname,
+          port: endpoint.port,
+          path: fullPath,
           method,
           headers,
           agent,
@@ -374,11 +444,11 @@ export class ProxmoxService {
 
         const isConnRefused = err.code === "ECONNREFUSED";
 
-        let userMsg = `Proxmox Connection Failed [${node.hostname}:${node.port}]: ${err.message}`;
+        let userMsg = `Proxmox Connection Failed [${endpoint.displayTarget}]: ${err.message}`;
         if (isTls) {
-          userMsg = `TLS certificate validation failed for [${node.hostname}:${node.port}]. If Proxmox uses a default self-signed certificate, enable 'Allow Self-Signed TLS'.`;
+          userMsg = `TLS certificate validation failed for [${endpoint.displayTarget}]. If Proxmox uses a default self-signed certificate, enable 'Allow Self-Signed TLS'.`;
         } else if (isConnRefused) {
-          userMsg = `Connection refused at [${node.hostname}:${node.port}]. Verify that Proxmox is online and the API port is accessible.`;
+          userMsg = `Connection refused at [${endpoint.displayTarget}]. Verify that Proxmox is online and the API port is accessible.`;
         }
 
         reject(
@@ -393,7 +463,7 @@ export class ProxmoxService {
         req.destroy();
         reject(
           new ProxmoxRequestError(
-            `Proxmox Connection Timeout [${node.hostname}:${node.port}] after ${Math.max(1, Math.round(timeoutMs / 1000))}s`,
+            `Proxmox Connection Timeout [${endpoint.displayTarget}] after ${Math.max(1, Math.round(timeoutMs / 1000))}s`,
             { isTimeout: true }
           )
         );
@@ -709,6 +779,8 @@ export class ProxmoxService {
       canDeleteLxc: "not_verified",
     };
 
+    const endpoint = resolveProxmoxEndpoint(node.apiUrl, node.hostname, node.port);
+
     // --------------------------------------------------------------------------
     // LAYER 1-4: Connectivity, TLS, Authentication, Proxmox Version
     // --------------------------------------------------------------------------
@@ -730,8 +802,8 @@ export class ProxmoxService {
       checks.push({
         name: "connectivity",
         status: "passed",
-        message: `Connected successfully to ${node.hostname}:${node.port} (${latencyMs}ms)`,
-        details: { latencyMs, apiUrl: node.apiUrl },
+        message: `Connected successfully to ${endpoint.displayTarget} (${latencyMs}ms)`,
+        details: { latencyMs, apiUrl: node.apiUrl, port: endpoint.port },
       });
 
       // CHECK 2: TLS Validation
@@ -773,7 +845,7 @@ export class ProxmoxService {
         checks.push({
           name: "connectivity",
           status: "passed",
-          message: `Reachable at ${node.hostname}:${node.port}, but TLS handshake failed.`,
+          message: `Reachable at ${endpoint.displayTarget}, but TLS handshake failed.`,
         });
         checks.push({
           name: "tls_validation",
@@ -785,7 +857,7 @@ export class ProxmoxService {
         checks.push({
           name: "connectivity",
           status: "passed",
-          message: `Connected to ${node.hostname}:${node.port} (${latencyMs}ms)`,
+          message: `Connected to ${endpoint.displayTarget} (${latencyMs}ms)`,
         });
         checks.push({
           name: "api_authentication",

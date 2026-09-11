@@ -58,6 +58,7 @@ interface ProxmoxNode {
   node_name: string
   region: string
   flag_url?: string | null
+  auth_token_id?: string
   allow_insecure_tls: number
   default_template_storage?: string | null
   default_rootfs_storage?: string | null
@@ -161,6 +162,12 @@ export default function AdminNodesPage() {
   const [editNodeOpen, setEditNodeOpen] = React.useState(false)
   const [editingNodeId, setEditingNodeId] = React.useState<string | null>(null)
   const [editName, setEditName] = React.useState("")
+  const [editApiUrl, setEditApiUrl] = React.useState("")
+  const [editPort, setEditPort] = React.useState(443)
+  const [editHostname, setEditHostname] = React.useState("")
+  const [editNodeName, setEditNodeName] = React.useState("pve")
+  const [editAuthTokenId, setEditAuthTokenId] = React.useState("")
+  const [editAuthTokenSecret, setEditAuthTokenSecret] = React.useState("")
   const [editRegion, setEditRegion] = React.useState("")
   const [editFlagUrl, setEditFlagUrl] = React.useState("")
   const [editDefaultTemplateStorage, setEditDefaultTemplateStorage] = React.useState("")
@@ -446,6 +453,12 @@ export default function AdminNodesPage() {
   const handleOpenEdit = async (node: ProxmoxNode) => {
     setEditingNodeId(node.id)
     setEditName(node.name)
+    setEditApiUrl(node.api_url || "")
+    setEditPort(node.port || 443)
+    setEditHostname(node.hostname || "")
+    setEditNodeName(node.node_name || "pve")
+    setEditAuthTokenId(node.auth_token_id || "")
+    setEditAuthTokenSecret("")
     setEditRegion(node.region)
     setEditFlagUrl(node.flag_url || "")
     setEditDefaultTemplateStorage(node.default_template_storage || "")
@@ -489,8 +502,8 @@ export default function AdminNodesPage() {
 
   const handleSaveEdit = async () => {
     if (!editingNodeId) return
-    if (!editName.trim() || !editRegion.trim()) {
-      toast.error("Display Name and Region Code are required.")
+    if (!editName.trim() || !editRegion.trim() || !editApiUrl.trim()) {
+      toast.error("Display Name, API URL, and Region Code are required.")
       return
     }
 
@@ -511,6 +524,12 @@ export default function AdminNodesPage() {
         },
         body: JSON.stringify({
           name: editName.trim(),
+          apiUrl: editApiUrl.trim(),
+          port: editPort,
+          hostname: editHostname.trim(),
+          nodeName: editNodeName.trim(),
+          authTokenId: editAuthTokenId.trim() || undefined,
+          authTokenSecret: editAuthTokenSecret.trim() || undefined,
           region: editRegion.trim(),
           flagUrl: editFlagUrl.trim() || null,
           defaultTemplateStorage: editDefaultTemplateStorage.trim() || null,
@@ -1095,13 +1114,20 @@ export default function AdminNodesPage() {
               <div className="col-span-2 space-y-1.5">
                 <Label>API Base URL</Label>
                 <Input
-                  placeholder="https://pve1.interenl.com"
+                  placeholder="https://pve-pe.kinetichost.pro"
                   value={apiUrl}
                   onChange={(e) => {
-                    setApiUrl(e.target.value)
+                    const val = e.target.value
+                    setApiUrl(val)
                     try {
-                      const u = new URL(e.target.value)
+                      const raw = /^https?:\/\//i.test(val) ? val : `https://${val}`
+                      const u = new URL(raw)
                       setHostname(u.hostname)
+                      if (u.port) {
+                        setPort(parseInt(u.port, 10))
+                      } else {
+                        setPort(u.protocol === "http:" ? 80 : 443)
+                      }
                     } catch {}
                   }}
                   className="text-xs font-mono"
@@ -1112,7 +1138,7 @@ export default function AdminNodesPage() {
                 <Input
                   type="number"
                   value={port}
-                  onChange={(e) => setPort(parseInt(e.target.value, 10) || 8006)}
+                  onChange={(e) => setPort(parseInt(e.target.value, 10) || 443)}
                   className="text-xs font-mono"
                 />
               </div>
@@ -1387,6 +1413,62 @@ export default function AdminNodesPage() {
                   value={editRegion}
                   onChange={(e) => setEditRegion(e.target.value)}
                   className="text-xs"
+                />
+              </div>
+            </div>
+
+            {/* API Connection & Port */}
+            <div className="grid grid-cols-3 gap-3">
+              <div className="col-span-2 space-y-1.5">
+                <Label>API Base URL</Label>
+                <Input
+                  placeholder="https://pve-pe.kinetichost.pro"
+                  value={editApiUrl}
+                  onChange={(e) => {
+                    const val = e.target.value
+                    setEditApiUrl(val)
+                    try {
+                      const raw = /^https?:\/\//i.test(val) ? val : `https://${val}`
+                      const u = new URL(raw)
+                      setEditHostname(u.hostname)
+                      if (u.port) {
+                        setEditPort(parseInt(u.port, 10))
+                      } else {
+                        setEditPort(u.protocol === "http:" ? 80 : 443)
+                      }
+                    } catch {}
+                  }}
+                  className="text-xs font-mono"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>API Port</Label>
+                <Input
+                  type="number"
+                  value={editPort}
+                  onChange={(e) => setEditPort(parseInt(e.target.value, 10) || 443)}
+                  className="text-xs font-mono"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Hostname / IP</Label>
+                <Input
+                  placeholder="pve-pe.kinetichost.pro"
+                  value={editHostname}
+                  onChange={(e) => setEditHostname(e.target.value)}
+                  className="text-xs font-mono"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>PVE Node Name</Label>
+                <Input
+                  placeholder="pve"
+                  value={editNodeName}
+                  onChange={(e) => setEditNodeName(e.target.value)}
+                  className="text-xs font-mono"
                 />
               </div>
             </div>

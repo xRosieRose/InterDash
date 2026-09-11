@@ -15,7 +15,7 @@
 import crypto from "node:crypto";
 import { v4 as uuidv4 } from "uuid";
 import { queryOne, queryAll, execute } from "../db/index.js";
-import { ProxmoxService, type ProxmoxNodeConfig } from "./proxmox.js";
+import { ProxmoxService, resolveProxmoxEndpoint, type ProxmoxNodeConfig } from "./proxmox.js";
 import { decryptCredential } from "./crypto.js";
 
 export interface ProvisioningJobRequest {
@@ -63,13 +63,14 @@ export class ProvisioningService {
     if (!row) return null;
 
     const defaultRootfs = row.default_rootfs_storage || row.default_storage || null;
+    const endpoint = resolveProxmoxEndpoint(row.api_url, row.hostname, row.port);
 
     return {
       id: row.id,
       name: row.name,
-      hostname: row.hostname,
+      hostname: endpoint.hostname,
       apiUrl: row.api_url,
-      port: row.port,
+      port: endpoint.port,
       nodeName: row.node_name,
       region: row.region,
       flagUrl: row.flag_url || null,

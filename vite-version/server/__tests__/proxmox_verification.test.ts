@@ -23,6 +23,7 @@ import {
   ProxmoxRequestError,
   parseTemplatePresentationMetadata,
   NodeVerificationResult,
+  resolveProxmoxEndpoint,
 } from "../services/proxmox.js";
 import { createApp } from "../index.js";
 import { execute, queryOne, closeDatabase } from "../db/index.js";
@@ -931,6 +932,54 @@ describe("Proxmox Layered Verification & Multi-Storage Discovery", () => {
       const data = await res.json();
       assert.equal(data.valid, false);
       assert.match(data.error, /bridge.*(not found|not available)/i);
+    });
+  });
+
+  describe("Proxmox Reverse Proxy & Port Resolution (Standard HTTPS 443 vs 8006)", () => {
+    it("should resolve clean domain HTTPS to port 443 even if configuredPort is legacy 8006", () => {
+      const endpoint = resolveProxmoxEndpoint("https://pve-pe.kinetichost.pro", "pve-pe.kinetichost.pro", 8006);
+      assert.equal(endpoint.protocol, "https:");
+      assert.equal(endpoint.isHttps, true);
+      assert.equal(endpoint.hostname, "pve-pe.kinetichost.pro");
+      assert.equal(endpoint.port, 443);
+      assert.equal(endpoint.displayTarget, "pve-pe.kinetichost.pro");
+    });
+
+    it("should resolve clean domain HTTP to port 80", () => {
+      const endpoint = resolveProxmoxEndpoint("http://pve-pe.kinetichost.pro", "pve-pe.kinetichost.pro", 8006);
+      assert.equal(endpoint.protocol, "http:");
+      assert.equal(endpoint.isHttps, false);
+      assert.equal(endpoint.hostname, "pve-pe.kinetichost.pro");
+      assert.equal(endpoint.port, 80);
+      assert.equal(endpoint.displayTarget, "pve-pe.kinetichost.pro");
+    });
+
+    it("should honor explicit port 8006 when present in apiUrl", () => {
+      const endpoint = resolveProxmoxEndpoint("https://pve-pe.kinetichost.pro:8006", "pve-pe.kinetichost.pro", 8006);
+      assert.equal(endpoint.protocol, "https:");
+      assert.equal(endpoint.isHttps, true);
+      assert.equal(endpoint.hostname, "pve-pe.kinetichost.pro");
+      assert.equal(endpoint.port, 8006);
+      assert.equal(endpoint.displayTarget, "pve-pe.kinetichost.pro:8006");
+    });
+
+    it("should honor explicit custom port like 8443 in apiUrl", () => {
+      const endpoint = resolveProxmoxEndpoint("https://pve-pe.kinetichost.pro:8443");
+      assert.equal(endpoint.port, 8443);
+      assert.equal(endpoint.displayTarget, "pve-pe.kinetichost.pro:8443");
+    });
+
+    it("should honor explicit custom port passed as configuredPort", () => {
+      const endpoint = resolveProxmoxEndpoint("https://pve-pe.kinetichost.pro", "pve-pe.kinetichost.pro", 8443);
+      assert.equal(endpoint.port, 8443);
+      assert.equal(endpoint.displayTarget, "pve-pe.kinetichost.pro:8443");
+    });
+
+    it("should handle bare domain without protocol", () => {
+      const endpoint = resolveProxmoxEndpoint("pve-pe.kinetichost.pro");
+      assert.equal(endpoint.protocol, "https:");
+      assert.equal(endpoint.port, 443);
+      assert.equal(endpoint.displayTarget, "pve-pe.kinetichost.pro");
     });
   });
 });
