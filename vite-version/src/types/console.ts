@@ -45,7 +45,7 @@ export interface ConsoleFailure {
 }
 
 export interface ConsoleControlMessage {
-  type: "status" | "error" | "data";
+  type: "status" | "error" | "data" | "pong";
   state?: ConsoleState;
   stage?: ConsoleFailureStage;
   message?: string;

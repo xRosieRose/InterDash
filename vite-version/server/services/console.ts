@@ -179,6 +179,8 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
         let idleTimer: NodeJS.Timeout | null = null;
         let keepaliveTimer: NodeJS.Timeout | null = null;
         let handshakeTimer: NodeJS.Timeout | null = null;
+        let clientPingTimer: NodeJS.Timeout | null = null;
+        let clientIsAlive = true;
         let upstreamWs: WebSocket | null = null;
         let isConnected = false;
         let isTermproxyHandshaking = false;
@@ -256,6 +258,10 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
             clearTimeout(handshakeTimer);
             handshakeTimer = null;
           }
+          if (clientPingTimer) {
+            clearInterval(clientPingTimer);
+            clientPingTimer = null;
+          }
 
           if (upstreamWs) {
             try {
@@ -280,6 +286,25 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
         };
 
         resetIdleTimer();
+
+        // Heartbeat to keep browser WebSocket alive across tab switches and proxies
+        clientWs.on("pong", () => {
+          clientIsAlive = true;
+        });
+
+        clientPingTimer = setInterval(() => {
+          if (clientWs.readyState === WebSocket.OPEN) {
+            if (!clientIsAlive) {
+              log("client", "Client ping heartbeat missed, terminating.");
+              clientWs.terminate();
+              return;
+            }
+            clientIsAlive = false;
+            try {
+              clientWs.ping();
+            } catch {}
+          }
+        }, 15000);
 
         // Audit log console opened
         execute(
@@ -692,6 +717,12 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
             if (str.startsWith("{")) {
               try {
                 const parsed = JSON.parse(str);
+                if (parsed.type === "ping") {
+                  if (clientWs.readyState === WebSocket.OPEN) {
+                    clientWs.send(JSON.stringify({ type: "pong", timestamp: Date.now() }));
+                  }
+                  return;
+                }
                 if (
                   parsed.type === "resize" &&
                   typeof parsed.cols === "number" &&

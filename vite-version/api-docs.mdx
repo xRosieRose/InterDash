@@ -1,0 +1,1163 @@
+---
+title: "InterDash API Reference & Developer Guide"
+description: "Comprehensive developer guide and REST API reference for the InterDash Cloud VPS Control Plane."
+version: "1.0.0"
+---
+
+# InterDash Cloud VPS Control Plane API (v1)
+
+The **InterDash REST Control Plane API** is a secure, production-grade programmatic interface for managing virtual private servers (LXC containers on Proxmox VE), hypervisor nodes, user accounts, asynchronous lifecycle operations, support tickets, and platform configuration.
+
+External automation engines, billing providers (e.g., WHMCS, Stripe webhooks), CI/CD pipelines, Discord bots, and infrastructure orchestrators can perform all platform actions without bypassing safety rails, locks, or audit systems.
+
+---
+
+## Key Principles & Architectural Guarantees
+
+1. **Single Source of Truth**: The external REST API interacts directly with InterDash's canonical services (`VpsOperationsService`, `ProvisioningService`, `ProxmoxService`, `IpamService`, `VpsExpiryService`, `ApiKeyService`). There are no duplicate or shadow business paths.
+2. **Zero Secret Leakage**: API response DTOs strictly scrub all secrets. Root passwords, Proxmox API tokens, client secrets, and credential hashes are never serialized in API responses or audit trails.
+3. **Admin-Governed Credentials**: Only platform administrators can create, rotate, and revoke API keys via the InterDash Admin Portal (`/admin/settings?tab=api-keys`).
+4. **Fine-Grained Least Privilege**: Keys can be granted granular capabilities (e.g., power controls only, read-only analytics, or ticket automation) rather than blanket root privileges. Keys can also be restricted to specific user accounts.
+5. **Idempotent Operations**: All mutative operations support the `Idempotency-Key` header with SHA-256 payload integrity hashing to prevent duplicate provisioning or conflicting state changes.
+6. **Unified Standard Envelopes**: All requests return standard envelopes with a traceable `X-Request-ID` header.
+
+---
+
+## Quick Reference
+
+| Attribute | Value |
+| :--- | :--- |
+| **Base URL** | `https://your-interdash-domain.com/api/v1` |
+| **Authentication** | HTTP Bearer Token (`Authorization: Bearer ih_live_...`) |
+| **Credential Generation** | Admin Settings UI (`/admin/settings?tab=api-keys`) |
+| **Data Format** | JSON (`Content-Type: application/json`, `Accept: application/json`) |
+| **OpenAPI Specification** | `GET /api/v1/openapi.json` |
+| **Interactive Docs** | `GET /api/v1/docs` |
+| **Service Health** | `GET /api/v1/health` |
+
+---
+
+## Authentication & Credentials
+
+All requests to `/api/v1/*` (except public discovery and documentation routes) require authentication using a Bearer API token.
+
+```http
+GET /api/v1/instances HTTP/1.1
+Host: your-interdash-domain.com
+Authorization: Bearer ih_live_9f83a2e1c0d4e5f67890123456789abc
+Accept: application/json
+```
+
+### Security Invariants
+
+- **Prefix Convention**: Live API keys always start with the prefix `ih_live_` followed by 32 cryptographically random alphanumeric characters (256 bits of entropy).
+- **One-Time Secret Display**: When an API key is generated or rotated, the plaintext key is displayed **once**. InterDash stores only an irreversible **SHA-256 hash** of the key.
+- **Constant-Time Verification**: Secret verification uses cryptographic constant-time comparison to prevent timing attacks.
+- **Strict Transport Enforcement**: API tokens must **only** be supplied in the `Authorization: Bearer <token>` header. Keys supplied in query parameters (e.g., `?api_key=...`) or JSON request bodies are explicitly rejected with `400 INVALID_CREDENTIAL_TRANSPORT`.
+- **Instant Revocation & Expiration**: Revoked keys or expired keys are immediately rejected on the next incoming request.
+
+---
+
+## Standard Response Envelopes
+
+Every API response follows a consistent structure including an `X-Request-ID` identifier for distributed tracing and support troubleshooting.
+
+### Single Resource Envelope
+
+```json
+{
+  "data": {
+    "id": "vps_01j7b8q4m2p",
+    "name": "Production Web 01",
+    "status": "running"
+  },
+  "requestId": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d"
+}
+```
+
+### Paginated Collection Envelope
+
+```json
+{
+  "data": [
+    { "id": "vps_01j7b8q4m2p", "name": "Production Web 01" },
+    { "id": "vps_01j7b8r8k9s", "name": "Staging API 02" }
+  ],
+  "pagination": {
+    "page": 1,
+    "pageSize": 50,
+    "total": 2,
+    "hasNext": false
+  },
+  "requestId": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d"
+}
+```
+
+### Asynchronous Operation Envelope
+
+Operations that trigger background hypervisor tasks (e.g., power cycles, OS reinstalls, provisioning) return `202 Accepted` with an operation reference:
+
+```json
+{
+  "data": {
+    "operationId": "op_01j7ba32k4m",
+    "status": "queued",
+    "statusUrl": "/api/v1/operations/op_01j7ba32k4m",
+    "message": "Instance reboot initiated."
+  },
+  "requestId": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d"
+}
+```
+
+### Standard Error Envelope
+
+```json
+{
+  "error": {
+    "code": "INSTANCE_NOT_FOUND",
+    "message": "VPS instance not found.",
+    "details": {
+      "instanceId": "vps_nonexistent"
+    }
+  },
+  "requestId": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d"
+}
+```
+
+---
+
+## Rate Limiting & Sliding Windows
+
+InterDash implements sliding window rate limiting keyed by the authenticated API Key ID (with client IP fallback). Rate limits are partitioned by endpoint workload:
+
+| Endpoint Class | Default Limit | Applicable Operations |
+| :--- | :--- | :--- |
+| **`standard`** | 120 req / min | Reads, listing, metadata updates, tickets, settings, analytics |
+| **`heavy`** | 30 req / min | Instance power operations, OS reinstall, password reset, delete |
+| **`provision`** | 10 req / min | Asynchronous LXC provisioning requests (`POST /api/v1/instances`) |
+
+> **Note**: Custom per-minute rate limits can be configured on individual API keys by administrators in the Admin UI. The custom RPM applies to the `standard` endpoint class.
+
+### Rate Limit Headers
+
+Every API response includes current rate limit status:
+
+| Header | Description |
+| :--- | :--- |
+| `X-RateLimit-Limit` | Maximum allowed requests within the current 60-second window |
+| `X-RateLimit-Remaining` | Remaining requests available before hitting the rate limit |
+| `X-RateLimit-Reset` | Time in seconds until the current sliding window resets |
+| `Retry-After` | (Only on `429 Too Many Requests`) Seconds to wait before retrying |
+
+When the limit is exceeded, the server returns HTTP `429 Too Many Requests`:
+
+```json
+{
+  "error": {
+    "code": "API_RATE_LIMITED",
+    "message": "Rate limit exceeded for endpoint class 'heavy'. Try again in 24 seconds.",
+    "details": {
+      "endpointClass": "heavy",
+      "limitRpm": 30,
+      "retryAfterSeconds": 24
+    }
+  },
+  "requestId": "3a64b912-21ef-4573-b295-88849b2940af"
+}
+```
+
+---
+
+## Idempotency Engine
+
+To guarantee that network retries or timeouts do not cause duplicate instances or redundant power cycles, mutative endpoints support the `Idempotency-Key` HTTP header.
+
+```http
+POST /api/v1/instances HTTP/1.1
+Host: your-interdash-domain.com
+Authorization: Bearer ih_live_...
+Idempotency-Key: e82b545e-49b8-4c12-b054-94c34a2e2d92
+Content-Type: application/json
+
+{
+  "name": "Production Worker",
+  "nodeId": "pve-node-01",
+  "template": "local:vztmpl/ubuntu-22.04.tar.zst",
+  "cpuCores": 2,
+  "memoryMb": 4096,
+  "diskGb": 40
+}
+```
+
+### How Idempotency Works
+
+1. **Header Required on Provisioning**: `POST /api/v1/instances` requires the `Idempotency-Key` header (max 128 characters).
+2. **Payload Hash Verification**: The server calculates a deterministic SHA-256 digest of the sorted request body.
+3. **Safe Replay**: If a request arrives with an `Idempotency-Key` that was already successfully processed for that API key, the server returns the cached response with an added header:
+   ```http
+   Idempotent-Replay: true
+   ```
+4. **Conflict Guard**: If an `Idempotency-Key` is reused with a different request body, path, or method, the server rejects it immediately with HTTP `409 Conflict` (`IDEMPOTENCY_CONFLICT`).
+
+---
+
+## Canonical Scope Registry
+
+API keys are restricted to explicitly granted scopes. Scopes follow the `resource:action` convention.
+
+| Scope | Category | Dangerous | Admin Only | Description |
+| :--- | :--- | :---: | :---: | :--- |
+| `api:full` | Wildcard | **Yes** | **Yes** | Full access across all control plane operations. Treat like root access. |
+| `instances:read` | Instances | No | No | View instance details, IPs, specs, and status. |
+| `instances:write` | Instances | No | No | Update instance names, descriptions, and reset passwords. |
+| `instances:power` | Instances | No | No | Start, stop, and reboot VPS instances. |
+| `instances:reinstall`| Instances | **Yes** | No | Wipe and reinstall instance OS with template selection. |
+| `instances:delete` | Instances | **Yes** | No | Destroy instances and release IPAM allocations. |
+| `instances:console`| Instances | No | No | Generate interactive terminal tickets and WebSocket sessions. |
+| `instances:expiry` | Instances | No | **Yes** | Set, extend, or clear instance expiration dates. |
+| `provisioning:read`| Provisioning | No | No | Inspect asynchronous provisioning jobs and step logs. |
+| `provisioning:create`| Provisioning | **Yes** | **Yes** | Provision new virtual servers on Proxmox hypervisors. |
+| `provisioning:cancel`| Provisioning | No | **Yes** | Abort in-flight or stalled provisioning jobs. |
+| `nodes:read` | Nodes | No | **Yes** | View Proxmox cluster nodes, health, and storage pools. |
+| `nodes:write` | Nodes | **Yes** | **Yes** | Register new nodes and update hypervisor configurations. |
+| `nodes:verify` | Nodes | No | **Yes** | Run live connectivity and storage discovery tests on nodes. |
+| `nodes:delete` | Nodes | **Yes** | **Yes** | Remove hypervisor nodes (with active instance safety check). |
+| `tickets:read` | Tickets | No | No | View support tickets and discussion messages. |
+| `tickets:write` | Tickets | No | No | Open tickets, post replies, and change ticket statuses. |
+| `users:read` | Users | No | **Yes** | List user accounts and view profile metadata. |
+| `users:write` | Users | **Yes** | **Yes** | Suspend, ban, or reactivate user accounts. |
+| `users:role` | Users | **Yes** | **Yes** | Promote or demote user roles (`user`, `admin`, `owner`). |
+| `settings:read` | Settings | No | No | Read platform branding, contact URLs, and auth configs. |
+| `settings:write` | Settings | **Yes** | **Yes** | Update platform branding and authentication provider settings. |
+| `analytics:read` | Analytics | No | No | Access real infrastructure telemetry and utilization stats. |
+| `operations:read` | Operations | No | No | Query asynchronous lifecycle operations and step history. |
+| `audit:read` | Audit | No | **Yes** | Search platform audit logs (scrubbed of sensitive data). |
+
+---
+
+## Control Plane Endpoints Reference
+
+### 1. Discovery & Identity
+
+#### Catalog & Scopes Discovery
+```http
+GET /api/v1/
+```
+Returns system information, available endpoints, authentication rules, and full scope catalog. Does not require authentication.
+
+#### Health Check
+```http
+GET /api/v1/health
+```
+Returns system health, uptime, and database connectivity.
+
+#### Current Key Identity & Scopes
+```http
+GET /api/v1/auth/me
+```
+*Required Scope*: Valid API key (any scope)  
+*Rate Limit Class*: `standard`
+
+**Response Example (200 OK)**:
+```json
+{
+  "data": {
+    "type": "api_key",
+    "apiKeyId": "key_01j7ba1192p",
+    "keyName": "WHMCS Billing Integration",
+    "prefix": "ih_live_8f7b2c1d",
+    "createdByUserId": "usr_admin_01",
+    "creatorUsername": "SystemAdmin",
+    "scopes": ["instances:read", "instances:power", "provisioning:create"],
+    "rateLimitRpm": 120,
+    "expiresAt": "2027-12-31T23:59:59.000Z",
+    "metadata": {
+      "environment": "production"
+    }
+  },
+  "requestId": "2f4b593e-c6dc-44b2-a42e-131dbca56df8"
+}
+```
+
+---
+
+### 2. Instances (VPS Management)
+
+#### List Instances
+```http
+GET /api/v1/instances?page=1&pageSize=50&status=running&nodeId=pve-01&expiry=all
+```
+*Required Scope*: `instances:read`  
+*Rate Limit Class*: `standard`
+
+**Query Parameters**:
+- `page` (number, default: 1)
+- `pageSize` (number, default: 50, max: 100)
+- `status` (string, optional: `running`, `stopped`, `provisioning`, `error`, `deleting`)
+- `nodeId` (string, optional)
+- `expiry` (string, optional: `all`, `active`, `expired`)
+
+**Response Example (200 OK)**:
+```json
+{
+  "data": [
+    {
+      "id": "vps_01j7b8q4m2p",
+      "name": "Production Web 01",
+      "hostname": "web01.example.com",
+      "description": "Primary edge web server",
+      "status": "running",
+      "osImageId": "ubuntu-22.04",
+      "cpuCores": 4,
+      "memoryMb": 8192,
+      "swapMb": 2048,
+      "diskGb": 100,
+      "ipv4Address": "192.168.1.101",
+      "ipv6Address": "2001:db8::101",
+      "lockState": null,
+      "expiresAt": "2026-12-31T23:59:59.000Z",
+      "lastProxmoxSyncAt": "2026-09-12T12:00:00.000Z",
+      "createdAt": "2026-01-15T08:30:00.000Z",
+      "updatedAt": "2026-09-12T12:00:00.000Z",
+      "node": {
+        "id": "pve-01",
+        "name": "Hypervisor Node 01",
+        "region": "US-East",
+        "hostname": "pve01.infra.local"
+      },
+      "owner": {
+        "id": "usr_01j6k8m",
+        "username": "alice",
+        "globalName": "Alice Developer"
+      }
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "pageSize": 50,
+    "total": 1,
+    "hasNext": false
+  },
+  "requestId": "c1f728c4-85aa-43d9-95a6-778819d4538d"
+}
+```
+
+#### Provision Instance (Asynchronous)
+```http
+POST /api/v1/instances
+```
+*Required Scope*: `provisioning:create`  
+*Rate Limit Class*: `provision` (10 req/min)  
+*Required Header*: `Idempotency-Key`
+
+**Request Body**:
+```json
+{
+  "name": "Production App Node",
+  "hostname": "app01.internal",
+  "ownerUserId": "usr_01j6k8m",
+  "nodeId": "pve-01",
+  "template": "local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst",
+  "storagePool": "local-lvm",
+  "cpuCores": 4,
+  "memoryMb": 8192,
+  "diskGb": 50,
+  "rootPassword": "SuperSecretPassword123!",
+  "sshKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... user@machine",
+  "networkBridge": "vmbr0",
+  "expiresAt": "2027-01-01T00:00:00.000Z"
+}
+```
+
+**Response Example (202 Accepted)**:
+```json
+{
+  "data": {
+    "jobId": "job_01j7b9k4x7m",
+    "status": "pending",
+    "statusUrl": "/api/v1/provisioning/jobs/job_01j7b9k4x7m",
+    "message": "Instance provisioning job enqueued successfully."
+  },
+  "requestId": "94e63fae-2244-48ee-a64d-08b88d30e543"
+}
+```
+
+#### Get Instance Details
+```http
+GET /api/v1/instances/:id
+```
+*Required Scope*: `instances:read`  
+*Rate Limit Class*: `standard`
+
+#### Update Instance Details
+```http
+PATCH /api/v1/instances/:id
+```
+*Required Scope*: `instances:write`  
+*Rate Limit Class*: `standard`
+
+**Request Body**:
+```json
+{
+  "name": "Updated Server Name",
+  "description": "Updated server description"
+}
+```
+
+#### Start Instance
+```http
+POST /api/v1/instances/:id/start
+```
+*Required Scope*: `instances:power`  
+*Rate Limit Class*: `heavy`
+
+#### Stop Instance (Graceful Shutdown)
+```http
+POST /api/v1/instances/:id/stop
+```
+*Required Scope*: `instances:power`  
+*Rate Limit Class*: `heavy`
+
+#### Reboot Instance
+```http
+POST /api/v1/instances/:id/reboot
+```
+*Required Scope*: `instances:power`  
+*Rate Limit Class*: `heavy`
+
+#### Reinstall Instance OS
+```http
+POST /api/v1/instances/:id/reinstall
+```
+*Required Scope*: `instances:reinstall`  
+*Rate Limit Class*: `heavy`
+
+> **Warning**: Reinstalling an instance permanently wipes all storage volumes on the container. To prevent accidental data loss, the request **must** provide `confirmHostname` exactly matching the instance hostname.
+
+**Request Body**:
+```json
+{
+  "confirmHostname": "web01.example.com",
+  "template": "local:vztmpl/debian-12-standard_12.2-1_amd64.tar.zst",
+  "password": "NewSecurePassword456!",
+  "sshKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... user@machine"
+}
+```
+
+#### Reset Root Password
+```http
+POST /api/v1/instances/:id/reset-password
+```
+*Required Scope*: `instances:write`  
+*Rate Limit Class*: `heavy`
+
+**Request Body**:
+```json
+{
+  "password": "FreshPassword789!"
+}
+```
+
+#### Update Instance Expiration
+```http
+PATCH /api/v1/instances/:id/expiry
+```
+*Required Scope*: `instances:expiry`  
+*Rate Limit Class*: `standard`
+
+**Request Body**:
+```json
+{
+  "expiresAt": "2027-06-30T23:59:59.000Z"
+}
+```
+*(Pass `"expiresAt": null` to remove expiration and make the instance permanent).*
+
+#### Delete Instance
+```http
+DELETE /api/v1/instances/:id
+```
+*Required Scope*: `instances:delete`  
+*Rate Limit Class*: `heavy`
+
+Destroys the LXC container on the Proxmox hypervisor, cleans up DNS, and releases the assigned IPv4/IPv6 address back to the IPAM pool.
+
+#### Live Runtime Status
+```http
+GET /api/v1/instances/:id/status
+```
+*Required Scope*: `instances:read`  
+Queries the live Proxmox hypervisor cluster dynamically resolving the container's active cluster node.
+
+#### Live Hardware Metrics
+```http
+GET /api/v1/instances/:id/metrics
+```
+*Required Scope*: `instances:read`  
+Returns real-time CPU percentage, memory bytes, disk usage, and network I/O from the hypervisor.
+
+#### Instance Operations History
+```http
+GET /api/v1/instances/:id/operations
+```
+*Required Scope*: `operations:read`  
+Returns lifecycle history and background job execution steps for this specific instance.
+
+#### Generate Console Ticket & WebSocket URL
+```http
+POST /api/v1/instances/:id/console-ticket
+```
+*Required Scope*: `instances:console`  
+*Rate Limit Class*: `standard`
+
+Generates an authenticated Proxmox `termproxy` ticket and returns a WebSocket URL for connecting a live interactive terminal.
+
+**Response Example (200 OK)**:
+```json
+{
+  "data": {
+    "ticket": "PVE:root@pam:65B8...==",
+    "port": 5900,
+    "wsUrl": "wss://your-interdash-domain.com/api/v1/instances/vps_01j7b8q4m2p/console-ws?ticket=...",
+    "expiresInSeconds": 30
+  },
+  "requestId": "7e3b5a12-89cd-48ef-b001-9876543210ab"
+}
+```
+
+---
+
+### 3. Provisioning Engine
+
+#### List Provisioning Jobs
+```http
+GET /api/v1/provisioning/jobs?page=1&pageSize=50&status=in_progress
+```
+*Required Scope*: `provisioning:read`
+
+#### Get Job Status & Logs
+```http
+GET /api/v1/provisioning/jobs/:id
+```
+*Required Scope*: `provisioning:read`
+
+**Response Example (200 OK)**:
+```json
+{
+  "data": {
+    "id": "job_01j7b9k4x7m",
+    "status": "in_progress",
+    "progressPercent": 65,
+    "currentStep": "Configuring network interfaces and static IP",
+    "vpsId": "vps_01j7ba55k",
+    "nodeId": "pve-01",
+    "targetVmid": 142,
+    "steps": [
+      { "name": "Pre-flight validation", "status": "completed", "timestamp": "2026-09-12T12:00:01Z" },
+      { "name": "Allocating IP from IPAM", "status": "completed", "timestamp": "2026-09-12T12:00:02Z" },
+      { "name": "Creating LXC container", "status": "completed", "timestamp": "2026-09-12T12:00:15Z" },
+      { "name": "Configuring network", "status": "in_progress", "timestamp": "2026-09-12T12:00:18Z" }
+    ],
+    "error": null,
+    "createdAt": "2026-09-12T12:00:00Z",
+    "updatedAt": "2026-09-12T12:00:18Z"
+  },
+  "requestId": "94e63fae-2244-48ee-a64d-08b88d30e543"
+}
+```
+
+---
+
+### 4. Hypervisor Nodes Management
+
+#### List Hypervisor Nodes
+```http
+GET /api/v1/nodes
+```
+*Required Scope*: `nodes:read`
+
+**Response Example (200 OK)**:
+```json
+{
+  "data": [
+    {
+      "id": "pve-01",
+      "name": "Hypervisor Node 01",
+      "hostname": "pve01.infra.local",
+      "apiUrl": "https://pve01.infra.local:8006",
+      "port": 8006,
+      "nodeName": "pve01",
+      "region": "US-East",
+      "status": "online",
+      "enabled": true,
+      "instanceCount": 14,
+      "cpuUtilizationPercent": 28.5,
+      "memoryTotalMb": 131072,
+      "memoryUsedMb": 65536,
+      "createdAt": "2025-11-01T00:00:00Z"
+    }
+  ],
+  "requestId": "6d1f94a2-4a01-447a-93be-3b2d1844ef1a"
+}
+```
+
+#### Register New Hypervisor Node
+```http
+POST /api/v1/nodes
+```
+*Required Scope*: `nodes:write`  
+*Rate Limit Class*: `standard`
+
+**Request Body**:
+```json
+{
+  "name": "Frankfurt Proxmox 02",
+  "hostname": "pve02.fra.infra.local",
+  "apiUrl": "https://pve02.fra.infra.local:8006",
+  "port": 8006,
+  "nodeName": "pve02",
+  "region": "EU-Central",
+  "tokenId": "root@pam!interdash_token",
+  "tokenSecret": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+}
+```
+*(Token secrets are immediately encrypted at rest using AES-256-GCM and never returned in responses).*
+
+#### Verify Hypervisor Node & Discover Storage
+```http
+POST /api/v1/nodes/:id/verify
+```
+*Required Scope*: `nodes:verify`
+
+Tests connectivity, validates credentials, discovers rootfs storage pools, OS template archives, and network bridges (`vmbr`).
+
+#### Get Discovered Node Storage & Templates
+```http
+GET /api/v1/nodes/:id/storage
+```
+*Required Scope*: `nodes:read`
+
+#### Delete Node
+```http
+DELETE /api/v1/nodes/:id
+```
+*Required Scope*: `nodes:delete`  
+Rejects deletion with HTTP `409 Conflict` (`NODE_HAS_ACTIVE_INSTANCES`) if the node still hosts any instances.
+
+---
+
+### 5. Support Tickets
+
+#### List Tickets
+```http
+GET /api/v1/tickets?page=1&pageSize=50&status=open&priority=high
+```
+*Required Scope*: `tickets:read`
+
+#### Create Ticket
+```http
+POST /api/v1/tickets
+```
+*Required Scope*: `tickets:write`
+
+**Request Body**:
+```json
+{
+  "subject": "Bandwidth expansion request",
+  "message": "Hello, we need an additional IPv4 subnet allocated for our production cluster.",
+  "priority": "high",
+  "vpsId": "vps_01j7b8q4m2p"
+}
+```
+
+#### Get Ticket & Message Thread
+```http
+GET /api/v1/tickets/:id
+```
+*Required Scope*: `tickets:read`
+
+#### Post Ticket Reply
+```http
+POST /api/v1/tickets/:id/messages
+```
+*Required Scope*: `tickets:write`
+
+**Request Body**:
+```json
+{
+  "message": "Acknowledged. Subnet allocation is currently being provisioned."
+}
+```
+
+#### Update Ticket Status / Priority
+```http
+PATCH /api/v1/tickets/:id
+```
+*Required Scope*: `tickets:write`
+
+**Request Body**:
+```json
+{
+  "status": "resolved",
+  "priority": "normal"
+}
+```
+
+---
+
+### 6. User Administration
+
+#### List Users
+```http
+GET /api/v1/users?page=1&pageSize=50&role=user&status=active
+```
+*Required Scope*: `users:read`
+
+#### Get User Details
+```http
+GET /api/v1/users/:id
+```
+*Required Scope*: `users:read`
+
+#### Update User Status (Suspend / Ban / Activate)
+```http
+PATCH /api/v1/users/:id/status
+```
+*Required Scope*: `users:write`
+
+**Request Body**:
+```json
+{
+  "status": "suspended",
+  "reason": "Violation of terms of service regarding port scanning."
+}
+```
+
+#### Update User Role (Promote / Demote)
+```http
+PATCH /api/v1/users/:id/role
+```
+*Required Scope*: `users:role`
+
+**Request Body**:
+```json
+{
+  "role": "admin"
+}
+```
+
+---
+
+### 7. Platform Settings & Authentication Providers
+
+#### Get Platform Settings
+```http
+GET /api/v1/settings
+```
+*Required Scope*: `settings:read`
+
+#### Update Platform Settings
+```http
+PATCH /api/v1/settings
+```
+*Required Scope*: `settings:write`
+
+**Request Body**:
+```json
+{
+  "panelTitle": "InterDash Enterprise Cloud",
+  "supportUrl": "https://support.example.com",
+  "discordSupportUrl": "https://discord.gg/example"
+}
+```
+
+#### Get Authentication Providers Configuration
+```http
+GET /api/v1/settings/auth-providers
+```
+*Required Scope*: `settings:read`  
+*(All client secrets and private keys are masked as `••••••••`).*
+
+#### Update Authentication Providers Configuration
+```http
+PATCH /api/v1/settings/auth-providers
+```
+*Required Scope*: `settings:write`
+
+**Request Body**:
+```json
+{
+  "discord": {
+    "enabled": true,
+    "clientId": "123456789012345678",
+    "clientSecret": "fresh_secret_here"
+  }
+}
+```
+
+---
+
+### 8. Analytics & Fleet Telemetry
+
+```http
+GET /api/v1/analytics
+```
+*Required Scope*: `analytics:read`
+
+Returns **real** infrastructure and fleet utilization computed from active database records and hypervisor states. InterDash **never** synthesizes fake CPU, memory, or bandwidth history.
+
+**Response Example (Admin / Fleet Scope)**:
+```json
+{
+  "data": {
+    "scope": "global",
+    "metrics": {
+      "totalInstances": 48,
+      "runningInstances": 42,
+      "stoppedInstances": 5,
+      "provisioningInstances": 1,
+      "failedInstances": 0,
+      "totalCpuCores": 192,
+      "totalMemoryMb": 393216,
+      "totalDiskGb": 4800,
+      "nodes": {
+        "total": 3,
+        "online": 3,
+        "offline": 0,
+        "degraded": 0
+      },
+      "nodeUtilization": [
+        {
+          "id": "pve-01",
+          "name": "Hypervisor Node 01",
+          "instanceCount": 24,
+          "allocatedCores": 96,
+          "allocatedMemoryMb": 196608
+        }
+      ],
+      "osDistribution": [
+        { "osImageId": "ubuntu-22.04", "count": 30 },
+        { "osImageId": "debian-12", "count": 18 }
+      ]
+    }
+  },
+  "requestId": "1b2c3d4e-5f6a-7b8c-9d0e-1f2a3b4c5d6e"
+}
+```
+
+---
+
+### 9. Asynchronous Operations History
+
+#### List All Platform Operations
+```http
+GET /api/v1/operations?page=1&pageSize=50&status=completed&type=reboot
+```
+*Required Scope*: `operations:read`
+
+#### Get Single Operation Details & Step Logs
+```http
+GET /api/v1/operations/:id
+```
+*Required Scope*: `operations:read`
+
+**Response Example (200 OK)**:
+```json
+{
+  "data": {
+    "id": "op_01j7ba32k4m",
+    "vpsId": "vps_01j7b8q4m2p",
+    "operationType": "reboot",
+    "status": "completed",
+    "requestedByUserId": "usr_01j6k8m",
+    "currentStep": "Proxmox reboot task finished successfully",
+    "error": null,
+    "metadata": {
+      "proxmoxUpid": "UPID:pve01:00012A34:001F4B8C:65B8F9A1:vzreboot:101:root@pam:"
+    },
+    "createdAt": "2026-09-12T12:10:00Z",
+    "updatedAt": "2026-09-12T12:10:05Z"
+  },
+  "requestId": "d8a1c9e2-34f7-41ab-bc82-0192837465ab"
+}
+```
+
+---
+
+### 10. Audit Trail
+
+```http
+GET /api/v1/audit?page=1&pageSize=50&eventType=vps.power.reboot
+```
+*Required Scope*: `audit:read`
+
+Returns immutable security logs. Sensitive fields (`password`, `token`, `secret`, `keyHash`, `rawToken`) are automatically redacted with `••••••••`.
+
+---
+
+## Error Handling & Error Codes
+
+InterDash APIs return RFC 7807-compatible error envelopes with standardized machine-readable error codes.
+
+### Common Error Codes
+
+| HTTP Status | Error Code | Description |
+| :---: | :--- | :--- |
+| **400** | `INVALID_CREDENTIAL_TRANSPORT` | API key was passed in query parameter or request body instead of the `Authorization` header. |
+| **400** | `INVALID_IDEMPOTENCY_KEY` | The `Idempotency-Key` header exceeds 128 characters or contains illegal formatting. |
+| **400** | `IDEMPOTENCY_KEY_REQUIRED` | The endpoint requires an `Idempotency-Key` header (e.g., `POST /api/v1/instances`). |
+| **400** | `HOSTNAME_CONFIRMATION_MISMATCH` | OS reinstall payload `confirmHostname` did not match the instance hostname. |
+| **400** | `INVALID_PASSWORD` | Password does not meet security criteria (minimum 8 characters). |
+| **401** | `API_KEY_REQUIRED` | Missing or blank `Authorization` header. |
+| **401** | `INVALID_AUTHORIZATION_HEADER` | Authorization header is not formatted as `Bearer <token>`. |
+| **401** | `INVALID_API_KEY` | API token not recognized, invalid checksum, or invalid hash. |
+| **401** | `API_KEY_REVOKED` | API key has been revoked by an administrator. |
+| **401** | `API_KEY_EXPIRED` | API key has reached its configured expiration date. |
+| **403** | `INSUFFICIENT_SCOPE` | API key lacks one or more required scopes. |
+| **403** | `ADMIN_ROLE_REQUIRED` | Operation requires administrator permissions. |
+| **403** | `RESOURCE_FORBIDDEN` | Key is restricted to a user account that does not own this resource. |
+| **404** | `INSTANCE_NOT_FOUND` | No VPS matches the requested ID. |
+| **404** | `NODE_NOT_FOUND` | No hypervisor node matches the requested ID. |
+| **404** | `JOB_NOT_FOUND` | Provisioning job not found. |
+| **409** | `IDEMPOTENCY_CONFLICT` | `Idempotency-Key` reused with different parameters or payload. |
+| **409** | `OPERATION_IN_PROGRESS` | VPS is locked by an existing in-flight operation. |
+| **409** | `NODE_HAS_ACTIVE_INSTANCES` | Cannot delete hypervisor node because instances are still hosted on it. |
+| **422** | `PREFLIGHT_STORAGE_UNSUPPORTED` | Selected storage pool does not support root container volumes. |
+| **422** | `PREFLIGHT_TEMPLATE_NOT_FOUND` | Selected OS template does not exist on the node. |
+| **422** | `PREFLIGHT_BRIDGE_INVALID` | Selected network bridge does not exist on the hypervisor. |
+| **429** | `API_RATE_LIMITED` | Sliding window request quota exceeded. Check `Retry-After`. |
+| **500** | `INTERNAL_SERVER_ERROR` | Unhandled error. Check `X-Request-ID` in server logs. |
+
+---
+
+## Client Integration Examples
+
+### 1. cURL (Bash)
+
+#### Provision an Instance with Idempotency
+```bash
+#!/usr/bin/env bash
+API_KEY="ih_live_your_api_key_here"
+BASE_URL="https://interdash.example.com/api/v1"
+IDEMPOTENCY_KEY=$(uuidgen)
+
+curl -X POST "${BASE_URL}/instances" \
+  -H "Authorization: Bearer ${API_KEY}" \
+  -H "Idempotency-Key: ${IDEMPOTENCY_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Database Node 01",
+    "hostname": "db01.internal",
+    "nodeId": "pve-01",
+    "template": "local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst",
+    "cpuCores": 4,
+    "memoryMb": 8192,
+    "diskGb": 80,
+    "rootPassword": "DatabaseSuperPassword123!"
+  }'
+```
+
+#### Reboot an Instance
+```bash
+curl -X POST "${BASE_URL}/instances/vps_01j7b8q4m2p/reboot" \
+  -H "Authorization: Bearer ${API_KEY}" \
+  -H "Accept: application/json"
+```
+
+---
+
+### 2. TypeScript / Node.js (Fetch)
+
+```typescript
+import crypto from "node:crypto";
+
+interface ApiResponse<T> {
+  data: T;
+  requestId: string;
+}
+
+interface InstanceDTO {
+  id: string;
+  name: string;
+  status: "running" | "stopped" | "provisioning" | "error";
+  ipv4Address: string;
+}
+
+export class InterDashClient {
+  constructor(
+    private readonly baseUrl: string,
+    private readonly apiKey: string
+  ) {}
+
+  private async request<T>(
+    path: string,
+    options: RequestInit & { idempotencyKey?: string } = {}
+  ): Promise<ApiResponse<T>> {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${this.apiKey}`,
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      ...(options.headers as Record<string, string>),
+    };
+
+    if (options.idempotencyKey) {
+      headers["Idempotency-Key"] = options.idempotencyKey;
+    }
+
+    const res = await fetch(`${this.baseUrl}${path}`, {
+      ...options,
+      headers,
+    });
+
+    const json = await res.json();
+    if (!res.ok) {
+      throw new Error(`[${json.error?.code || res.status}] ${json.error?.message || "API Error"}`);
+    }
+
+    return json;
+  }
+
+  public async listInstances(): Promise<InstanceDTO[]> {
+    const res = await this.request<InstanceDTO[]>("/instances");
+    return res.data;
+  }
+
+  public async rebootInstance(instanceId: string): Promise<string> {
+    const res = await this.request<{ operationId: string }>(`/instances/${instanceId}/reboot`, {
+      method: "POST",
+    });
+    return res.data.operationId;
+  }
+
+  public async provisionInstance(params: {
+    name: string;
+    nodeId: string;
+    template: string;
+    cpuCores: number;
+    memoryMb: number;
+    diskGb: number;
+    rootPassword?: string;
+  }): Promise<{ jobId: string; statusUrl: string }> {
+    const idempotencyKey = crypto.randomUUID();
+    const res = await this.request<{ jobId: string; statusUrl: string }>("/instances", {
+      method: "POST",
+      idempotencyKey,
+      body: JSON.stringify(params),
+    });
+    return res.data;
+  }
+}
+```
+
+---
+
+### 3. Python 3 (httpx / requests)
+
+```python
+import uuid
+import httpx
+from typing import Dict, Any, List
+
+class InterDashClient:
+    def __init__(self, base_url: str, api_key: str):
+        self.base_url = base_url.rstrip("/")
+        self.headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+
+    def list_instances(self, status: str = None) -> List[Dict[str, Any]]:
+        params = {}
+        if status:
+            params["status"] = status
+        with httpx.Client() as client:
+            resp = client.get(f"{self.base_url}/instances", headers=self.headers, params=params)
+            resp.raise_for_status()
+            return resp.json()["data"]
+
+    def provision_instance(self, payload: Dict[str, Any]) -> str:
+        headers = dict(self.headers)
+        headers["Idempotency-Key"] = str(uuid.uuid4())
+        with httpx.Client() as client:
+            resp = client.post(f"{self.base_url}/instances", headers=headers, json=payload)
+            resp.raise_for_status()
+            return resp.json()["data"]["jobId"]
+
+    def reboot_instance(self, instance_id: str) -> str:
+        with httpx.Client() as client:
+            resp = client.post(f"{self.base_url}/instances/{instance_id}/reboot", headers=self.headers)
+            resp.raise_for_status()
+            return resp.json()["data"]["operationId"]
+```
+
+---
+
+### 4. Go (Golang)
+
+```go
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"time"
+)
+
+type Client struct {
+	BaseURL    string
+	APIKey     string
+	HTTPClient *http.Client
+}
+
+func NewClient(baseURL, apiKey string) *Client {
+	return &Client{
+		BaseURL: baseURL,
+		APIKey:  apiKey,
+		HTTPClient: &http.Client{
+			Timeout: 15 * time.Second,
+		},
+	}
+}
+
+type APIResponse struct {
+	Data      interface{} `json:"data"`
+	RequestID string      `json:"requestId"`
+}
+
+func (c *Client) RebootInstance(instanceID string) error {
+	url := fmt.Sprintf("%s/instances/%s/reboot", c.BaseURL, instanceID)
+	req, err := http.NewRequest(http.MethodPost, url, nil)
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("API error: status %d", resp.StatusCode)
+	}
+
+	return nil
+}
+```
+
+---
+
+## Interactive Documentation & OpenAPI Explorer
+
+InterDash ships with an embedded, live documentation explorer served directly by the backend:
+
+- **Swagger / Interactive Explorer**: Access `https://your-interdash-domain.com/api/v1/docs` in any web browser.
+- **Machine-Readable OpenAPI 3.1 JSON**: Fetch `https://your-interdash-domain.com/api/v1/openapi.json` to generate client libraries with tools like OpenAPI Generator or Fern.
+
+For assistance or to file issues, visit the [InterDash GitHub Repository](https://github.com/xRosieRose/InterDash).
