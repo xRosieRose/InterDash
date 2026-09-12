@@ -33,6 +33,7 @@ export interface VpsRecord {
   ipv4_address: string | null;
   ipv6_address: string | null;
   lock_state?: string | null;
+  expires_at?: string | null;
   last_proxmox_sync_at?: string | null;
   created_at: string;
   updated_at: string;

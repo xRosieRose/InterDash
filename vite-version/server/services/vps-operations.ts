@@ -21,6 +21,7 @@ import { queryOne, queryAll, execute, transaction } from "../db/index.js";
 import { ProxmoxService, type ProxmoxNodeConfig } from "./proxmox.js";
 import { ProvisioningService } from "./provisioning.js";
 import { VpsRuntimeResolver, type VpsRuntimeTarget } from "./runtime-resolver.js";
+import { VpsExpiryService } from "./vps-expiry.js";
 
 export interface OperationResult {
   operationId: string;
@@ -188,6 +189,9 @@ export class VpsOperationsService {
       throw err;
     }
 
+    // Expiry check: start is prohibited on expired VPS
+    VpsExpiryService.assertVpsActionAllowed(vps, "start");
+
     const opId = this.claimOperation(vpsId, userId, "start");
 
     try {
@@ -323,6 +327,9 @@ export class VpsOperationsService {
       throw err;
     }
 
+    // Expiry check: reboot is prohibited on expired VPS
+    VpsExpiryService.assertVpsActionAllowed(vps, "reboot");
+
     const opId = this.claimOperation(vpsId, userId, "reboot");
 
     try {
@@ -386,6 +393,9 @@ export class VpsOperationsService {
       throw err;
     }
 
+    // Expiry check: password reset is prohibited on expired VPS
+    VpsExpiryService.assertVpsActionAllowed(vps, "password_reset");
+
     // Password is NEVER saved in paramsSafe or params_json!
     const opId = this.claimOperation(vpsId, userId, "password_reset");
 
@@ -428,6 +438,9 @@ export class VpsOperationsService {
     fields: { name?: string; description?: string }
   ): Promise<void> {
     const { vps, node } = this.resolveVpsAndNode(vpsId);
+
+    // Expiry check: metadata updates are prohibited on expired VPS
+    VpsExpiryService.assertVpsActionAllowed(vps, "update_metadata");
 
     const updates: string[] = [];
     const params: any[] = [];
@@ -520,6 +533,9 @@ export class VpsOperationsService {
       (err as any).statusCode = 409;
       throw err;
     }
+
+    // Expiry check: reinstall is prohibited on expired VPS
+    VpsExpiryService.assertVpsActionAllowed(vps, "reinstall");
 
     // Claim operation lock (passwords NEVER stored in params)
     const opId = this.claimOperation(vpsId, userId, "reinstall", {

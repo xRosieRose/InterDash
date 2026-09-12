@@ -12,7 +12,11 @@ import {
   AlertTriangle,
   XCircle,
   Loader2,
+  Timer,
+  CheckCircle2,
+  ShieldCheck,
 } from "lucide-react"
+import { Link } from "react-router-dom"
 import { BaseLayout } from "@/components/layouts/base-layout"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -43,6 +47,10 @@ interface OverviewData {
     onlineNodes: number
     offlineNodes: number
     systemHealth: "operational" | "degraded" | "outage" | "unconfigured"
+    neverExpiresVps?: number
+    activeExpiringVps?: number
+    expiringSoonVps?: number
+    expiredVps?: number
   }
   recentEvents: Array<{
     id: number
@@ -324,6 +332,79 @@ export default function AdminOverviewPage() {
               <path d="M0 231V179L2 180L4 183L7 178L11 191V155L14 142V154L19 158L22 148V142L26 129V120L31 120V130L35 130L40 138V126L47 103V92L52 89L56 87L60 103L65 122L70 109L73 123V130L78 134V138L83 142V130L89 116V122L93 123L96 122V137L101 120L106 140L110 130L115 152L119 140V148L125 158L131 155L138 158L144 169L148 151L154 145L159 140L163 116V109L166 109L176 98L180 98V81L184 56L188 106L193 75V98L200 75L203 113L207 94L212 81L216 62L220 75L226 84L230 75L236 102L241 98L245 87L251 96L257 99L264 75L267 58L276 13L282 20L287 73L294 61L300 0L305 22L312 105L318 105L325 80L333 52L340 87L348 82L355 94L360 108L365 95V231H0Z" fill="currentColor" fillOpacity="0.3" />
             </svg>
           </Card>
+        </div>
+
+        {/* VPS Expiry & Lifecycle Fleet Telemetry */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold tracking-tight flex items-center gap-2">
+              <Timer className="size-4 text-primary" /> VPS Expiration & Lifecycle Telemetry
+            </h3>
+            <Link
+              to="/instances"
+              className="text-xs text-primary hover:underline flex items-center gap-1 font-medium"
+            >
+              View Fleet Inventory →
+            </Link>
+          </div>
+
+          <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
+            {/* Card 1: Never Expires */}
+            <Card className="p-4 bg-card/60 border-border">
+              <div className="flex items-center justify-between text-muted-foreground mb-2">
+                <span className="text-xs font-medium uppercase tracking-wider">Permanent / Indefinite</span>
+                <ShieldCheck className="size-4 text-emerald-500" />
+              </div>
+              <div className="text-2xl font-bold font-mono">
+                {metrics.neverExpiresVps ?? 0}
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                VPS instances without expiration
+              </p>
+            </Card>
+
+            {/* Card 2: Active with Expiry */}
+            <Card className="p-4 bg-card/60 border-border">
+              <div className="flex items-center justify-between text-muted-foreground mb-2">
+                <span className="text-xs font-medium uppercase tracking-wider">Active Expiring</span>
+                <CheckCircle2 className="size-4 text-primary" />
+              </div>
+              <div className="text-2xl font-bold font-mono">
+                {metrics.activeExpiringVps ?? 0}
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Healthy instances with future expiry
+              </p>
+            </Card>
+
+            {/* Card 3: Expiring Soon */}
+            <Card className={`p-4 bg-card/60 border-border ${(metrics.expiringSoonVps || 0) > 0 ? "border-amber-500/40 bg-amber-500/5" : ""}`}>
+              <div className="flex items-center justify-between text-muted-foreground mb-2">
+                <span className="text-xs font-medium uppercase tracking-wider">Expiring Soon</span>
+                <Clock className={`size-4 ${(metrics.expiringSoonVps || 0) > 0 ? "text-amber-500 animate-pulse" : "text-muted-foreground"}`} />
+              </div>
+              <div className={`text-2xl font-bold font-mono ${(metrics.expiringSoonVps || 0) > 0 ? "text-amber-500" : ""}`}>
+                {metrics.expiringSoonVps ?? 0}
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Reaching deadline within 72 hours
+              </p>
+            </Card>
+
+            {/* Card 4: Expired */}
+            <Card className={`p-4 bg-card/60 border-border ${(metrics.expiredVps || 0) > 0 ? "border-destructive/40 bg-destructive/5" : ""}`}>
+              <div className="flex items-center justify-between text-muted-foreground mb-2">
+                <span className="text-xs font-medium uppercase tracking-wider">Expired</span>
+                <AlertTriangle className={`size-4 ${(metrics.expiredVps || 0) > 0 ? "text-destructive" : "text-muted-foreground"}`} />
+              </div>
+              <div className={`text-2xl font-bold font-mono ${(metrics.expiredVps || 0) > 0 ? "text-destructive" : ""}`}>
+                {metrics.expiredVps ?? 0}
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Past deadline (enforcement active)
+              </p>
+            </Card>
+          </div>
         </div>
 
         {/* Audit Log / Recent Events */}

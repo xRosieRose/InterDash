@@ -85,9 +85,17 @@ export default function TicketsPage() {
   const [newMessage, setNewMessage] = React.useState("")
   const [isCreating, setIsCreating] = React.useState(false)
 
+  const abortControllerRef = React.useRef<AbortController | null>(null)
+
   const fetchTickets = React.useCallback(async () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+    }
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+
     try {
-      const res = await fetch("/api/tickets")
+      const res = await fetch("/api/tickets", { signal: controller.signal })
       if (!res.ok) throw new Error("Failed to load tickets.")
       const data = await res.json()
       setTickets(data.tickets || [])
@@ -95,6 +103,7 @@ export default function TicketsPage() {
         setSelectedTicketId(data.tickets[0].id)
       }
     } catch (err: unknown) {
+      if (err instanceof Error && err.name === "AbortError") return
       toast.error(err instanceof Error ? err.message : "Error fetching tickets")
     } finally {
       setIsLoading(false)
@@ -103,6 +112,11 @@ export default function TicketsPage() {
 
   React.useEffect(() => {
     fetchTickets()
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort()
+      }
+    }
   }, [fetchTickets])
 
   // Load active ticket messages

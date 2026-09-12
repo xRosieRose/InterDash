@@ -16,7 +16,7 @@ export { parseDatabaseTimestampUtc };
 /** User object attached to req.user by auth middleware */
 export interface AuthUser {
   id: string;
-  discord_id: string;
+  discord_id: string | null;
   username: string;
   global_name: string | null;
   email: string | null;

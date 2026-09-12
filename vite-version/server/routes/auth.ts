@@ -2,6 +2,7 @@
  * InterDash Server — Authentication Routes
  *
  * Discord OAuth2 Authorization Code flow (server-side token exchange).
+ * Email/password authentication with scrypt hashing.
  * Session management with HTTP-only cookies.
  * NO client-side token handling. NO localStorage auth.
  */
@@ -11,20 +12,44 @@ import { Router, type Request, type Response } from "express";
 import { v4 as uuidv4 } from "uuid";
 import { config } from "../config.js";
 import { getDb, saveToDisk } from "../db/index.js";
+import { queryOne, execute } from "../db/index.js";
 import {
   generateSessionToken,
   hashToken,
   requireAuth,
 } from "../middleware/auth.js";
 import { rateLimitMiddleware } from "../middleware/rate-limit.js";
+import { AuthConfigService } from "../services/auth-config.js";
+import { PasswordService } from "../services/password.js";
 
 const router = Router();
+
+// ============================================================================
+// GET /api/auth/providers — Public provider availability (unauthenticated)
+// ============================================================================
+router.get("/providers", (_req: Request, res: Response) => {
+  try {
+    const status = AuthConfigService.getPublicStatus();
+    res.json(status);
+  } catch (err) {
+    console.error("[AUTH] Failed to get provider status:", err);
+    res.json({
+      discord: { enabled: true, configured: false },
+      email: { enabled: false, configured: false, allowRegistration: false },
+    });
+  }
+});
 
 // ============================================================================
 // GET /api/auth/discord — Initiate Discord OAuth2 Authorization Code flow
 // ============================================================================
 router.get("/discord", (req: Request, res: Response) => {
-  const clientId = config.discord.clientId;
+  // Check if Discord auth is enabled via admin settings
+  const discordConfig = AuthConfigService.getResolvedDiscordConfig();
+  if (!discordConfig.enabled) {
+    return res.redirect("/auth/sign-in?error=discord_disabled");
+  }
+  const clientId = discordConfig.clientId || config.discord.clientId;
   const isSnowflake = /^\d{17,21}$/.test(clientId);
 
   // In production, verify that DISCORD_CLIENT_ID is properly set to a real snowflake ID
@@ -56,8 +81,8 @@ router.get("/discord", (req: Request, res: Response) => {
   });
 
   const params = new URLSearchParams({
-    client_id: config.discord.clientId,
-    redirect_uri: config.discord.redirectUri,
+    client_id: clientId,
+    redirect_uri: discordConfig.redirectUri || config.discord.redirectUri,
     response_type: "code", // Authorization Code flow, NOT implicit
     scope: config.discord.scopes,
     state,
@@ -98,16 +123,19 @@ router.get(
         return res.redirect("/auth/sign-in?error=missing_code");
       }
 
+      // Resolve dynamic Discord credentials
+      const resolvedDiscord = AuthConfigService.getResolvedDiscordConfig();
+
       // Exchange authorization code for access token (SERVER-SIDE)
       const tokenRes = await fetch("https://discord.com/api/oauth2/token", {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
-          client_id: config.discord.clientId,
-          client_secret: config.discord.clientSecret,
+          client_id: resolvedDiscord.clientId || config.discord.clientId,
+          client_secret: resolvedDiscord.clientSecret || config.discord.clientSecret,
           grant_type: "authorization_code",
           code,
-          redirect_uri: config.discord.redirectUri,
+          redirect_uri: resolvedDiscord.redirectUri || config.discord.redirectUri,
         }),
       });
 
@@ -332,6 +360,221 @@ router.post("/logout", requireAuth, (req: Request, res: Response) => {
 
   res.json({ success: true });
 });
+
+// ============================================================================
+// POST /api/auth/email/login — Email/Password Login
+// ============================================================================
+router.post(
+  "/email/login",
+  rateLimitMiddleware(config.rateLimit.loginMaxAttempts, config.rateLimit.loginWindowMs),
+  async (req: Request, res: Response) => {
+    try {
+      if (!AuthConfigService.isEmailEnabled()) {
+        res.status(403).json({ error: "Email authentication is not currently enabled." });
+        return;
+      }
+
+      const { email, password } = req.body;
+      if (!email || !password || typeof email !== "string" || typeof password !== "string") {
+        res.status(400).json({ error: "Email and password are required." });
+        return;
+      }
+
+      const cleanEmail = email.trim().toLowerCase();
+
+      // Look up user by email (case-insensitive)
+      const user = queryOne<any>(
+        "SELECT id, email, password_hash, role, status FROM users WHERE LOWER(email) = ? AND password_hash IS NOT NULL LIMIT 1",
+        [cleanEmail]
+      );
+
+      if (!user) {
+        // Perform dummy verification to prevent timing leaks
+        await PasswordService.dummyVerify();
+        res.status(401).json({ error: "Invalid email or password." });
+        return;
+      }
+
+      if (user.status !== "active") {
+        res.status(403).json({ error: "Account is suspended." });
+        return;
+      }
+
+      const valid = await PasswordService.verify(password, user.password_hash);
+      if (!valid) {
+        res.status(401).json({ error: "Invalid email or password." });
+        return;
+      }
+
+      // Create session
+      const sessionToken = generateSessionToken();
+      const sessionTokenHash = hashToken(sessionToken);
+      const sessionId = uuidv4();
+      const expiresAt = new Date(Date.now() + config.session.maxAge).toISOString();
+      const db = getDb();
+
+      db.run(
+        `INSERT INTO sessions (id, user_id, token_hash, expires_at, ip_address, user_agent)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          sessionId,
+          user.id,
+          sessionTokenHash,
+          expiresAt,
+          req.ip || req.socket.remoteAddress || null,
+          (req.headers["user-agent"] || "").substring(0, 512),
+        ]
+      );
+
+      // Update last login
+      execute("UPDATE users SET last_login_at = datetime('now') WHERE id = ?", [user.id]);
+
+      // Audit log
+      execute(
+        `INSERT INTO audit_logs (user_id, event_type, ip_address, user_agent, metadata)
+         VALUES (?, 'email_login_success', ?, ?, ?)`,
+        [
+          user.id,
+          req.ip || req.socket.remoteAddress || null,
+          (req.headers["user-agent"] || "").substring(0, 512),
+          JSON.stringify({ email: cleanEmail }),
+        ]
+      );
+
+      saveToDisk();
+
+      res.cookie(config.session.cookieName, sessionToken, {
+        httpOnly: true,
+        secure: config.isProd,
+        sameSite: "lax",
+        path: "/",
+        maxAge: config.session.maxAge,
+      });
+
+      res.json({ success: true, redirect: "/dashboard" });
+    } catch (err) {
+      console.error("[AUTH] Email login error:", err);
+      res.status(500).json({ error: "Authentication failed." });
+    }
+  }
+);
+
+// ============================================================================
+// POST /api/auth/email/register — Email/Password Registration
+// ============================================================================
+router.post(
+  "/email/register",
+  rateLimitMiddleware(config.rateLimit.loginMaxAttempts, config.rateLimit.loginWindowMs),
+  async (req: Request, res: Response) => {
+    try {
+      if (!AuthConfigService.isEmailEnabled()) {
+        res.status(403).json({ error: "Email authentication is not currently enabled." });
+        return;
+      }
+
+      if (!AuthConfigService.isEmailRegistrationAllowed()) {
+        res.status(403).json({ error: "Email registration is currently disabled." });
+        return;
+      }
+
+      const { email, password, username } = req.body;
+      if (!email || !password || typeof email !== "string" || typeof password !== "string") {
+        res.status(400).json({ error: "Email and password are required." });
+        return;
+      }
+
+      const cleanEmail = email.trim().toLowerCase();
+      const minLen = AuthConfigService.getMinPasswordLength();
+
+      if (password.length < minLen) {
+        res.status(400).json({ error: `Password must be at least ${minLen} characters long.` });
+        return;
+      }
+
+      // Basic email format check
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+        res.status(400).json({ error: "Invalid email address format." });
+        return;
+      }
+
+      // Check for duplicate email (case-insensitive)
+      const existing = queryOne<any>(
+        "SELECT id FROM users WHERE LOWER(email) = ? LIMIT 1",
+        [cleanEmail]
+      );
+      if (existing) {
+        res.status(409).json({ error: "An account with this email already exists." });
+        return;
+      }
+
+      const passwordHash = await PasswordService.hash(password);
+      const userId = uuidv4();
+      const effectiveUsername = (username && typeof username === "string")
+        ? username.trim().substring(0, 64)
+        : cleanEmail.split("@")[0].substring(0, 64);
+
+      const db = getDb();
+
+      db.run(
+        `INSERT INTO users (id, discord_id, username, global_name, email, password_hash, role, last_login_at)
+         VALUES (?, NULL, ?, ?, ?, ?, 'user', datetime('now'))`,
+        [
+          userId,
+          effectiveUsername,
+          effectiveUsername,
+          cleanEmail,
+          passwordHash,
+        ]
+      );
+
+      // Create session
+      const sessionToken = generateSessionToken();
+      const sessionTokenHash = hashToken(sessionToken);
+      const sessionId = uuidv4();
+      const expiresAt = new Date(Date.now() + config.session.maxAge).toISOString();
+
+      db.run(
+        `INSERT INTO sessions (id, user_id, token_hash, expires_at, ip_address, user_agent)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          sessionId,
+          userId,
+          sessionTokenHash,
+          expiresAt,
+          req.ip || req.socket.remoteAddress || null,
+          (req.headers["user-agent"] || "").substring(0, 512),
+        ]
+      );
+
+      // Audit log
+      execute(
+        `INSERT INTO audit_logs (user_id, event_type, ip_address, user_agent, metadata)
+         VALUES (?, 'email_registration', ?, ?, ?)`,
+        [
+          userId,
+          req.ip || req.socket.remoteAddress || null,
+          (req.headers["user-agent"] || "").substring(0, 512),
+          JSON.stringify({ email: cleanEmail }),
+        ]
+      );
+
+      saveToDisk();
+
+      res.cookie(config.session.cookieName, sessionToken, {
+        httpOnly: true,
+        secure: config.isProd,
+        sameSite: "lax",
+        path: "/",
+        maxAge: config.session.maxAge,
+      });
+
+      res.status(201).json({ success: true, redirect: "/dashboard" });
+    } catch (err) {
+      console.error("[AUTH] Email registration error:", err);
+      res.status(500).json({ error: "Registration failed." });
+    }
+  }
+);
 
 // ============================================================================
 // GET /api/auth/csrf — Get CSRF token for client

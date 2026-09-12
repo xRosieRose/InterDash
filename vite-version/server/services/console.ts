@@ -46,6 +46,7 @@ import {
   type ProxmoxErrorClassification,
 } from "./proxmox.js";
 import { ProvisioningService } from "./provisioning.js";
+import { VpsExpiryService } from "./vps-expiry.js";
 
 const IDLE_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 const HANDSHAKE_TIMEOUT_MS = 10 * 1000; // 10 seconds
@@ -139,7 +140,7 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
 
       // 2. Authorize VPS ownership or admin role
       const vps = queryOne<any>(
-        `SELECT id, owner_user_id, proxmox_node_id, proxmox_vmid, status, hostname
+        `SELECT id, owner_user_id, proxmox_node_id, proxmox_vmid, status, hostname, expires_at
          FROM vps
          WHERE id = ? LIMIT 1`,
         [vpsId]
@@ -153,6 +154,13 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
 
       if (vps.owner_user_id !== user.id && user.role !== "admin") {
         socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+
+      // Check VPS expiration: expired VPS cannot open interactive console
+      if (VpsExpiryService.isExpired(vps.expires_at)) {
+        socket.write("HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\n\r\nVPS instance has expired.\r\n");
         socket.destroy();
         return;
       }

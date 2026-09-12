@@ -10,6 +10,7 @@ import {
   SidebarInset,
   SidebarProvider,
 } from "@/components/ui/sidebar"
+import { useDashboardShell } from "@/components/layouts/dashboard-layout"
 
 interface BaseLayoutProps {
   children: React.ReactNode
@@ -20,6 +21,7 @@ interface BaseLayoutProps {
 }
 
 export function BaseLayout({ children, title, description, centered, maxWidth }: BaseLayoutProps) {
+  const { isInsideShell } = useDashboardShell()
   const [themeCustomizerOpen, setThemeCustomizerOpen] = React.useState(false)
   const { config } = useSidebarConfig()
 
@@ -27,6 +29,26 @@ export function BaseLayout({ children, title, description, centered, maxWidth }:
     ? `px-4 lg:px-6 ${maxWidth || "max-w-4xl"} mx-auto w-full`
     : "px-4 lg:px-6"
 
+  // When rendered inside the persistent DashboardLayout shell, do not remount the sidebar/header/footer
+  if (isInsideShell) {
+    return (
+      <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
+        {title && (
+          <div className={headerContainerClass}>
+            <div className="flex flex-col gap-2">
+              <h1 className="text-2xl font-bold tracking-tight">{title}</h1>
+              {description && (
+                <p className="text-muted-foreground">{description}</p>
+              )}
+            </div>
+          </div>
+        )}
+        {children}
+      </div>
+    )
+  }
+
+  // Fallback standalone rendering if rendered outside DashboardLayout
   return (
     <SidebarProvider
       style={

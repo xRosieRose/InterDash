@@ -23,6 +23,7 @@ import {
   AlertTriangle,
   FileCode,
   Globe,
+  Clock,
 } from "lucide-react"
 import { BaseLayout } from "@/components/layouts/base-layout"
 import { Badge } from "@/components/ui/badge"
@@ -111,6 +112,8 @@ export default function AdminVpsCreatePage() {
   const [rootPassword, setRootPassword] = React.useState("")
   const [showPassword, setShowPassword] = React.useState(false)
   const [sshPublicKey, setSshPublicKey] = React.useState("")
+  const [expiryPreset, setExpiryPreset] = React.useState<"never" | "7d" | "30d" | "90d" | "custom">("never")
+  const [customExpiryDate, setCustomExpiryDate] = React.useState("")
 
   // Remote data state
   const [users, setUsers] = React.useState<UserOption[]>([])
@@ -395,6 +398,17 @@ export default function AdminVpsCreatePage() {
       const csrfHeaders = await getCsrfHeader()
       const idempotencyKey = `prov_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
 
+      let expiresAt: string | undefined = undefined
+      if (expiryPreset === "7d") {
+        expiresAt = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString()
+      } else if (expiryPreset === "30d") {
+        expiresAt = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString()
+      } else if (expiryPreset === "90d") {
+        expiresAt = new Date(Date.now() + 90 * 24 * 3600 * 1000).toISOString()
+      } else if (expiryPreset === "custom" && customExpiryDate) {
+        expiresAt = new Date(customExpiryDate).toISOString()
+      }
+
       const res = await fetch("/api/admin/vps", {
         method: "POST",
         headers: {
@@ -418,6 +432,7 @@ export default function AdminVpsCreatePage() {
           startAfterCreate,
           rootPassword: rootPassword.trim() || undefined,
           sshPublicKey: sshPublicKey.trim() || undefined,
+          expiresAt,
           idempotencyKey,
         }),
       })
@@ -1023,6 +1038,63 @@ export default function AdminVpsCreatePage() {
                   </div>
                 </CardContent>
               </Card>
+
+              {/* Section 8: Lifetime & Expiration Policy */}
+              <Card>
+                <CardHeader className="pb-4">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Clock className="size-4 text-primary" /> 8. Lifetime & Expiration Policy
+                  </CardTitle>
+                  <CardDescription className="text-xs">
+                    Configure durable instance expiration. Expired VPS instances are automatically stopped and protected against execution.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs font-medium">Expiration Duration</Label>
+                      <Select
+                        value={expiryPreset}
+                        onValueChange={(val) => setExpiryPreset(val as typeof expiryPreset)}
+                      >
+                        <SelectTrigger className="w-full text-xs">
+                          <SelectValue placeholder="Select duration" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="never">Never (Permanent / Indefinite)</SelectItem>
+                          <SelectItem value="7d">7 Days</SelectItem>
+                          <SelectItem value="30d">30 Days</SelectItem>
+                          <SelectItem value="90d">90 Days</SelectItem>
+                          <SelectItem value="custom">Custom Date & Time</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <p className="text-[11px] text-muted-foreground">
+                        {expiryPreset === "never"
+                          ? "This VPS will remain active indefinitely."
+                          : expiryPreset === "7d"
+                          ? "Expires 7 days after creation."
+                          : expiryPreset === "30d"
+                          ? "Expires 30 days after creation."
+                          : expiryPreset === "90d"
+                          ? "Expires 90 days after creation."
+                          : "Custom date & time expiration."}
+                      </p>
+                    </div>
+
+                    {expiryPreset === "custom" && (
+                      <div className="space-y-1.5">
+                        <Label className="text-xs font-medium">Custom Expiration Date & Time</Label>
+                        <Input
+                          type="datetime-local"
+                          value={customExpiryDate}
+                          onChange={(e) => setCustomExpiryDate(e.target.value)}
+                          className="text-xs font-mono h-9"
+                        />
+                      </div>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
             </div>
 
             {/* Right Column: Review & Preflight Verification */}
@@ -1075,10 +1147,21 @@ export default function AdminVpsCreatePage() {
                     </span>
                   </div>
 
-                  <div className="flex items-center justify-between py-1">
+                  <div className="flex items-center justify-between py-1 border-b">
                     <span className="text-muted-foreground">Network</span>
                     <span className="font-mono text-foreground">
                       {bridge || "vmbr0"} · {ipv4PoolId ? "Static IPAM" : "DHCP"}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between py-1">
+                    <span className="text-muted-foreground">Expiration</span>
+                    <span className="font-mono text-foreground">
+                      {expiryPreset === "never"
+                        ? "Never"
+                        : expiryPreset === "custom"
+                        ? customExpiryDate || "Custom (unset)"
+                        : `+${expiryPreset}`}
                     </span>
                   </div>
 

@@ -19,6 +19,8 @@ import { queryAll, queryOne, execute, transaction } from "../db/index.js";
 import { ProxmoxService, resolveProxmoxEndpoint } from "../services/proxmox.js";
 import { encryptCredential, decryptCredential } from "../services/crypto.js";
 import { ProvisioningService } from "../services/provisioning.js";
+import { AuthConfigService } from "../services/auth-config.js";
+import { VpsExpiryService } from "../services/vps-expiry.js";
 
 const router = Router();
 
@@ -90,6 +92,16 @@ router.get("/overview", (_req: Request, res: Response) => {
     systemHealth = "degraded";
   }
 
+  // VPS expiry counters
+  const expiryStats = queryOne<any>(
+    `SELECT
+      COALESCE(SUM(CASE WHEN expires_at IS NULL THEN 1 ELSE 0 END), 0) as never_expires_vps,
+      COALESCE(SUM(CASE WHEN expires_at IS NOT NULL AND expires_at > datetime('now', '+7 days') THEN 1 ELSE 0 END), 0) as active_expiring_vps,
+      COALESCE(SUM(CASE WHEN expires_at IS NOT NULL AND expires_at > datetime('now') AND expires_at <= datetime('now', '+7 days') THEN 1 ELSE 0 END), 0) as expiring_soon_vps,
+      COALESCE(SUM(CASE WHEN expires_at IS NOT NULL AND expires_at <= datetime('now') THEN 1 ELSE 0 END), 0) as expired_vps
+     FROM vps`
+  );
+
   res.json({
     metrics: {
       totalVps: vpsStats?.total_vps || 0,
@@ -112,6 +124,11 @@ router.get("/overview", (_req: Request, res: Response) => {
       unverifiedNodes: nodeStats?.unverified_nodes || 0,
       disabledNodes: nodeStats?.disabled_nodes || 0,
       systemHealth,
+      // Expiry counters
+      neverExpiresVps: expiryStats?.never_expires_vps || 0,
+      activeExpiringVps: expiryStats?.active_expiring_vps || 0,
+      expiringSoonVps: expiryStats?.expiring_soon_vps || 0,
+      expiredVps: expiryStats?.expired_vps || 0,
     },
     recentEvents,
   });
@@ -1018,6 +1035,7 @@ router.post("/vps", async (req: Request, res: Response) => {
     rootPassword,
     sshPublicKey,
     idempotencyKey,
+    expiresAt,
   } = req.body;
 
   if (!ownerUserId || !targetNodeId || !hostname || !osTemplate) {
@@ -1110,6 +1128,7 @@ router.post("/vps", async (req: Request, res: Response) => {
       rootPassword: effectivePassword,
       sshPublicKey: sshPublicKey?.trim() || undefined,
       idempotencyKey,
+      expiresAt: expiresAt || undefined,
     });
 
     res.status(202).json({
@@ -1180,6 +1199,67 @@ router.patch("/settings", (req: Request, res: Response) => {
   );
 
   res.json({ success: true, message: "Settings updated successfully." });
+});
+
+// ============================================================================
+// GET /api/admin/settings/authentication — Admin Auth Settings (masked)
+// ============================================================================
+router.get("/settings/authentication", (_req: Request, res: Response) => {
+  try {
+    const settings = AuthConfigService.getAdminSettings();
+    res.json(settings);
+  } catch (err: any) {
+    res.status(err.statusCode || 500).json({ error: err.message || "Failed to load auth settings." });
+  }
+});
+
+// ============================================================================
+// PATCH /api/admin/settings/authentication — Update Auth Provider Settings
+// ============================================================================
+router.patch("/settings/authentication", (req: Request, res: Response) => {
+  try {
+    if (!req.user) {
+      res.status(401).json({ error: "Authentication required." });
+      return;
+    }
+    const result = AuthConfigService.updateAdminSettings(req.body, req.user.id);
+    res.json({ success: true, settings: result });
+  } catch (err: any) {
+    res.status(err.statusCode || 500).json({
+      error: err.message || "Failed to update authentication settings.",
+      code: err.code,
+    });
+  }
+});
+
+// ============================================================================
+// PATCH /api/admin/vps/:id/expiry — Admin Extend or Clear VPS Expiration
+// ============================================================================
+router.patch("/vps/:id/expiry", (req: Request, res: Response) => {
+  try {
+    if (!req.user) {
+      res.status(401).json({ error: "Authentication required." });
+      return;
+    }
+    const targetExpiry =
+      req.body.expiresAt !== undefined ? req.body.expiresAt : req.body.expires_at;
+    const result = VpsExpiryService.updateVpsExpiry(
+      req.params.id,
+      targetExpiry !== undefined ? targetExpiry : null,
+      req.user.id
+    );
+    res.json({
+      success: true,
+      ...result,
+      expiresAt: result.newExpiry,
+      expires_at: result.newExpiry,
+    });
+  } catch (err: any) {
+    res.status(err.statusCode || 500).json({
+      error: err.message || "Failed to update VPS expiration.",
+      code: err.code,
+    });
+  }
 });
 
 export default router;

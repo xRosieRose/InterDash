@@ -33,6 +33,7 @@ import settingsRoutes from "./routes/settings.js";
 import { setupConsoleWebSocket } from "./services/console.js";
 import { ProvisioningService } from "./services/provisioning.js";
 import { VpsOperationsService } from "./services/vps-operations.js";
+import { VpsExpiryService } from "./services/vps-expiry.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -305,6 +306,7 @@ export async function createApp(): Promise<express.Express> {
 }
 
 let cleanupInterval: ReturnType<typeof setInterval> | null = null;
+let expiryReconciliationInterval: ReturnType<typeof setInterval> | null = null;
 
 export async function main() {
   const app = await createApp();
@@ -319,16 +321,30 @@ export async function main() {
     console.error("[VPS-OPS] Startup reconciliation error:", err);
   });
 
+  // Reconcile expired VPS states on startup
+  await VpsExpiryService.reconcileExpiredVps().catch((err) => {
+    console.error("[VPS-EXPIRY] Startup reconciliation error:", err);
+  });
+
   // Session Cleanup (every 15 minutes)
   cleanupInterval = setInterval(() => {
     cleanExpiredSessions();
   }, 15 * 60 * 1000);
   cleanupInterval.unref();
 
+  // VPS Expiry Reconciliation (every 60 seconds)
+  expiryReconciliationInterval = setInterval(() => {
+    VpsExpiryService.reconcileExpiredVps().catch((err) => {
+      console.error("[VPS-EXPIRY] Background reconciliation error:", err);
+    });
+  }, 60 * 1000);
+  expiryReconciliationInterval.unref();
+
   // Graceful Shutdown
   const shutdown = () => {
     console.log("\n[SERVER] Shutting down...");
     if (cleanupInterval) clearInterval(cleanupInterval);
+    if (expiryReconciliationInterval) clearInterval(expiryReconciliationInterval);
     closeDatabase();
     process.exit(0);
   };

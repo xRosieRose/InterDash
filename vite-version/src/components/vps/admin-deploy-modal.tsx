@@ -16,6 +16,7 @@ import {
   Network,
   Layers,
   RefreshCw,
+  Clock,
 } from "lucide-react"
 import {
   Dialog,
@@ -122,6 +123,8 @@ export function AdminDeployModal({ open, onOpenChange, onSuccess }: AdminDeployM
   const [showPassword, setShowPassword] = React.useState(false)
   const [sshPublicKey, setSshPublicKey] = React.useState("")
   const [startAfterCreate, setStartAfterCreate] = React.useState(true)
+  const [expiryPreset, setExpiryPreset] = React.useState<"never" | "7d" | "30d" | "90d" | "custom">("never")
+  const [customExpiryDate, setCustomExpiryDate] = React.useState("")
 
   // Post-deploy credentials display
   const [deployedCredentials, setDeployedCredentials] = React.useState<{
@@ -403,6 +406,17 @@ export function AdminDeployModal({ open, onOpenChange, onSuccess }: AdminDeployM
       // Step 2: Submit deployment job with separate rootfsStorage & bridge
       const clientKey = `deploy-${Date.now()}-${crypto.randomUUID()}`
 
+      let expiresAt: string | undefined = undefined
+      if (expiryPreset === "7d") {
+        expiresAt = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString()
+      } else if (expiryPreset === "30d") {
+        expiresAt = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString()
+      } else if (expiryPreset === "90d") {
+        expiresAt = new Date(Date.now() + 90 * 24 * 3600 * 1000).toISOString()
+      } else if (expiryPreset === "custom" && customExpiryDate) {
+        expiresAt = new Date(customExpiryDate).toISOString()
+      }
+
       const res = await fetch("/api/admin/vps", {
         method: "POST",
         headers: {
@@ -425,6 +439,7 @@ export function AdminDeployModal({ open, onOpenChange, onSuccess }: AdminDeployM
           rootPassword: rootPassword.trim() || undefined,
           sshPublicKey: sshPublicKey.trim() || undefined,
           startAfterCreate,
+          expiresAt,
           idempotencyKey: clientKey,
         }),
       })
@@ -956,6 +971,41 @@ export function AdminDeployModal({ open, onOpenChange, onSuccess }: AdminDeployM
                     onChange={(e) => setSshPublicKey(e.target.value)}
                     className="font-mono text-xs h-16 resize-none"
                   />
+                </div>
+
+                {/* Expiration Duration */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t">
+                  <div className="space-y-1.5">
+                    <Label className="flex items-center gap-1">
+                      <Clock className="size-3.5 text-muted-foreground" /> Expiration Duration
+                    </Label>
+                    <Select
+                      value={expiryPreset}
+                      onValueChange={(val) => setExpiryPreset(val as typeof expiryPreset)}
+                    >
+                      <SelectTrigger className="text-xs">
+                        <SelectValue placeholder="Select duration" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="never">Never (Permanent / Indefinite)</SelectItem>
+                        <SelectItem value="7d">7 Days</SelectItem>
+                        <SelectItem value="30d">30 Days</SelectItem>
+                        <SelectItem value="90d">90 Days</SelectItem>
+                        <SelectItem value="custom">Custom Date & Time</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {expiryPreset === "custom" && (
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">Custom Date & Time</Label>
+                      <Input
+                        type="datetime-local"
+                        value={customExpiryDate}
+                        onChange={(e) => setCustomExpiryDate(e.target.value)}
+                        className="text-xs font-mono h-9"
+                      />
+                    </div>
+                  )}
                 </div>
 
                 {/* Start Container Immediately Toggle */}

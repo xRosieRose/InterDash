@@ -17,6 +17,7 @@ import { v4 as uuidv4 } from "uuid";
 import { queryOne, queryAll, execute } from "../db/index.js";
 import { ProxmoxService, resolveProxmoxEndpoint, type ProxmoxNodeConfig } from "./proxmox.js";
 import { decryptCredential } from "./crypto.js";
+import { parseDatabaseTimestampUtc } from "../utils/timestamp.js";
 
 export interface ProvisioningJobRequest {
   ownerUserId: string;
@@ -37,6 +38,7 @@ export interface ProvisioningJobRequest {
   rootPassword?: string;
   sshPublicKey?: string;
   idempotencyKey?: string;
+  expiresAt?: string | null;
 }
 
 // In-memory store for sensitive credentials during the provisioning lifetime only.
@@ -94,6 +96,24 @@ export class ProvisioningService {
     status: string;
     isDuplicate?: boolean;
   }> {
+    // Validate expiresAt if provided
+    let normalizedExpiresAt: string | null = null;
+    if (req.expiresAt !== undefined && req.expiresAt !== null && String(req.expiresAt).trim() !== "") {
+      const trimmed = String(req.expiresAt).trim();
+      const expiryTime = parseDatabaseTimestampUtc(trimmed).getTime();
+      if (isNaN(expiryTime) || expiryTime === 0) {
+        const err = new Error("Invalid expiration timestamp format. Must be an ISO 8601 string.");
+        (err as any).statusCode = 400;
+        throw err;
+      }
+      if (expiryTime <= Date.now()) {
+        const err = new Error("Expiration date must be in the future.");
+        (err as any).statusCode = 400;
+        throw err;
+      }
+      normalizedExpiresAt = new Date(expiryTime).toISOString();
+    }
+
     // Generate request hash for idempotency integrity check
     const hashData = {
       ownerUserId: req.ownerUserId,
@@ -106,6 +126,7 @@ export class ProvisioningService {
       storage: req.storage,
       bridge: req.bridge,
       ipv4PoolId: req.ipv4PoolId,
+      expiresAt: normalizedExpiresAt,
     };
     const requestHash = crypto
       .createHash("sha256")
@@ -259,6 +280,7 @@ export class ProvisioningService {
       ipv4PoolId: req.ipv4PoolId,
       startAfterCreate: req.startAfterCreate !== false,
       hasSshKey: Boolean(req.sshPublicKey),
+      expiresAt: normalizedExpiresAt,
     });
 
     // Store in-memory credentials for the async worker
@@ -432,8 +454,8 @@ export class ProvisioningService {
         `INSERT INTO vps (
           id, owner_user_id, proxmox_node_id, proxmox_vmid, name, hostname,
           description, status, os_image_id, cpu_cores, memory_mb, swap_mb, disk_gb,
-          ipv4_address, ipv6_address, last_proxmox_sync_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), datetime('now'))`,
+          ipv4_address, ipv6_address, expires_at, last_proxmox_sync_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), datetime('now'))`,
         [
           vpsId,
           job.owner_user_id,
@@ -450,6 +472,7 @@ export class ProvisioningService {
           specs.diskGb,
           reservedIpAddr || "DHCP",
           null,
+          specs.expiresAt ? new Date(parseDatabaseTimestampUtc(specs.expiresAt).getTime()).toISOString() : null,
         ]
       );
 

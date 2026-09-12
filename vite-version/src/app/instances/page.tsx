@@ -80,6 +80,59 @@ const INSTANCE_TOUR_STEPS: TourStep[] = [
   },
 ]
 
+function getExpiryStatus(expiresAt?: string | null): {
+  status: "never" | "active" | "expiring_soon" | "expired"
+  label: string
+  badgeVariant: "default" | "secondary" | "outline" | "destructive"
+  badgeClass?: string
+  remainingText?: string
+} {
+  if (!expiresAt) {
+    return {
+      status: "never",
+      label: "Never",
+      badgeVariant: "outline",
+      badgeClass: "text-muted-foreground border-muted-foreground/30",
+      remainingText: "No Expiration",
+    }
+  }
+
+  const now = Date.now()
+  const expiryTime = new Date(expiresAt).getTime()
+  const diffMs = expiryTime - now
+
+  if (diffMs <= 0) {
+    return {
+      status: "expired",
+      label: "Expired",
+      badgeVariant: "destructive",
+      badgeClass: "bg-destructive/15 text-destructive border-destructive/30 font-medium",
+      remainingText: "Expired",
+    }
+  }
+
+  const hoursRemaining = Math.floor(diffMs / (1000 * 60 * 60))
+  const daysRemaining = Math.floor(hoursRemaining / 24)
+
+  if (hoursRemaining <= 72) {
+    return {
+      status: "expiring_soon",
+      label: "Expiring Soon",
+      badgeVariant: "outline",
+      badgeClass: "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30 font-medium",
+      remainingText: hoursRemaining < 24 ? `${hoursRemaining}h left` : `${daysRemaining}d left`,
+    }
+  }
+
+  return {
+    status: "active",
+    label: "Active",
+    badgeVariant: "outline",
+    badgeClass: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30",
+    remainingText: `${daysRemaining}d left`,
+  }
+}
+
 export default function InstancesPage() {
   const { user } = useAuth()
   const isAdmin = user?.role === "admin"
@@ -91,15 +144,23 @@ export default function InstancesPage() {
   const [isRefreshing, setIsRefreshing] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
-  const [activeTab, setActiveTab] = React.useState<"all" | "running" | "stopped">("all")
+  const [activeTab, setActiveTab] = React.useState<"all" | "running" | "stopped" | "expiring_soon" | "expired">("all")
   const [searchQuery, setSearchQuery] = React.useState("")
   const [copiedIp, setCopiedIp] = React.useState<string | null>(null)
   const [adminDeployOpen, setAdminDeployOpen] = React.useState(false)
 
+  const abortControllerRef = React.useRef<AbortController | null>(null)
+
   const fetchInstances = React.useCallback(async (showToast = false) => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+    }
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+
     try {
       if (showToast) setIsRefreshing(true)
-      const res = await fetch("/api/vps")
+      const res = await fetch("/api/vps", { signal: controller.signal })
       if (!res.ok) {
         throw new Error("Unable to retrieve infrastructure data.")
       }
@@ -110,6 +171,7 @@ export default function InstancesPage() {
         toast.success("Instance inventory updated.")
       }
     } catch (err: unknown) {
+      if (err instanceof Error && err.name === "AbortError") return
       const msg = err instanceof Error ? err.message : "Failed to load instances"
       setError(msg)
       if (showToast) {
@@ -123,6 +185,11 @@ export default function InstancesPage() {
 
   React.useEffect(() => {
     fetchInstances()
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort()
+      }
+    }
   }, [fetchInstances])
 
   const copyToClipboard = (text: string, label: string) => {
@@ -135,11 +202,20 @@ export default function InstancesPage() {
     setTimeout(() => setCopiedIp(null), 2000)
   }
 
+  // Calculated summary metrics
+  const totalCount = instances.length
+  const runningCount = instances.filter((i) => i.status === "running").length
+  const stoppedCount = instances.filter((i) => i.status === "stopped").length
+  const expiringSoonCount = instances.filter((i) => getExpiryStatus(i.expires_at).status === "expiring_soon").length
+  const expiredCount = instances.filter((i) => getExpiryStatus(i.expires_at).status === "expired").length
+
   // Filter instances
   const filteredInstances = React.useMemo(() => {
     return instances.filter((inst) => {
       if (activeTab === "running" && inst.status !== "running") return false
       if (activeTab === "stopped" && inst.status !== "stopped") return false
+      if (activeTab === "expiring_soon" && getExpiryStatus(inst.expires_at).status !== "expiring_soon") return false
+      if (activeTab === "expired" && getExpiryStatus(inst.expires_at).status !== "expired") return false
 
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase()
@@ -156,10 +232,6 @@ export default function InstancesPage() {
     })
   }, [instances, activeTab, searchQuery])
 
-  // Calculated summary metrics
-  const totalCount = instances.length
-  const runningCount = instances.filter((i) => i.status === "running").length
-  const stoppedCount = instances.filter((i) => i.status === "stopped").length
   const totalCores = instances.reduce((acc, curr) => acc + (curr.cpu_cores || 0), 0)
   const totalMemoryGb = (
     instances.reduce((acc, curr) => acc + (curr.memory_mb || 0), 0) / 1024
@@ -321,7 +393,7 @@ export default function InstancesPage() {
             <div className="flex items-center gap-2">
               <Tabs
                 value={activeTab}
-                onValueChange={(v) => setActiveTab(v as "all" | "running" | "stopped")}
+                onValueChange={(v) => setActiveTab(v as "all" | "running" | "stopped" | "expiring_soon" | "expired")}
               >
                 <TabsList>
                   <TabsTrigger value="all">
@@ -333,6 +405,16 @@ export default function InstancesPage() {
                   <TabsTrigger value="stopped">
                     Stopped <Badge variant="secondary" className="ml-1 px-1.5 py-0 text-[10px]">{stoppedCount}</Badge>
                   </TabsTrigger>
+                  {expiringSoonCount > 0 && (
+                    <TabsTrigger value="expiring_soon" className="text-amber-500">
+                      Expiring Soon <Badge variant="secondary" className="ml-1 px-1.5 py-0 text-[10px] text-amber-500">{expiringSoonCount}</Badge>
+                    </TabsTrigger>
+                  )}
+                  {expiredCount > 0 && (
+                    <TabsTrigger value="expired" className="text-destructive">
+                      Expired <Badge variant="destructive" className="ml-1 px-1.5 py-0 text-[10px]">{expiredCount}</Badge>
+                    </TabsTrigger>
+                  )}
                 </TabsList>
               </Tabs>
               <Button
@@ -421,6 +503,7 @@ export default function InstancesPage() {
                     <TableHead>IP Address</TableHead>
                     <TableHead>Hypervisor / Node</TableHead>
                     <TableHead>Allocated Specs</TableHead>
+                    <TableHead>Expires</TableHead>
                     <TableHead className="text-right">Action</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -530,6 +613,29 @@ export default function InstancesPage() {
                             </span>
                             <span>{inst.disk_gb} GB NVMe SSD</span>
                           </div>
+                        </TableCell>
+
+                        {/* Expiry */}
+                        <TableCell>
+                          {(() => {
+                            const exp = getExpiryStatus(inst.expires_at)
+                            return (
+                              <div className="flex flex-col gap-0.5 text-xs">
+                                <Badge
+                                  variant={exp.badgeVariant}
+                                  className={`text-[10px] font-medium w-fit py-0 px-1.5 ${exp.badgeClass || ""}`}
+                                >
+                                  {exp.label}
+                                </Badge>
+                                <span
+                                  className="text-[10px] text-muted-foreground font-mono"
+                                  title={inst.expires_at ? new Date(inst.expires_at).toLocaleString() : "Never expires"}
+                                >
+                                  {exp.remainingText}
+                                </span>
+                              </div>
+                            )
+                          })()}
                         </TableCell>
 
                         {/* Manage Action */}

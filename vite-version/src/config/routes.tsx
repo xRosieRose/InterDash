@@ -2,6 +2,7 @@ import { lazy } from "react"
 import { Navigate } from "react-router-dom"
 import { ProtectedRoute } from "@/components/auth/protected-route"
 import { RoleRedirect } from "@/components/router/role-redirect"
+import { DashboardLayout } from "@/components/layouts/dashboard-layout"
 
 // Public & Landing
 const Landing = lazy(() => import("@/app/landing/page"))
@@ -35,7 +36,7 @@ const InternalServerError = lazy(() => import("@/app/errors/internal-server-erro
 const UnderMaintenance = lazy(() => import("@/app/errors/under-maintenance/page"))
 
 export interface RouteConfig {
-  path: string
+  path?: string
   element: React.ReactNode
   children?: RouteConfig[]
 }
@@ -65,94 +66,88 @@ export const routes: RouteConfig[] = [
     element: <AuthCallback />,
   },
 
-  // Compute Routes (Authenticated)
+  // Authenticated Dashboard Layout Shell (Persistent across navigation)
   {
-    path: "/instances",
     element: (
       <ProtectedRoute>
-        <Instances />
+        <DashboardLayout />
       </ProtectedRoute>
     ),
-  },
-  {
-    path: "/instances/:id",
-    element: (
-      <ProtectedRoute>
-        <InstanceDetail />
-      </ProtectedRoute>
-    ),
-  },
-  {
-    path: "/analytics",
-    element: (
-      <ProtectedRoute>
-        <Analytics />
-      </ProtectedRoute>
-    ),
-  },
+    children: [
+      // Compute Routes
+      {
+        path: "/instances",
+        element: <Instances />,
+      },
+      {
+        path: "/instances/:id",
+        element: <InstanceDetail />,
+      },
+      {
+        path: "/analytics",
+        element: <Analytics />,
+      },
 
-  // Operations Routes (Authenticated)
-  {
-    path: "/tickets",
-    element: (
-      <ProtectedRoute>
-        <Tickets />
-      </ProtectedRoute>
-    ),
-  },
+      // Operations Routes
+      {
+        path: "/tickets",
+        element: <Tickets />,
+      },
 
-  // Admin Routes (Authenticated + Admin Role)
-  {
-    path: "/admin",
-    element: <Navigate to="/admin/overview" replace />,
-  },
-  {
-    path: "/admin/overview",
-    element: (
-      <ProtectedRoute requireAdmin>
-        <AdminOverview />
-      </ProtectedRoute>
-    ),
-  },
-  {
-    path: "/admin/users",
-    element: (
-      <ProtectedRoute requireAdmin>
-        <AdminUsers />
-      </ProtectedRoute>
-    ),
-  },
-  {
-    path: "/admin/nodes",
-    element: (
-      <ProtectedRoute requireAdmin>
-        <AdminNodes />
-      </ProtectedRoute>
-    ),
-  },
-  {
-    path: "/admin/settings",
-    element: (
-      <ProtectedRoute requireAdmin>
-        <AdminSettings />
-      </ProtectedRoute>
-    ),
-  },
-  {
-    path: "/admin/vps/create",
-    element: (
-      <ProtectedRoute requireAdmin>
-        <AdminVpsCreate />
-      </ProtectedRoute>
-    ),
-  },
-  {
-    path: "/admin/vps/deployments/:jobId",
-    element: (
-      <ProtectedRoute requireAdmin>
-        <AdminVpsDeployments />
-      </ProtectedRoute>
-    ),
+      // Admin Routes
+      {
+        path: "/admin",
+        element: <Navigate to="/admin/overview" replace />,
+      },
+      {
+        path: "/admin/overview",
+        element: (
+          <ProtectedRoute requireAdmin>
+            <AdminOverview />
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: "/admin/users",
+        element: (
+          <ProtectedRoute requireAdmin>
+            <AdminUsers />
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: "/admin/nodes",
+        element: (
+          <ProtectedRoute requireAdmin>
+            <AdminNodes />
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: "/admin/settings",
+        element: (
+          <ProtectedRoute requireAdmin>
+            <AdminSettings />
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: "/admin/vps/create",
+        element: (
+          <ProtectedRoute requireAdmin>
+            <AdminVpsCreate />
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: "/admin/vps/deployments/:jobId",
+        element: (
+          <ProtectedRoute requireAdmin>
+            <AdminVpsDeployments />
+          </ProtectedRoute>
+        ),
+      },
+    ],
   },
   {
     path: "/settings",

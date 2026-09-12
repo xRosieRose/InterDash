@@ -679,6 +679,89 @@ export const migrations: Migration[] = [
       }
     },
   },
+  {
+    version: 14,
+    name: "user_auth_identity_expansion",
+    up: (db: Database) => {
+      db.run("PRAGMA foreign_keys = OFF;");
+      try {
+        const tableCheck = db.exec(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='users'"
+        );
+
+        if (tableCheck.length && tableCheck[0].values.length) {
+          // Rebuild users table allowing nullable discord_id and adding password_hash
+          db.run(`
+            CREATE TABLE IF NOT EXISTS users_v3 (
+              id              TEXT PRIMARY KEY,
+              discord_id      TEXT UNIQUE,
+              username        TEXT NOT NULL,
+              global_name     TEXT,
+              email           TEXT,
+              password_hash   TEXT DEFAULT NULL,
+              avatar_hash     TEXT,
+              role            TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('user','admin')),
+              status          TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','suspended','banned')),
+              created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+              updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+              last_login_at   TEXT
+            );
+          `);
+
+          db.run(`
+            INSERT OR IGNORE INTO users_v3 (
+              id, discord_id, username, global_name, email, avatar_hash, role, status, created_at, updated_at, last_login_at
+            )
+            SELECT 
+              id, discord_id, username, global_name, email, avatar_hash, role, status, created_at, updated_at, last_login_at
+            FROM users;
+          `);
+
+          db.run("DROP TABLE users;");
+          db.run("ALTER TABLE users_v3 RENAME TO users;");
+
+          db.run("CREATE INDEX IF NOT EXISTS idx_users_discord_id ON users(discord_id);");
+          db.run("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);");
+        }
+      } finally {
+        db.run("PRAGMA foreign_keys = ON;");
+      }
+    },
+  },
+  {
+    version: 15,
+    name: "auth_provider_settings",
+    up: (db: Database) => {
+      const defaultAuthSettings: [string, string][] = [
+        ["auth_discord_enabled", "true"],
+        ["auth_discord_client_id", ""],
+        ["auth_discord_client_secret_encrypted", ""],
+        ["auth_discord_redirect_uri", ""],
+        ["auth_email_enabled", "false"],
+        ["auth_email_allow_registration", "false"],
+        ["auth_email_min_password_length", "8"],
+      ];
+
+      for (const [key, value] of defaultAuthSettings) {
+        db.run(
+          "INSERT OR IGNORE INTO panel_settings (key, value, updated_at) VALUES (?, ?, datetime('now'));",
+          [key, value]
+        );
+      }
+    },
+  },
+  {
+    version: 16,
+    name: "vps_expiration_schema",
+    up: (db: Database) => {
+      try {
+        db.run("ALTER TABLE vps ADD COLUMN expires_at TEXT DEFAULT NULL;");
+      } catch {
+        // column may already exist
+      }
+      db.run("CREATE INDEX IF NOT EXISTS idx_vps_expires_at ON vps(expires_at);");
+    },
+  },
 ];
 
 /**

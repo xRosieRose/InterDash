@@ -36,6 +36,7 @@ export function PowerActions({
   onActionComplete,
 }: PowerActionsProps) {
   const [powerLoading, setPowerLoading] = React.useState(false)
+  const isExpired = vps.expires_at ? new Date(vps.expires_at).getTime() <= Date.now() : false
   const [confirmDialog, setConfirmDialog] = React.useState<{
     open: boolean
     action: "stop" | "force-stop" | "reboot"
@@ -127,7 +128,8 @@ export function PowerActions({
               size="sm"
               className="h-8 gap-1.5 text-xs"
               onClick={() => setConfirmDialog({ open: true, action: "reboot" })}
-              disabled={powerLoading}
+              disabled={powerLoading || isExpired}
+              title={isExpired ? "This VPS has expired and cannot be rebooted." : undefined}
             >
               <RefreshCw className="size-3.5" /> Reboot
             </Button>
@@ -135,9 +137,10 @@ export function PowerActions({
         ) : isStopped ? (
           <Button
             size="sm"
-            className="h-8 gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+            className="h-8 gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50"
             onClick={() => handlePowerAction("start")}
-            disabled={powerLoading}
+            disabled={powerLoading || isExpired}
+            title={isExpired ? "This VPS has expired and cannot be started." : undefined}
           >
             {powerLoading ? (
               <Loader2 className="size-3.5 animate-spin" />
@@ -150,9 +153,10 @@ export function PowerActions({
           <div className="flex items-center gap-2">
             <Button
               size="sm"
-              className="h-8 gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+              className="h-8 gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50"
               onClick={() => handlePowerAction("start")}
-              disabled={powerLoading}
+              disabled={powerLoading || isExpired}
+              title={isExpired ? "This VPS has expired and cannot be started." : undefined}
             >
               {powerLoading ? (
                 <Loader2 className="size-3.5 animate-spin" />

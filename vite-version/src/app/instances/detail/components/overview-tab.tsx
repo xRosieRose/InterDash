@@ -175,6 +175,24 @@ export function OverviewTab({
               <span className="font-mono font-medium">{vps.proxmox_vmid}</span>
             </div>
 
+            <div className="flex items-center justify-between py-1.5 border-b">
+              <span className="text-muted-foreground">Expiration</span>
+              <span className="font-medium flex items-center gap-1.5">
+                {vps.expires_at ? (
+                  <>
+                    <span className={`font-mono text-[11px] ${new Date(vps.expires_at).getTime() <= Date.now() ? "text-destructive font-semibold" : ""}`}>
+                      {new Date(vps.expires_at).toLocaleString()}
+                    </span>
+                    {new Date(vps.expires_at).getTime() <= Date.now() && (
+                      <Badge variant="destructive" className="text-[10px] py-0 px-1">Expired</Badge>
+                    )}
+                  </>
+                ) : (
+                  <span className="text-muted-foreground text-[11px]">Never (Indefinite)</span>
+                )}
+              </span>
+            </div>
+
             {isAdmin && (
               <div className="flex items-center justify-between py-1.5">
                 <span className="text-muted-foreground">Assigned User</span>

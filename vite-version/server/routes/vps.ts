@@ -12,6 +12,7 @@ import { queryAll, queryOne } from "../db/index.js";
 import { VpsOperationsService } from "../services/vps-operations.js";
 import { ProxmoxService } from "../services/proxmox.js";
 import { ProvisioningService } from "../services/provisioning.js";
+import { VpsExpiryService } from "../services/vps-expiry.js";
 
 const router = Router();
 
@@ -59,19 +60,36 @@ router.get("/", (req: Request, res: Response) => {
 
   // Administrators see all instances with owner info; users see only their assigned instances
   const isAdmin = req.user.role === "admin";
+  const expiryFilter = (req.query.expiry as string || "all").toLowerCase();
+
+  let expirySql = "";
+  if (expiryFilter === "expired") {
+    expirySql = "AND v.expires_at IS NOT NULL AND v.expires_at <= datetime('now')";
+  } else if (expiryFilter === "expiring_soon") {
+    expirySql = "AND v.expires_at IS NOT NULL AND v.expires_at > datetime('now') AND v.expires_at <= datetime('now', '+7 days')";
+  } else if (expiryFilter === "active") {
+    expirySql = "AND (v.expires_at IS NULL OR v.expires_at > datetime('now'))";
+  }
+
+  const whereClause = isAdmin
+    ? (expirySql ? `WHERE 1=1 ${expirySql}` : "")
+    : `WHERE v.owner_user_id = ? ${expirySql}`;
+
+  const queryParams = isAdmin ? [] : [req.user.id];
+
   const instances = queryAll<any>(
     `SELECT v.id, v.owner_user_id, v.proxmox_node_id, v.proxmox_vmid,
             v.name, v.hostname, v.description, v.status, v.os_image_id, v.cpu_cores,
             v.memory_mb, v.swap_mb, v.disk_gb, v.ipv4_address, v.ipv6_address,
-            v.lock_state, v.last_proxmox_sync_at, v.created_at, v.updated_at,
+            v.lock_state, v.expires_at, v.last_proxmox_sync_at, v.created_at, v.updated_at,
             n.name as node_name, n.region as node_region, n.hostname as node_hostname, n.flag_url as node_flag_url,
             u.username as owner_username, u.global_name as owner_global_name
      FROM vps v
      LEFT JOIN proxmox_nodes n ON v.proxmox_node_id = n.id
      LEFT JOIN users u ON v.owner_user_id = u.id
-     ${isAdmin ? "" : "WHERE v.owner_user_id = ?"}
+     ${whereClause}
      ORDER BY v.created_at DESC`,
-    isAdmin ? [] : [req.user.id]
+    queryParams
   );
 
   res.json({ instances });

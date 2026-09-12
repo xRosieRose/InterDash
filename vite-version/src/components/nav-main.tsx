@@ -2,6 +2,7 @@
 
 import { ChevronRight, type LucideIcon } from "lucide-react"
 import { Link, useLocation } from "react-router-dom"
+import { prefetchRoute } from "@/lib/prefetch"
 
 import {
   Collapsible,
@@ -72,6 +73,7 @@ export function NavMain({
                           <SidebarMenuSubButton asChild className="cursor-pointer" isActive={location.pathname === subItem.url}>
                             <Link 
                               to={subItem.url}
+                              onMouseEnter={() => prefetchRoute(subItem.url)}
                               target={(item.title === "Auth Pages" || item.title === "Errors") ? "_blank" : undefined}
                               rel={(item.title === "Auth Pages" || item.title === "Errors") ? "noopener noreferrer" : undefined}
                             >
@@ -85,7 +87,7 @@ export function NavMain({
                 </>
               ) : (
                 <SidebarMenuButton asChild tooltip={item.title} className="cursor-pointer" isActive={location.pathname === item.url}>
-                  <Link to={item.url}>
+                  <Link to={item.url} onMouseEnter={() => prefetchRoute(item.url)}>
                     {item.icon && <item.icon />}
                     <span>{item.title}</span>
                   </Link>
