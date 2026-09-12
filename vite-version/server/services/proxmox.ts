@@ -13,6 +13,7 @@
 import http from "node:http";
 import https from "node:https";
 import { URL } from "node:url";
+import { WebSocket } from "ws";
 
 export interface ProxmoxNodeConfig {
   id: string;
@@ -38,7 +39,7 @@ export type VerificationStatus = "passed" | "warning" | "failed";
 
 export type NodeOperationalStatus =
   | "healthy"
-  | "online"
+  | "online" // legacy synonym for healthy
   | "degraded"
   | "offline"
   | "misconfigured"
@@ -48,11 +49,68 @@ export type NodeOperationalStatus =
   | "draining"
   | "deleting";
 
-export interface NodeVerificationCheck {
-  name: string;
+export interface ProxmoxVerificationCheck {
+  id: string;
+  title: string;
+  category: "network" | "auth" | "cluster" | "storage" | "sdn" | "system";
   status: VerificationStatus;
   message: string;
-  details?: Record<string, unknown>;
+  detail?: string;
+  durationMs: number;
+  critical: boolean;
+}
+
+export interface ProxmoxVerificationReport {
+  overallStatus: VerificationStatus;
+  checks: ProxmoxVerificationCheck[];
+  summary: {
+    total: number;
+    passed: number;
+    warnings: number;
+    failed: number;
+    criticalFailures: number;
+  };
+  durationMs: number;
+  timestamp: string;
+  endpoint: string;
+  proxied: boolean;
+  proxyType: "cloudflare" | "reverse_proxy" | "direct";
+  nodeName: string;
+  pveVersion?: string;
+  recommendedActions: string[];
+}
+
+export interface NodeCapabilities {
+  version: {
+    release: string;
+    version: string;
+    repoId?: string;
+  };
+  storages: {
+    id: string;
+    type: string;
+    content: string[];
+    shared: boolean;
+    active: boolean;
+    totalBytes: number;
+    usedBytes: number;
+    availBytes: number;
+  }[];
+  templates: {
+    volid: string;
+    format: string;
+    sizeBytes: number;
+    storage: string;
+  }[];
+  bridges: string[];
+  sdnVnets: string[];
+  nodes: {
+    name: string;
+    online: boolean;
+    ip?: string;
+    cpuUsage?: number;
+    memUsage?: number;
+  }[];
 }
 
 export interface ProxmoxStorage {
@@ -192,6 +250,8 @@ export type ProxmoxErrorClassification =
   | "WEBSOCKET_FAILURE"
   | "WEBSOCKET_CONNECTION_FAILURE"
   | "WEBSOCKET_HANDSHAKE_FAILURE"
+  | "TERMPROXY_HANDSHAKE_REJECTED"
+  | "PROXMOX_CONSOLE_UPGRADE_DENIED"
   | "UNSUPPORTED_CONSOLE_PROTOCOL"
   | "UNKNOWN_CONSOLE_FAILURE";
 
@@ -219,6 +279,7 @@ export interface LxcStatusResult {
   status: "running" | "stopped" | "unknown";
   runtimeNode: string;
   runtimeNodeSource: "direct" | "cluster" | "configured";
+  vmid?: number;
   name?: string;
   cpus?: number;
   maxmem?: number;
@@ -227,6 +288,15 @@ export interface LxcStatusResult {
   lastVerifiedAt?: string;
   classification?: string;
   error?: string;
+}
+
+export interface ConsoleDiagnosticStageResult {
+  status: "ok" | "failed" | "skipped";
+  httpStatus?: number;
+  code?: string;
+  message?: string;
+  latencyMs?: number;
+  details?: Record<string, unknown>;
 }
 
 export interface ConsoleDiagnosticResult {
@@ -247,6 +317,13 @@ export interface ConsoleDiagnosticResult {
   recommendedFix?: string;
   port?: number;
   user?: string;
+  stages?: {
+    runtime?: ConsoleDiagnosticStageResult & { node?: string };
+    api?: ConsoleDiagnosticStageResult;
+    termproxy?: ConsoleDiagnosticStageResult;
+    upstreamUpgrade?: ConsoleDiagnosticStageResult;
+    termproxyHandshake?: ConsoleDiagnosticStageResult;
+  };
 }
 
 export class ProxmoxRequestError extends Error {
@@ -2016,7 +2093,7 @@ export class ProxmoxService {
       port: portNum,
       ticket: ticket.trim(),
       upid: res.data.upid || "",
-      user: res.data.user || "root@pam",
+      user: (res.data.user || node.authTokenId || "root@pam").trim(),
       runtimeNode: targetNode,
     };
   }
@@ -2031,6 +2108,14 @@ export class ProxmoxService {
     const startTime = Date.now();
     const endpoint = resolveProxmoxEndpoint(node.apiUrl, node.hostname, node.port);
 
+    const stages: NonNullable<ConsoleDiagnosticResult["stages"]> = {
+      runtime: { status: "skipped" },
+      api: { status: "skipped" },
+      termproxy: { status: "skipped" },
+      upstreamUpgrade: { status: "skipped" },
+      termproxyHandshake: { status: "skipped" },
+    };
+
     // 1. Verify container exists and check status with cluster awareness
     let lxcStatus: string = "unknown";
     let runtimeNode: string = node.nodeName;
@@ -2041,6 +2126,12 @@ export class ProxmoxService {
       lxcStatus = statusRes.status;
       runtimeNode = statusRes.runtimeNode;
       runtimeNodeSource = statusRes.runtimeNodeSource;
+      stages.runtime = {
+        status: statusRes.ok ? "ok" : "failed",
+        node: runtimeNode,
+        latencyMs: Date.now() - startTime,
+        message: statusRes.ok ? `LXC verified on node '${runtimeNode}'` : statusRes.error,
+      };
 
       if (lxcStatus === "stopped") {
         return {
@@ -2055,6 +2146,7 @@ export class ProxmoxService {
           latencyMs: Date.now() - startTime,
           classification: "LXC_STOPPED",
           recommendedFix: "VPS is stopped. Start it to open the console.",
+          stages,
         };
       }
       if (!statusRes.ok && statusRes.classification === "LXC_NOT_FOUND") {
@@ -2070,11 +2162,18 @@ export class ProxmoxService {
           latencyMs: Date.now() - startTime,
           classification: "LXC_NOT_FOUND",
           recommendedFix: "The Proxmox container was not found on this hypervisor node or cluster.",
+          stages,
         };
       }
     } catch (err: unknown) {
       if (err instanceof ProxmoxRequestError) {
         if (err.classification === "LXC_NOT_FOUND" || err.statusCode === 404) {
+          stages.runtime = {
+            status: "failed",
+            node: runtimeNode,
+            latencyMs: Date.now() - startTime,
+            message: "Container not found",
+          };
           return {
             ok: false,
             endpoint: endpoint.displayTarget,
@@ -2087,39 +2186,49 @@ export class ProxmoxService {
             latencyMs: Date.now() - startTime,
             classification: "LXC_NOT_FOUND",
             recommendedFix: "The Proxmox container was not found on this hypervisor node.",
+            stages,
           };
         }
       }
     }
 
-    // 2. Query PVE version
+    // 2. Query PVE version (API verification)
     let pveVersion: string | undefined;
     try {
+      const apiStart = Date.now();
       const ver = await this.getApiVersion(node);
       pveVersion = ver.release || ver.version;
-    } catch {}
+      stages.api = {
+        status: "ok",
+        latencyMs: Date.now() - apiStart,
+        message: `Proxmox VE API reachable (v${pveVersion})`,
+      };
+    } catch (err: unknown) {
+      stages.api = {
+        status: "failed",
+        latencyMs: Date.now() - startTime,
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
 
     // 3. Attempt createLxcTermProxy
+    let termproxy: { port: number; ticket: string; upid: string; user: string; runtimeNode: string };
     try {
-      const termproxy = await this.createLxcTermProxy(node, vmid, runtimeNode);
-      const latencyMs = Date.now() - startTime;
-      return {
-        ok: true,
-        endpoint: endpoint.displayTarget,
-        proxied: false,
-        proxyType: "direct",
-        statusCode: 200,
-        lxcStatus,
-        runtimeNode: termproxy.runtimeNode,
-        runtimeNodeSource,
-        proxmoxVersion: pveVersion,
-        latencyMs,
-        classification: "PROXMOX_501_TERM_PROXY",
-        port: termproxy.port,
-        user: termproxy.user,
+      const termStart = Date.now();
+      termproxy = await this.createLxcTermProxy(node, vmid, runtimeNode);
+      stages.termproxy = {
+        status: "ok",
+        latencyMs: Date.now() - termStart,
+        message: `Termproxy allocated port ${termproxy.port}`,
       };
     } catch (err: unknown) {
       const latencyMs = Date.now() - startTime;
+      stages.termproxy = {
+        status: "failed",
+        latencyMs,
+        message: err instanceof Error ? err.message : String(err),
+      };
+
       if (err instanceof ProxmoxRequestError) {
         let recommendedFix: string | undefined;
         if (err.classification === "CLOUDFLARE_501") {
@@ -2151,6 +2260,7 @@ export class ProxmoxService {
           latencyMs,
           classification: err.classification,
           recommendedFix,
+          stages,
         };
       }
 
@@ -2167,8 +2277,196 @@ export class ProxmoxService {
         latencyMs,
         classification: "UNKNOWN_CONSOLE_FAILURE",
         recommendedFix: msg,
+        stages,
       };
     }
+
+    // 4. Probe upstream WebSocket HTTP 101 upgrade & termproxy handshake
+    const wsProtocol = endpoint.isHttps ? "wss" : "ws";
+    const wsPort =
+      (endpoint.isHttps && endpoint.port === 443) || (!endpoint.isHttps && endpoint.port === 80)
+        ? ""
+        : `:${endpoint.port}`;
+    const cleanBase = `${wsProtocol}://${endpoint.hostname}${wsPort}${endpoint.pathname}`;
+    const upstreamUrl = `${cleanBase}/api2/json/nodes/${encodeURIComponent(
+      runtimeNode
+    )}/lxc/${vmid}/vncwebsocket?port=${termproxy.port}&vncticket=${encodeURIComponent(
+      termproxy.ticket
+    )}`;
+
+    const wsAgent = endpoint.isHttps
+      ? new https.Agent({ rejectUnauthorized: !node.allowInsecureTls })
+      : undefined;
+
+    try {
+      const probeStart = Date.now();
+      const probeResult = await new Promise<{
+        upgradeOk: boolean;
+        handshakeOk: boolean;
+        httpStatus?: number;
+        code?: string;
+        message?: string;
+        recommendedFix?: string;
+      }>((resolve) => {
+        let finished = false;
+        let probeWs: WebSocket | null = null;
+        const timer = setTimeout(() => {
+          if (finished) return;
+          finished = true;
+          try { probeWs?.terminate(); } catch {}
+          resolve({
+            upgradeOk: false,
+            handshakeOk: false,
+            code: "UPSTREAM_TIMEOUT",
+            message: "Upstream WebSocket connection probe timed out after 5000ms.",
+            recommendedFix: "Check network connectivity to the Proxmox host.",
+          });
+        }, 5000);
+
+        try {
+          probeWs = new WebSocket(upstreamUrl, ["binary"], {
+            agent: wsAgent,
+            rejectUnauthorized: !node.allowInsecureTls,
+            headers: {
+              Authorization: `PVEAPIToken=${node.authTokenId}=${node.authTokenSecret}`,
+              "User-Agent": "InterDash-Console-Probe/1.0",
+            },
+          });
+        } catch (wsInitErr) {
+          clearTimeout(timer);
+          finished = true;
+          resolve({
+            upgradeOk: false,
+            handshakeOk: false,
+            code: "WEBSOCKET_CONNECTION_FAILURE",
+            message: wsInitErr instanceof Error ? wsInitErr.message : String(wsInitErr),
+          });
+          return;
+        }
+
+          probeWs.on("error", (err) => {
+            if (finished) return;
+            finished = true;
+            clearTimeout(timer);
+            try { probeWs?.terminate(); } catch {}
+            resolve({
+              upgradeOk: false,
+              handshakeOk: false,
+              code: "WEBSOCKET_CONNECTION_FAILURE",
+              message: err.message,
+            });
+          });
+
+          probeWs.on("unexpected-response", (_req, res) => {
+            if (finished) return;
+            finished = true;
+            clearTimeout(timer);
+            try { probeWs?.terminate(); } catch {}
+            const classified = classifyConsoleUpgradeError(res.statusCode, res.statusMessage);
+            resolve({
+              upgradeOk: false,
+              handshakeOk: false,
+              httpStatus: res.statusCode,
+              code: classified.code,
+              message: classified.message,
+              recommendedFix: classified.recommendedFix,
+            });
+          });
+
+          probeWs.on("open", () => {
+            try {
+              probeWs?.send(`${termproxy.user}:${termproxy.ticket}\n`);
+            } catch {}
+          });
+
+          probeWs.on("message", (msgData) => {
+            if (finished) return;
+            finished = true;
+            clearTimeout(timer);
+            const parsed = parseTermproxyResponse(typeof msgData === "string" ? msgData : (msgData as Buffer));
+            try { probeWs?.close(1000); } catch {}
+            if (parsed.ready) {
+              resolve({ upgradeOk: true, handshakeOk: true });
+            } else {
+              resolve({
+                upgradeOk: true,
+                handshakeOk: false,
+                code: "TERMPROXY_UNEXPECTED_RESPONSE",
+                message: "Proxmox termproxy returned unexpected response during handshake.",
+                recommendedFix: "Verify container console process is running and healthy.",
+              });
+            }
+          });
+
+          probeWs.on("close", (code) => {
+            if (finished) return;
+            finished = true;
+            clearTimeout(timer);
+            resolve({
+              upgradeOk: true,
+              handshakeOk: false,
+              code: "TERMPROXY_HANDSHAKE_REJECTED",
+              message: `Proxmox termproxy closed connection during handshake (code ${code}). Verify that API Token has VM.Console permissions and Privilege Separation is unchecked.`,
+              recommendedFix: "Verify Proxmox API Token has VM.Console permissions and Privilege Separation is unchecked in Proxmox Datacenter token settings.",
+            });
+          });
+      });
+
+      const probeLatency = Date.now() - probeStart;
+      stages.upstreamUpgrade = {
+        status: probeResult.upgradeOk ? "ok" : "failed",
+        httpStatus: probeResult.httpStatus || (probeResult.upgradeOk ? 101 : undefined),
+        code: probeResult.upgradeOk ? undefined : probeResult.code,
+        message: probeResult.upgradeOk ? "HTTP 101 Switching Protocols accepted" : probeResult.message,
+        latencyMs: probeLatency,
+      };
+
+      stages.termproxyHandshake = {
+        status: probeResult.handshakeOk ? "ok" : (probeResult.upgradeOk ? "failed" : "skipped"),
+        code: probeResult.handshakeOk ? undefined : probeResult.code,
+        message: probeResult.handshakeOk ? "Handshake accepted ('OK')" : probeResult.message,
+        latencyMs: probeLatency,
+      };
+
+      if (!probeResult.upgradeOk || !probeResult.handshakeOk) {
+        return {
+          ok: false,
+          endpoint: endpoint.displayTarget,
+          proxied: false,
+          proxyType: "direct",
+          statusCode: probeResult.httpStatus || 200,
+          lxcStatus,
+          runtimeNode: termproxy.runtimeNode,
+          runtimeNodeSource,
+          proxmoxVersion: pveVersion,
+          latencyMs: Date.now() - startTime,
+          classification: (probeResult.code as ProxmoxErrorClassification) || "UNKNOWN_CONSOLE_FAILURE",
+          recommendedFix: probeResult.recommendedFix || probeResult.message,
+          port: termproxy.port,
+          user: termproxy.user,
+          stages,
+        };
+      }
+    } catch {
+      // Diagnostic probe failed gracefully
+    }
+
+    return {
+      ok: true,
+      endpoint: endpoint.displayTarget,
+      proxied: false,
+      proxyType: "direct",
+      statusCode: 200,
+      lxcStatus,
+      runtimeNode: termproxy.runtimeNode,
+      runtimeNodeSource,
+      proxmoxVersion: pveVersion,
+      latencyMs: Date.now() - startTime,
+      classification: "PROXMOX_501_TERM_PROXY",
+      port: termproxy.port,
+      user: termproxy.user,
+      stages,
+    };
   }
 
   /**
@@ -2307,3 +2605,151 @@ export class ProxmoxService {
     }
   }
 }
+
+/**
+ * Proxmox termproxy application protocol framing helpers
+ */
+export function buildTermproxyInputFrame(data: string | Buffer): string {
+  const str = typeof data === "string" ? data : data.toString("utf8");
+  const byteLength = Buffer.byteLength(str, "utf8");
+  return `0:${byteLength}:${str}`;
+}
+
+export function buildTermproxyResizeFrame(cols: number, rows: number): string {
+  const safeCols = Math.max(1, Math.min(cols, 1000));
+  const safeRows = Math.max(1, Math.min(rows, 1000));
+  return `1:${safeCols}:${safeRows}:`;
+}
+
+export function buildTermproxyKeepaliveFrame(): string {
+  return "2";
+}
+
+/**
+ * Robust parser for Proxmox termproxy initial handshake response
+ */
+export function parseTermproxyResponse(data: Buffer | string): {
+  ready: boolean;
+  remaining?: Buffer;
+  rawText: string;
+} {
+  const buf = typeof data === "string" ? Buffer.from(data, "utf8") : data;
+  const rawText = buf.toString("utf8");
+
+  // Proxmox termproxy writes "OK" (bytes 79, 75) upon successful ticket validation
+  if (buf.length >= 2 && buf[0] === 0x4f && buf[1] === 0x4b) {
+    const remaining = buf.subarray(2);
+    return {
+      ready: true,
+      remaining: remaining.length > 0 ? remaining : undefined,
+      rawText,
+    };
+  }
+
+  // Also check if string representation starts with "OK"
+  if (rawText.startsWith("OK")) {
+    const okByteLen = Buffer.byteLength("OK", "utf8");
+    const remaining = buf.subarray(okByteLen);
+    return {
+      ready: true,
+      remaining: remaining.length > 0 ? remaining : undefined,
+      rawText,
+    };
+  }
+
+  return {
+    ready: false,
+    rawText,
+  };
+}
+
+/**
+ * Classify HTTP status codes received during WebSocket upgrade
+ */
+export function classifyConsoleUpgradeError(
+  statusCode?: number,
+  statusText?: string,
+  headers?: Record<string, string>,
+  bodySnippet?: string
+): {
+  code: string;
+  classification: ProxmoxErrorClassification;
+  message: string;
+  retryable: boolean;
+  recommendedFix?: string;
+} {
+  const status = statusCode || 0;
+
+  if (status === 401) {
+    return {
+      code: "PROXMOX_CONSOLE_AUTH_FAILED",
+      classification: "AUTHENTICATION_FAILURE",
+      message: "Proxmox console WebSocket upgrade authentication failed (HTTP 401). Verify API token ID and secret.",
+      retryable: false,
+      recommendedFix: "Verify Proxmox API Token credentials.",
+    };
+  }
+
+  if (status === 403) {
+    return {
+      code: "PROXMOX_CONSOLE_UPGRADE_DENIED",
+      classification: "AUTHORIZATION_FAILURE",
+      message: "Proxmox rejected console WebSocket upgrade with HTTP 403 Forbidden. The API token lacks VM.Console permission or Privilege Separation is enabled in Proxmox.",
+      retryable: false,
+      recommendedFix: "Ensure the API token has 'VM.Console' permission and 'Privilege Separation' is unchecked in Proxmox datacenter token settings.",
+    };
+  }
+
+  if (status === 404) {
+    return {
+      code: "PROXMOX_CONSOLE_ENDPOINT_NOT_FOUND",
+      classification: "LXC_NOT_FOUND",
+      message: "Proxmox console WebSocket endpoint not found (HTTP 404). The container or node may have been moved.",
+      retryable: false,
+      recommendedFix: "Check runtime node and container ID.",
+    };
+  }
+
+  if (status === 426) {
+    return {
+      code: "PROXMOX_CONSOLE_UPGRADE_REJECTED",
+      classification: "REVERSE_PROXY_501",
+      message: "Hypervisor or intermediary requested protocol upgrade (HTTP 426). Verify WebSocket upgrade headers.",
+      retryable: false,
+      recommendedFix: "Ensure reverse proxy supports WebSocket upgrades.",
+    };
+  }
+
+  if (status === 501) {
+    const isCloudflare =
+      headers?.["server"]?.toLowerCase().includes("cloudflare") || headers?.["cf-ray"] !== undefined;
+    return {
+      code: isCloudflare ? "CLOUDFLARE_501_WEBSOCKET" : "REVERSE_PROXY_501_WEBSOCKET",
+      classification: isCloudflare ? "CLOUDFLARE_501" : "REVERSE_PROXY_501",
+      message: isCloudflare
+        ? "Proxmox console WebSocket upgrade returned HTTP 501 through Cloudflare Tunnel. Verify WebSockets are enabled and disableChunkedEncoding: true in cloudflared originRequest."
+        : "Proxmox console WebSocket upgrade returned HTTP 501 Not Implemented through reverse proxy.",
+      retryable: false,
+      recommendedFix: "Ensure Cloudflare tunnel or reverse proxy has WebSocket proxying enabled and chunked encoding disabled.",
+    };
+  }
+
+  if (status >= 502 && status <= 504) {
+    return {
+      code: "PROXMOX_GATEWAY_ERROR",
+      classification: "CONNECTION_REFUSED",
+      message: `Upstream gateway error (HTTP ${status}) contacting Proxmox console. The hypervisor or tunnel may be temporarily unreachable.`,
+      retryable: true,
+      recommendedFix: "Check Proxmox server health and network connectivity.",
+    };
+  }
+
+  return {
+    code: "PROXMOX_CONSOLE_UPGRADE_FAILED",
+    classification: "UNKNOWN_CONSOLE_FAILURE",
+    message: `Proxmox console WebSocket upgrade failed with HTTP ${status} ${statusText || ""}`.trim(),
+    retryable: status >= 500,
+    recommendedFix: "Inspect hypervisor logs for more details.",
+  };
+}
+

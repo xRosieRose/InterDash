@@ -413,7 +413,10 @@ router.get("/:id/console/diagnostic", async (req: Request, res: Response) => {
 
     // Full diagnostic details for administrators; safe high-level status for users
     if (req.user.role === "admin") {
-      res.json(diag);
+      res.json({
+        ...diag,
+        diagnostic: diag,
+      });
     } else {
       res.json({
         ok: diag.ok,
@@ -422,6 +425,8 @@ router.get("/:id/console/diagnostic", async (req: Request, res: Response) => {
         runtimeNodeSource: diag.runtimeNodeSource,
         classification: diag.classification,
         recommendedFix: diag.recommendedFix,
+        stages: diag.stages,
+        diagnostic: diag,
         message: diag.ok
           ? "Console service is operational."
           : `Console unavailable: ${diag.recommendedFix || "Please contact your administrator."}`,

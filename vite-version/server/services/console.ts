@@ -9,10 +9,14 @@
  *       ↓ WebSocket (authenticated session cookie)
  *   InterDash Backend (/api/vps/:id/console/ws)
  *       ↓ Server-side ownership / admin check
+ *       ↓ Authoritative runtime node discovery
  *       ↓ LXC runtime state check (running / stopped / locked)
  *       ↓ Proxmox API: POST /nodes/{node}/lxc/{vmid}/termproxy
  *       ↓ Upstream WebSocket (wss://.../vncwebsocket?port=...&vncticket=...)
- *       ↓ Protocol handshake: user:ticket\n
+ *       ↓ Upstream HTTP 101 Switching Protocols validation
+ *       ↓ Protocol handshake: <user>:<ticket>\n
+ *       ↓ Handshake response validation: "OK"
+ *       ↓ Application protocol framing: 0:<byteLength>:<data>, 1:<cols>:<rows>:, 2 (ping)
  *   Real Proxmox LXC Container Shell
  *
  * Security:
@@ -25,6 +29,8 @@
 
 import type { IncomingMessage, Server } from "node:http";
 import { URL } from "node:url";
+import { randomUUID } from "node:crypto";
+import https from "node:https";
 import { WebSocketServer, WebSocket } from "ws";
 import { queryOne, execute } from "../db/index.js";
 import { hashToken } from "../middleware/auth.js";
@@ -32,19 +38,30 @@ import {
   ProxmoxService,
   resolveProxmoxEndpoint,
   ProxmoxRequestError,
+  buildTermproxyInputFrame,
+  buildTermproxyResizeFrame,
+  buildTermproxyKeepaliveFrame,
+  parseTermproxyResponse,
+  classifyConsoleUpgradeError,
   type ProxmoxErrorClassification,
 } from "./proxmox.js";
 import { ProvisioningService } from "./provisioning.js";
 
 const IDLE_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
+const HANDSHAKE_TIMEOUT_MS = 10 * 1000; // 10 seconds
+const KEEPALIVE_INTERVAL_MS = 30 * 1000; // 30 seconds
 
 export type ConsoleState =
   | "idle"
   | "connecting"
+  | "connecting_gateway"
+  | "gateway_connected"
   | "checking_runtime"
+  | "checking_vps"
   | "requesting_termproxy"
   | "termproxy_ready"
   | "connecting_upstream"
+  | "upstream_connected"
   | "handshaking"
   | "connected"
   | "failed"
@@ -52,11 +69,26 @@ export type ConsoleState =
   | "stopped"
   | "busy";
 
+export type ConsoleFailureStage =
+  | "gateway"
+  | "authorization"
+  | "runtime_resolution"
+  | "termproxy"
+  | "upstream_connect"
+  | "upstream_upgrade"
+  | "terminal_handshake"
+  | "stream";
+
 export interface ConsoleControlMessage {
   type: "status" | "error" | "data";
   state?: ConsoleState;
+  stage?: ConsoleFailureStage;
   message?: string;
   code?: string;
+  httpStatus?: number;
+  websocketCode?: number;
+  retryable?: boolean;
+  sessionId?: string;
   diagnosticId?: string;
   details?: Record<string, unknown>;
 }
@@ -135,28 +167,108 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
 
       // 4. Upgrade client connection
       wss.handleUpgrade(req, socket, head, async (clientWs) => {
+        const sessionId = `console_${randomUUID()}`;
         let idleTimer: NodeJS.Timeout | null = null;
+        let keepaliveTimer: NodeJS.Timeout | null = null;
+        let handshakeTimer: NodeJS.Timeout | null = null;
         let upstreamWs: WebSocket | null = null;
         let isConnected = false;
+        let isTermproxyHandshaking = false;
+        let pendingResize: { cols: number; rows: number } | null = null;
+        let isCleanedUp = false;
+
+        const log = (stage: string, message: string, meta?: Record<string, unknown>) => {
+          const metaStr = meta ? ` ${JSON.stringify(meta)}` : "";
+          console.log(`[${sessionId}] [VPS ${vpsId}] [${stage}] ${message}${metaStr}`);
+        };
 
         const sendControl = (msg: ConsoleControlMessage) => {
           if (clientWs.readyState === WebSocket.OPEN) {
-            clientWs.send(JSON.stringify(msg));
+            clientWs.send(
+              JSON.stringify({
+                sessionId,
+                ...msg,
+              })
+            );
+          }
+        };
+
+        // RFC 6455 compliant client close helper: NEVER sends reserved code 1006
+        const safeCloseClient = (code = 1000, reason?: string) => {
+          if (clientWs.readyState === WebSocket.OPEN || clientWs.readyState === WebSocket.CONNECTING) {
+            // RFC 6455 status code safety: 1006 must NEVER be sent as a close frame code
+            let validCode = code;
+            if (validCode === 1006 || validCode < 1000 || validCode > 4999) {
+              validCode = 1011; // Internal error
+            }
+
+            // Reason string must not exceed 123 UTF-8 bytes
+            let safeReason = reason;
+            if (safeReason && Buffer.byteLength(safeReason, "utf8") > 120) {
+              safeReason = safeReason.slice(0, 115) + "...";
+            }
+
+            try {
+              clientWs.close(validCode, safeReason);
+            } catch (closeErr) {
+              try {
+                clientWs.terminate();
+              } catch {}
+            }
           }
         };
 
         const resetIdleTimer = () => {
           if (idleTimer) clearTimeout(idleTimer);
           idleTimer = setTimeout(() => {
-            console.log(`[CONSOLE] Session for VPS ${vpsId} closed due to 15m idle timeout.`);
+            log("idle", "Session closed due to 15m inactivity timeout.");
             sendControl({
               type: "status",
               state: "disconnected",
               message: "Session closed due to inactivity.",
             });
-            clientWs.close(1000, "Session closed due to inactivity.");
-            upstreamWs?.close();
+            safeCloseClient(1000, "Inactivity timeout");
+            cleanup();
           }, IDLE_TIMEOUT_MS);
+        };
+
+        const cleanup = () => {
+          if (isCleanedUp) return;
+          isCleanedUp = true;
+
+          if (idleTimer) {
+            clearTimeout(idleTimer);
+            idleTimer = null;
+          }
+          if (keepaliveTimer) {
+            clearInterval(keepaliveTimer);
+            keepaliveTimer = null;
+          }
+          if (handshakeTimer) {
+            clearTimeout(handshakeTimer);
+            handshakeTimer = null;
+          }
+
+          if (upstreamWs) {
+            try {
+              // Attach noop error handler so closing a CONNECTING socket does not emit uncaughtException
+              upstreamWs.on("error", () => {});
+              if (
+                upstreamWs.readyState === WebSocket.OPEN ||
+                upstreamWs.readyState === WebSocket.CONNECTING
+              ) {
+                upstreamWs.close(1000, "Client session terminated");
+              }
+            } catch {}
+            upstreamWs = null;
+          }
+
+          // Audit log console closed
+          execute(
+            `INSERT INTO audit_logs (user_id, event_type, metadata)
+             VALUES (?, 'vps_console_closed', ?)`,
+            [user.id, JSON.stringify({ vps_id: vpsId, vmid: vps.proxmox_vmid, session_id: sessionId })]
+          );
         };
 
         resetIdleTimer();
@@ -165,14 +277,17 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
         execute(
           `INSERT INTO audit_logs (user_id, event_type, metadata)
            VALUES (?, 'vps_console_opened', ?)`,
-          [user.id, JSON.stringify({ vps_id: vpsId, vmid: vps.proxmox_vmid })]
+          [user.id, JSON.stringify({ vps_id: vpsId, vmid: vps.proxmox_vmid, session_id: sessionId })]
         );
 
+        log("gateway", "InterDash console gateway connected.");
+
         try {
-          // STEP 1: Authoritative Runtime Target Resolution & State Check
+          // STEP 1: Authoritative Runtime Target Resolution & Live State Check
           sendControl({
             type: "status",
             state: "checking_runtime",
+            stage: "runtime_resolution",
             message: "Checking VPS runtime state...",
           });
 
@@ -183,75 +298,100 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
             if (runtimeTarget.reason === "not_found") {
               code = "CONSOLE_LXC_NOT_FOUND";
               msg = `LXC container ${vps.proxmox_vmid} not found on Proxmox cluster.`;
-            } else if (runtimeTarget.reason === "node_unreachable" || runtimeTarget.reason === "discovery_unavailable") {
+            } else if (
+              runtimeTarget.reason === "node_unreachable" ||
+              runtimeTarget.reason === "discovery_unavailable"
+            ) {
               code = "CONSOLE_NODE_UNREACHABLE";
               msg = `Unable to contact hypervisor node '${node.nodeName}'.`;
             } else if (runtimeTarget.reason === "authorization_failed") {
               code = "TERM_PROXY_AUTH_FAILURE";
-              msg = runtimeTarget.message || "Proxmox API authorization failed. Check token permissions and ensure Privilege Separation is unchecked in Proxmox.";
+              msg =
+                runtimeTarget.message ||
+                "Proxmox API authorization failed. Check token permissions and ensure Privilege Separation is unchecked in Proxmox.";
             }
 
+            log("runtime_resolution", `Resolution failed: ${code} - ${msg}`);
             sendControl({
               type: "error",
               state: "failed",
+              stage: "runtime_resolution",
               code,
               message: msg,
+              retryable: false,
             });
-            clientWs.close(1008, msg);
+            safeCloseClient(1008, msg);
+            cleanup();
             return;
           }
 
           const runtimeNode = runtimeTarget.nodeName;
+          log("runtime_resolution", `VPS located on runtime node '${runtimeNode}'`);
 
           // Query live status on resolved runtime node
           const statusRes = await ProxmoxService.getLxcStatus(node, vps.proxmox_vmid, runtimeNode);
           if (!statusRes.ok) {
+            log("runtime_check", `Status verification failed: ${statusRes.error}`);
             sendControl({
               type: "error",
               state: "failed",
+              stage: "runtime_resolution",
               code: "CONSOLE_NODE_UNREACHABLE",
               message: statusRes.error || "Unable to verify container status on hypervisor.",
+              retryable: true,
             });
-            clientWs.close(1011, "Hypervisor status check failed");
+            safeCloseClient(1011, "Hypervisor status check failed");
+            cleanup();
             return;
           }
 
           if (statusRes.status === "stopped") {
+            log("runtime_check", "VPS container is stopped.");
             sendControl({
               type: "error",
               state: "stopped",
+              stage: "stream",
               code: "CONSOLE_LXC_STOPPED",
               message: "VPS is stopped. Start it to open the console.",
+              retryable: false,
             });
-            clientWs.close(1000, "VPS stopped");
+            safeCloseClient(1000, "VPS stopped");
+            cleanup();
             return;
           }
 
           // Check if container is locked by a Proxmox task
           const isLocked = await ProxmoxService.checkLxcLocked(node, vps.proxmox_vmid, runtimeNode);
           if (isLocked.locked) {
+            log("runtime_check", `VPS locked by task: ${isLocked.lockName || "busy"}`);
             sendControl({
               type: "error",
               state: "busy",
+              stage: "stream",
               code: "CONSOLE_LXC_LOCKED",
               message: `VPS is currently locked by a Proxmox background operation (${isLocked.lockName || "busy"}).`,
+              retryable: true,
             });
-            clientWs.close(1000, "VPS locked");
+            safeCloseClient(1000, "VPS locked");
+            cleanup();
             return;
           }
 
-          // STEP 2: Request termproxy ticket targeting runtimeNode
+          // STEP 2: Request termproxy ticket targeting authoritative runtimeNode
           sendControl({
             type: "status",
             state: "requesting_termproxy",
+            stage: "termproxy",
             message: "Requesting Proxmox terminal proxy...",
           });
 
           const termproxy = await ProxmoxService.createLxcTermProxy(node, vps.proxmox_vmid, runtimeNode);
+          log("termproxy", `Termproxy allocated port ${termproxy.port} for user '${termproxy.user}'`);
 
           sendControl({
             type: "status",
             state: "termproxy_ready",
+            stage: "termproxy",
             message: "Termproxy ticket acquired.",
           });
 
@@ -259,6 +399,7 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
           sendControl({
             type: "status",
             state: "connecting_upstream",
+            stage: "upstream_connect",
             message: "Connecting terminal stream to hypervisor...",
           });
 
@@ -275,121 +416,311 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
             termproxy.ticket
           )}`;
 
-          upstreamWs = new WebSocket(upstreamUrl, {
+          log("upstream_connect", `Connecting to upstream vncwebsocket [target=${endpoint.displayTarget}]`);
+
+          const agent = endpoint.isHttps
+            ? new https.Agent({
+                rejectUnauthorized: !node.allowInsecureTls,
+              })
+            : undefined;
+
+          // Proxmox vncwebsocket requires the 'binary' subprotocol
+          upstreamWs = new WebSocket(upstreamUrl, ["binary"], {
+            agent,
             rejectUnauthorized: !node.allowInsecureTls,
             headers: {
               Authorization: `PVEAPIToken=${node.authTokenId}=${node.authTokenSecret}`,
+              "User-Agent": "InterDash-Console/1.0",
             },
+            handshakeTimeout: 15000,
           });
 
+          // Handle upstream HTTP response other than 101 Switching Protocols
+          upstreamWs.on("unexpected-response", (_upstreamReq, upstreamRes) => {
+            let bodySnippet = "";
+            upstreamRes.on("data", (chunk) => {
+              if (bodySnippet.length < 500) {
+                bodySnippet += chunk.toString("utf8").slice(0, 500 - bodySnippet.length);
+              }
+            });
+
+            upstreamRes.on("end", () => {
+              const classified = classifyConsoleUpgradeError(
+                upstreamRes.statusCode,
+                upstreamRes.statusMessage,
+                upstreamRes.headers as Record<string, string>,
+                bodySnippet
+              );
+
+              log("upstream_upgrade", `Upgrade rejected with HTTP ${upstreamRes.statusCode} ${upstreamRes.statusMessage}`, {
+                classification: classified.code,
+              });
+
+              sendControl({
+                type: "error",
+                state: "failed",
+                stage: "upstream_upgrade",
+                code: classified.code,
+                httpStatus: upstreamRes.statusCode,
+                message: classified.message,
+                retryable: classified.retryable,
+                details: {
+                  endpoint: endpoint.displayTarget,
+                  recommendedFix: classified.recommendedFix,
+                },
+              });
+
+              safeCloseClient(
+                upstreamRes.statusCode === 401 || upstreamRes.statusCode === 403 ? 1008 : 1011,
+                classified.message
+              );
+              cleanup();
+            });
+          });
+
+          // Upstream WebSocket reached HTTP 101 Switching Protocols
           upstreamWs.on("open", () => {
+            isTermproxyHandshaking = true;
+            log("upstream_upgrade", "Upstream WebSocket HTTP 101 Switching Protocols established.");
+
             sendControl({
               type: "status",
               state: "handshaking",
+              stage: "terminal_handshake",
               message: "Performing console handshake with hypervisor...",
             });
 
-            // Initial Proxmox termproxy handshake: user:ticket\n
+            // Initial Proxmox termproxy authentication handshake: <user>:<ticket>\n
+            log("terminal_handshake", `Sending termproxy authentication for identity '${termproxy.user}'`);
             upstreamWs?.send(`${termproxy.user}:${termproxy.ticket}\n`);
+
+            // Start 10s handshake timeout
+            handshakeTimer = setTimeout(() => {
+              if (!isConnected) {
+                log("terminal_handshake", "Timed out waiting for Proxmox termproxy handshake acknowledgment ('OK').");
+                sendControl({
+                  type: "error",
+                  state: "failed",
+                  stage: "terminal_handshake",
+                  code: "TERMPROXY_HANDSHAKE_TIMEOUT",
+                  message: "Timed out waiting for Proxmox terminal handshake response ('OK').",
+                  retryable: true,
+                });
+                safeCloseClient(1011, "Handshake timeout");
+                cleanup();
+              }
+            }, HANDSHAKE_TIMEOUT_MS);
           });
 
-          upstreamWs.on("message", (data) => {
+          upstreamWs.on("message", (msgData) => {
             resetIdleTimer();
 
-            // First incoming data confirms handshake success and shell readiness
+            // Handshake stage: parse termproxy acknowledgment
             if (!isConnected) {
-              isConnected = true;
-              sendControl({
-                type: "status",
-                state: "connected",
-                message: "Terminal connected.",
-              });
+              const parsed = parseTermproxyResponse(msgData as Buffer | string);
+
+              if (parsed.ready) {
+                isConnected = true;
+                isTermproxyHandshaking = false;
+
+                if (handshakeTimer) {
+                  clearTimeout(handshakeTimer);
+                  handshakeTimer = null;
+                }
+
+                log("terminal_handshake", "Termproxy handshake accepted ('OK'). Interactive terminal ready.");
+
+                sendControl({
+                  type: "status",
+                  state: "connected",
+                  stage: "stream",
+                  message: "Terminal connected.",
+                });
+
+                // Start keepalive timer: send "2" every 30 seconds according to Proxmox terminal protocol
+                keepaliveTimer = setInterval(() => {
+                  if (upstreamWs && upstreamWs.readyState === WebSocket.OPEN) {
+                    upstreamWs.send(buildTermproxyKeepaliveFrame());
+                  }
+                }, KEEPALIVE_INTERVAL_MS);
+
+                // If dimensions were queued before connected, send latest dimensions once
+                if (pendingResize && upstreamWs?.readyState === WebSocket.OPEN) {
+                  upstreamWs.send(buildTermproxyResizeFrame(pendingResize.cols, pendingResize.rows));
+                  pendingResize = null;
+                }
+
+                // If initial terminal payload was attached after "OK", forward surviving bytes to browser
+                if (
+                  parsed.remaining &&
+                  parsed.remaining.length > 0 &&
+                  clientWs.readyState === WebSocket.OPEN
+                ) {
+                  clientWs.send(parsed.remaining);
+                }
+                return;
+              } else {
+                // Pre-OK payload was malformed or rejected
+                log(
+                  "terminal_handshake",
+                  `Termproxy rejected authentication or sent invalid initial frame: '${parsed.rawText.slice(0, 100)}'`
+                );
+
+                sendControl({
+                  type: "error",
+                  state: "failed",
+                  stage: "terminal_handshake",
+                  code: "TERMPROXY_HANDSHAKE_REJECTED",
+                  message:
+                    "Proxmox termproxy rejected authentication handshake. Verify that API Token has VM.Console permissions and Privilege Separation is unchecked in Proxmox Datacenter settings.",
+                  retryable: false,
+                  details: {
+                    endpoint: endpoint.displayTarget,
+                    safeSnippet: parsed.rawText.slice(0, 100),
+                  },
+                });
+
+                safeCloseClient(1008, "Termproxy handshake rejected");
+                cleanup();
+                return;
+              }
             }
 
+            // Normal connected terminal output: stream to browser
             if (clientWs.readyState === WebSocket.OPEN) {
-              clientWs.send(data);
+              clientWs.send(msgData);
             }
           });
 
           upstreamWs.on("error", (err) => {
-            console.error(
-              `[CONSOLE] Upstream Proxmox WS error for VPS ${vpsId} [endpoint=${endpoint.displayTarget}]:`,
-              err.message
-            );
-            sendControl({
-              type: "error",
-              state: "failed",
-              code: "WEBSOCKET_CONNECTION_FAILURE",
-              message: `Hypervisor console stream error: ${err.message}`,
+            log("upstream_connect", `Upstream Proxmox WS error: ${err.message}`, {
+              endpoint: endpoint.displayTarget,
             });
-            if (clientWs.readyState === WebSocket.OPEN) {
-              clientWs.close(1011, "Upstream connection error");
+
+            if (!isConnected) {
+              sendControl({
+                type: "error",
+                state: "failed",
+                stage: isTermproxyHandshaking ? "terminal_handshake" : "upstream_connect",
+                code: "WEBSOCKET_CONNECTION_FAILURE",
+                message: `Hypervisor console stream error: ${err.message}`,
+                retryable: true,
+                details: {
+                  endpoint: endpoint.displayTarget,
+                },
+              });
+              safeCloseClient(1011, "Upstream connection error");
             }
+            cleanup();
           });
 
           upstreamWs.on("close", (code, reason) => {
-            if (clientWs.readyState === WebSocket.OPEN) {
+            const reasonStr = reason?.toString() || "";
+            log("upstream", `Upstream Proxmox WS closed with code ${code} (${reasonStr})`);
+
+            if (!isConnected) {
+              let stage: ConsoleFailureStage = "upstream_connect";
+              let codeName = "UPSTREAM_WEBSOCKET_CLOSED_EARLY";
+              let msg = `Upstream console connection closed before session was established (code ${code}).`;
+
+              if (isTermproxyHandshaking) {
+                stage = "terminal_handshake";
+                codeName = "TERMPROXY_HANDSHAKE_REJECTED";
+                msg =
+                  "Proxmox termproxy closed connection during authentication handshake. Verify that API Token has VM.Console permissions and Privilege Separation is unchecked in Proxmox.";
+              }
+
+              sendControl({
+                type: "error",
+                state: "failed",
+                stage,
+                code: codeName,
+                websocketCode: code,
+                message: msg,
+                retryable: false,
+                details: {
+                  endpoint: endpoint.displayTarget,
+                  runtimeNode,
+                },
+              });
+              safeCloseClient(1011, msg);
+            } else {
               sendControl({
                 type: "status",
                 state: "disconnected",
-                message: `Terminal session disconnected (code ${code}).`,
+                stage: "stream",
+                message: "Terminal session closed by hypervisor.",
               });
-              clientWs.close(code, reason.toString());
+              safeCloseClient(1000, "Session closed");
             }
+            cleanup();
           });
 
+          // Browser -> InterDash gateway handling
           clientWs.on("message", (data) => {
             resetIdleTimer();
-            if (!upstreamWs || upstreamWs.readyState !== WebSocket.OPEN) return;
 
-            const str = data.toString();
+            const str = typeof data === "string" ? data : data.toString("utf8");
 
-            // Handle client resize messages (either Proxmox format 1:cols:rows: or JSON { type: "resize", cols, rows })
+            // Handle client window resize messages:
+            // 1. Proxmox native format: 1:<cols>:<rows>:
+            // 2. InterDash JSON format: { type: "resize", cols: N, rows: N }
             if (str.startsWith("1:") && str.endsWith(":")) {
-              upstreamWs.send(str);
+              if (isConnected && upstreamWs?.readyState === WebSocket.OPEN) {
+                upstreamWs.send(str);
+              }
               return;
             }
 
             if (str.startsWith("{")) {
               try {
                 const parsed = JSON.parse(str);
-                if (parsed.type === "resize" && typeof parsed.cols === "number" && typeof parsed.rows === "number") {
-                  upstreamWs.send(`1:${parsed.cols}:${parsed.rows}:`);
+                if (
+                  parsed.type === "resize" &&
+                  typeof parsed.cols === "number" &&
+                  typeof parsed.rows === "number"
+                ) {
+                  if (isConnected && upstreamWs?.readyState === WebSocket.OPEN) {
+                    upstreamWs.send(buildTermproxyResizeFrame(parsed.cols, parsed.rows));
+                  } else {
+                    pendingResize = { cols: parsed.cols, rows: parsed.rows };
+                  }
                   return;
                 }
               } catch {}
             }
 
-            // Normal keyboard / terminal data
-            upstreamWs.send(data);
+            // Normal interactive keystrokes / terminal data
+            if (isConnected && upstreamWs && upstreamWs.readyState === WebSocket.OPEN) {
+              // If already formatted with termproxy application protocol:
+              if (str.startsWith("0:") || str === "2") {
+                upstreamWs.send(data);
+              } else {
+                // Frame raw user input as 0:<byteLength>:<data> with exact UTF-8 byte length
+                const framed = buildTermproxyInputFrame(data as Buffer | string);
+                upstreamWs.send(framed);
+              }
+            }
           });
 
-          const cleanup = () => {
-            if (idleTimer) {
-              clearTimeout(idleTimer);
-              idleTimer = null;
-            }
-            if (upstreamWs && upstreamWs.readyState === WebSocket.OPEN) {
-              upstreamWs.close();
-            }
+          clientWs.on("close", () => {
+            log("client", "Browser terminal client disconnected.");
+            cleanup();
+          });
 
-            // Audit log console closed
-            execute(
-              `INSERT INTO audit_logs (user_id, event_type, metadata)
-               VALUES (?, 'vps_console_closed', ?)`,
-              [user.id, JSON.stringify({ vps_id: vpsId, vmid: vps.proxmox_vmid })]
-            );
-          };
-
-          clientWs.on("close", cleanup);
-          clientWs.on("error", cleanup);
+          clientWs.on("error", (err) => {
+            log("client", `Browser terminal client socket error: ${err.message}`);
+            cleanup();
+          });
         } catch (err: unknown) {
           const endpoint = resolveProxmoxEndpoint(node.apiUrl, node.hostname, node.port);
           let code: ProxmoxErrorClassification = "UNKNOWN_CONSOLE_FAILURE";
+          let stage: ConsoleFailureStage = "stream";
           let details: Record<string, unknown> | undefined;
 
           if (err instanceof ProxmoxRequestError) {
             code = err.classification;
+            stage = "termproxy";
             details = {
               statusCode: err.statusCode,
               proxyDetected: err.proxyDetected,
@@ -400,21 +731,19 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
           }
 
           const msg = err instanceof Error ? err.message : String(err);
-          console.error(
-            `[CONSOLE] vps=${vpsId} node=${node.nodeName} vmid=${vps.proxmox_vmid} endpoint=${endpoint.displayTarget} classification=${code}: ${msg}`
-          );
+          log("failure", `Exception during console setup: ${code} - ${msg}`, details);
 
           sendControl({
             type: "error",
             state: "failed",
+            stage,
             code,
             message: msg,
             details,
           });
 
-          if (clientWs.readyState === WebSocket.OPEN) {
-            clientWs.close(1011, msg);
-          }
+          safeCloseClient(1011, msg);
+          cleanup();
         }
       });
     } catch (err) {

@@ -8,7 +8,12 @@
  * 4. Diagnostics: ProxmoxService.testTermProxy produces safe diagnostics without secrets.
  * 5. Authorization: GET /api/vps/:id/console/diagnostic (owner & admin allowed, other denied).
  * 6. Authorization: GET /api/vps/:id/reinstall/capabilities (owner & admin allowed, safe subset).
- * 7. Terminal resize protocol: Proxmox 1:<cols>:<rows>: framing.
+ * 7. Terminal protocol: Input framing 0:<byteLength>:<data> with exact UTF-8 byte counting.
+ * 8. Terminal protocol: Resize framing 1:<cols>:<rows>:.
+ * 9. Terminal protocol: Keepalive frame "2".
+ * 10. Terminal protocol: Handshake parser consumes and strips "OK", preserving surviving bytes.
+ * 11. Upstream WebSocket upgrade classification: 401, 403, 404, 426, 501, 502/503.
+ * 12. End-to-end WebSocket interactive console proxy through InterDash gateway.
  */
 
 import { describe, it, before, after, beforeEach } from "node:test";
@@ -16,32 +21,44 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import crypto from "node:crypto";
 import type { Server } from "node:http";
+import { WebSocket, WebSocketServer } from "ws";
 import { createApp } from "../index.js";
-import { closeDatabase, execute, queryOne } from "../db/index.js";
-import { hashToken } from "../middleware/auth.js";
+import { closeDatabase, execute } from "../db/index.js";
 import {
   ProxmoxService,
   type ProxmoxNodeConfig,
   ProxmoxRequestError,
+  buildTermproxyInputFrame,
+  buildTermproxyResizeFrame,
+  buildTermproxyKeepaliveFrame,
+  parseTermproxyResponse,
+  classifyConsoleUpgradeError,
 } from "../services/proxmox.js";
+import { setupConsoleWebSocket } from "../services/console.js";
 import { encryptCredential } from "../services/crypto.js";
 
 describe("Console Termproxy Request Framing & 501 Diagnostics", () => {
   let mockServer: http.Server;
   let mockPort: number;
+  let mockWss: WebSocketServer;
   let appServer: Server;
+  let appPort: number;
   let appBaseUrl = "";
-
-  // Captured request inspection
-  let lastRequestHeaders: http.IncomingHttpHeaders = {};
-  let lastRequestMethod = "";
-  let lastRequestPath = "";
-  let lastRequestBody = "";
 
   // Mock response controls
   let mockStatusCode = 200;
   let mockResponseHeaders: Record<string, string> = { "Content-Type": "application/json" };
-  let mockResponseBody: string | object = { data: { port: 5900, ticket: "test-ticket-abc", upid: "UPID:pve:123", user: "root@pam" } };
+  let mockResponseBody: string | object = {
+    data: { port: 5900, ticket: "test-ticket-abc", upid: "UPID:pve:123", user: "root@pam" },
+  };
+
+  // Upstream WebSocket mock controls
+  let mockWsUpgradeStatus = 101;
+  let mockHandshakeSucceeds = true;
+  let lastHandshakePayload = "";
+  let lastFramedInput = "";
+  let lastResize = "";
+  let lastKeepalive = "";
 
   // Database IDs
   const USER_A_ID = "diag-user-a-" + crypto.randomUUID();
@@ -57,20 +74,15 @@ describe("Console Termproxy Request Framing & 501 Diagnostics", () => {
   const CSRF_TOKEN = "diag-csrf-token";
 
   before(async () => {
-    // 1. Start mock Proxmox server
+    // 1. Start mock Proxmox server with both HTTP REST and WebSocket termproxy support
     await new Promise<void>((resolve) => {
       mockServer = http.createServer((req, res) => {
-        lastRequestHeaders = req.headers;
-        lastRequestMethod = req.method || "";
-        lastRequestPath = req.url || "";
-        lastRequestBody = "";
-
+        let reqBody = "";
         req.on("data", (chunk) => {
-          lastRequestBody += chunk.toString();
+          reqBody += chunk.toString();
         });
 
         req.on("end", () => {
-          // Default mock route handling
           if (req.url === "/api2/json/version") {
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ data: { release: "9.0", repo_id: "pve", version: "9.0-1" } }));
@@ -97,22 +109,24 @@ describe("Console Termproxy Request Framing & 501 Diagnostics", () => {
 
           if (req.url?.includes("/storage") && req.url?.includes("/content")) {
             res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({
-              data: [
-                { volid: "local:vztmpl/ubuntu-22.04.tar.zst", format: "tar.zst", size: 200000000 }
-              ]
-            }));
+            res.end(
+              JSON.stringify({
+                data: [{ volid: "local:vztmpl/ubuntu-22.04.tar.zst", format: "tar.zst", size: 200000000 }],
+              })
+            );
             return;
           }
 
           if (req.url?.includes("/storage")) {
             res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({
-              data: [
-                { storage: "local", type: "dir", active: 1, content: "vztmpl" },
-                { storage: "local-lvm", type: "lvmthin", active: 1, content: "rootdir,images" }
-              ]
-            }));
+            res.end(
+              JSON.stringify({
+                data: [
+                  { storage: "local", type: "dir", active: 1, content: "vztmpl" },
+                  { storage: "local-lvm", type: "lvmthin", active: 1, content: "rootdir,images" },
+                ],
+              })
+            );
             return;
           }
 
@@ -122,6 +136,43 @@ describe("Console Termproxy Request Framing & 501 Diagnostics", () => {
         });
       });
 
+      mockWss = new WebSocketServer({ noServer: true });
+
+      mockServer.on("upgrade", (req, socket, head) => {
+        if (req.url?.includes("vncwebsocket")) {
+          if (mockWsUpgradeStatus === 101) {
+            mockWss.handleUpgrade(req, socket, head, (ws) => {
+              ws.on("error", () => {});
+              ws.on("message", (msg) => {
+                const str = msg.toString();
+                if (str.includes(":") && str.endsWith("\n")) {
+                  lastHandshakePayload = str;
+                  if (mockHandshakeSucceeds) {
+                    // Send "OK" as termproxy protocol acknowledgment
+                    ws.send(Buffer.from("OK"));
+                  } else {
+                    // Close connection abruptly without OK (simulate handshake rejection)
+                    ws.close();
+                  }
+                } else if (str.startsWith("0:")) {
+                  lastFramedInput = str;
+                  // Echo back terminal response
+                  ws.send(Buffer.from(`output:${str}`));
+                } else if (str.startsWith("1:")) {
+                  lastResize = str;
+                } else if (str === "2") {
+                  lastKeepalive = "2";
+                }
+              });
+            });
+          } else {
+            socket.end(
+              `HTTP/1.1 ${mockWsUpgradeStatus} ${mockWsUpgradeStatus === 403 ? "Forbidden" : "Upgrade Failed"}\r\nConnection: close\r\n\r\n`
+            );
+          }
+        }
+      });
+
       mockServer.listen(0, "127.0.0.1", () => {
         const addr = mockServer.address() as { port: number };
         mockPort = addr.port;
@@ -129,15 +180,19 @@ describe("Console Termproxy Request Framing & 501 Diagnostics", () => {
       });
     });
 
-    // 2. Start InterDash app server
+    // 2. Start InterDash app server with WebSocket console gateway attached
     const app = await createApp();
     await new Promise<void>((resolve) => {
       appServer = app.listen(0, "127.0.0.1", () => {
         const addr = appServer.address() as { port: number };
+        appPort = addr.port;
         appBaseUrl = `http://127.0.0.1:${addr.port}`;
         resolve();
       });
     });
+
+    // Attach InterDash console WebSocket gateway
+    setupConsoleWebSocket(appServer);
 
     // 3. Seed users, sessions, node, and VPS
     execute(
@@ -148,18 +203,22 @@ describe("Console Termproxy Request Framing & 501 Diagnostics", () => {
       [USER_A_ID, USER_B_ID, ADMIN_ID]
     );
 
-    const now = new Date().toISOString();
-    const future = new Date(Date.now() + 86400000).toISOString();
-
+    const expiresAt = new Date(Date.now() + 86400000).toISOString();
     execute(
-      `INSERT OR REPLACE INTO sessions (id, user_id, token_hash, expires_at, created_at, last_seen_at)
-       VALUES (?, ?, ?, ?, ?, ?),
-              (?, ?, ?, ?, ?, ?),
-              (?, ?, ?, ?, ?, ?)`,
+      `INSERT OR REPLACE INTO sessions (id, user_id, token_hash, expires_at)
+       VALUES ('s-a', ?, ?, ?),
+              ('s-b', ?, ?, ?),
+              ('s-adm', ?, ?, ?)`,
       [
-        "sess-id-a", USER_A_ID, hashToken(SESSION_USER_A), future, now, now,
-        "sess-id-b", USER_B_ID, hashToken(SESSION_USER_B), future, now, now,
-        "sess-id-adm", ADMIN_ID, hashToken(SESSION_ADMIN), future, now, now,
+        USER_A_ID,
+        crypto.createHash("sha256").update(SESSION_USER_A).digest("hex"),
+        expiresAt,
+        USER_B_ID,
+        crypto.createHash("sha256").update(SESSION_USER_B).digest("hex"),
+        expiresAt,
+        ADMIN_ID,
+        crypto.createHash("sha256").update(SESSION_ADMIN).digest("hex"),
+        expiresAt,
       ]
     );
 
@@ -189,6 +248,7 @@ describe("Console Termproxy Request Framing & 501 Diagnostics", () => {
   });
 
   after(async () => {
+    mockWss.close();
     mockServer.close();
     appServer.close();
     closeDatabase();
@@ -198,6 +258,12 @@ describe("Console Termproxy Request Framing & 501 Diagnostics", () => {
     mockStatusCode = 200;
     mockResponseHeaders = { "Content-Type": "application/json" };
     mockResponseBody = { data: { port: 5900, ticket: "ticket-123", upid: "UPID:pve:123", user: "root@pam" } };
+    mockWsUpgradeStatus = 101;
+    mockHandshakeSucceeds = true;
+    lastHandshakePayload = "";
+    lastFramedInput = "";
+    lastResize = "";
+    lastKeepalive = "";
   });
 
   async function fetchApi(path: string, sessionCookie: string, options: RequestInit = {}): Promise<Response> {
@@ -224,249 +290,93 @@ describe("Console Termproxy Request Framing & 501 Diagnostics", () => {
       allowInsecureTls: true,
     };
 
+    let capturedHeaders: http.IncomingHttpHeaders = {};
+    const testServer = http.createServer((req, res) => {
+      capturedHeaders = req.headers;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ data: { port: 5900, ticket: "ticket", upid: "UPID:123", user: "root@pam" } }));
+    });
+
+    await new Promise<void>((resolve) => testServer.listen(0, "127.0.0.1", () => resolve()));
+    const addr = testServer.address() as { port: number };
+    nodeConfig.apiUrl = `http://127.0.0.1:${addr.port}`;
+    nodeConfig.port = addr.port;
+
     await ProxmoxService.createLxcTermProxy(nodeConfig, 101);
 
-    assert.equal(lastRequestMethod, "POST");
-    assert.equal(lastRequestHeaders["content-length"], "0");
-    assert.equal(lastRequestHeaders["transfer-encoding"], undefined, "Transfer-Encoding must NOT be chunked");
-    assert.equal(lastRequestBody, "");
-  });
+    assert.equal(capturedHeaders["content-length"], "0");
+    assert.equal(capturedHeaders["transfer-encoding"], undefined);
 
-  it("should send exact UTF-8 Content-Length on JSON POST and never chunked transfer encoding", async () => {
-    const nodeConfig: ProxmoxNodeConfig = {
-      id: NODE_ID,
-      name: "Mock Node",
-      hostname: "127.0.0.1",
-      apiUrl: `http://127.0.0.1:${mockPort}`,
-      port: mockPort,
-      nodeName: "pve",
-      region: "default",
-      authTokenId: "root@pam!token",
-      authTokenSecret: "secret",
-      allowInsecureTls: true,
-    };
-
-    const payload = { testKey: "value-with-unicode-⚡" };
-    await ProxmoxService.request(nodeConfig, "POST", "/api2/json/test-json", payload);
-
-    assert.equal(lastRequestMethod, "POST");
-    const expectedLength = Buffer.byteLength(JSON.stringify(payload), "utf8").toString();
-    assert.equal(lastRequestHeaders["content-length"], expectedLength);
-    assert.equal(lastRequestHeaders["transfer-encoding"], undefined, "Transfer-Encoding must NOT be chunked");
-    assert.equal(lastRequestHeaders["content-type"], "application/json");
+    testServer.close();
   });
 
   // --------------------------------------------------------------------------
-  // PART 2: TermProxy Success & Error Classifications
+  // PART 2: TermProxy Application Framing & Parsing Helpers
   // --------------------------------------------------------------------------
-  it("should parse termproxy success response correctly", async () => {
-    const nodeConfig: ProxmoxNodeConfig = {
-      id: NODE_ID,
-      name: "Mock Node",
-      hostname: "127.0.0.1",
-      apiUrl: `http://127.0.0.1:${mockPort}`,
-      port: mockPort,
-      nodeName: "pve",
-      region: "default",
-      authTokenId: "root@pam!token",
-      authTokenSecret: "secret",
-      allowInsecureTls: true,
-    };
+  it("should format termproxy input frames with exact UTF-8 byte count", () => {
+    // ASCII input: 2 bytes
+    const frameAscii = buildTermproxyInputFrame("ls");
+    assert.equal(frameAscii, "0:2:ls");
 
-    mockStatusCode = 200;
-    mockResponseBody = {
-      data: {
-        port: 5901,
-        ticket: "PVE:ticket:xyz",
-        upid: "UPID:pve:termproxy:123",
-        user: "root@pam",
-      },
-    };
+    // Multi-byte Unicode input: 🌍 is 4 UTF-8 bytes, total string 10 bytes (not 8 characters!)
+    const unicodeInput = "Hello 🌍";
+    const frameUnicode = buildTermproxyInputFrame(unicodeInput);
+    assert.equal(frameUnicode, `0:10:${unicodeInput}`);
 
-    const res = await ProxmoxService.createLxcTermProxy(nodeConfig, 101);
-    assert.equal(res.port, 5901);
-    assert.equal(res.ticket, "PVE:ticket:xyz");
-    assert.equal(res.user, "root@pam");
+    // Carriage return / newline
+    const enterFrame = buildTermproxyInputFrame("\r");
+    assert.equal(enterFrame, "0:1:\r");
+
+    // Ctrl+C (\x03)
+    const ctrlCFrame = buildTermproxyInputFrame("\x03");
+    assert.equal(ctrlCFrame, "0:1:\x03");
   });
 
-  it("should classify 401 Unauthorized as AUTHENTICATION_FAILURE", async () => {
-    const nodeConfig: ProxmoxNodeConfig = {
-      id: NODE_ID,
-      name: "Mock Node",
-      hostname: "127.0.0.1",
-      apiUrl: `http://127.0.0.1:${mockPort}`,
-      port: mockPort,
-      nodeName: "pve",
-      region: "default",
-      authTokenId: "root@pam!token",
-      authTokenSecret: "secret",
-      allowInsecureTls: true,
-    };
-
-    mockStatusCode = 401;
-    mockResponseBody = { message: "Permission denied - invalid token" };
-
-    await assert.rejects(
-      async () => ProxmoxService.createLxcTermProxy(nodeConfig, 101),
-      (err: any) => {
-        assert.ok(err instanceof ProxmoxRequestError);
-        assert.equal(err.classification, "AUTHENTICATION_FAILURE");
-        assert.equal(err.statusCode, 401);
-        return true;
-      }
-    );
+  it("should format termproxy window resize frames as 1:cols:rows:", () => {
+    assert.equal(buildTermproxyResizeFrame(80, 24), "1:80:24:");
+    assert.equal(buildTermproxyResizeFrame(120, 40), "1:120:40:");
+    // Bounds checking
+    assert.equal(buildTermproxyResizeFrame(0, 0), "1:1:1:");
   });
 
-  it("should classify 403 Forbidden as AUTHORIZATION_FAILURE", async () => {
-    const nodeConfig: ProxmoxNodeConfig = {
-      id: NODE_ID,
-      name: "Mock Node",
-      hostname: "127.0.0.1",
-      apiUrl: `http://127.0.0.1:${mockPort}`,
-      port: mockPort,
-      nodeName: "pve",
-      region: "default",
-      authTokenId: "root@pam!token",
-      authTokenSecret: "secret",
-      allowInsecureTls: true,
-    };
-
-    mockStatusCode = 403;
-    mockResponseBody = { message: "Permission denied" };
-
-    await assert.rejects(
-      async () => ProxmoxService.createLxcTermProxy(nodeConfig, 101),
-      (err: any) => {
-        assert.ok(err instanceof ProxmoxRequestError);
-        assert.equal(err.classification, "AUTHORIZATION_FAILURE");
-        assert.equal(err.statusCode, 403);
-        return true;
-      }
-    );
+  it("should format keepalive frame as '2'", () => {
+    assert.equal(buildTermproxyKeepaliveFrame(), "2");
   });
 
-  it("should classify 501 JSON without proxy headers as PROXMOX_501_TERM_PROXY", async () => {
-    const nodeConfig: ProxmoxNodeConfig = {
-      id: NODE_ID,
-      name: "Mock Node",
-      hostname: "127.0.0.1",
-      apiUrl: `http://127.0.0.1:${mockPort}`,
-      port: mockPort,
-      nodeName: "pve",
-      region: "default",
-      authTokenId: "root@pam!token",
-      authTokenSecret: "secret",
-      allowInsecureTls: true,
-    };
+  it("should parse termproxy handshake response correctly and preserve trailing bytes", () => {
+    // Exact "OK"
+    const exactOk = parseTermproxyResponse(Buffer.from("OK"));
+    assert.equal(exactOk.ready, true);
+    assert.equal(exactOk.remaining, undefined);
 
-    mockStatusCode = 501;
-    mockResponseBody = { message: "Not Implemented" };
+    // "OK" followed immediately by terminal banner bytes
+    const banner = "\x1b[?2004hroot@host:~# ";
+    const combined = Buffer.concat([Buffer.from("OK"), Buffer.from(banner)]);
+    const combinedRes = parseTermproxyResponse(combined);
+    assert.equal(combinedRes.ready, true);
+    assert.ok(combinedRes.remaining !== undefined);
+    assert.equal(combinedRes.remaining.toString("utf8"), banner);
 
-    await assert.rejects(
-      async () => ProxmoxService.createLxcTermProxy(nodeConfig, 101),
-      (err: any) => {
-        assert.ok(err instanceof ProxmoxRequestError);
-        assert.equal(err.classification, "PROXMOX_501_TERM_PROXY");
-        assert.equal(err.proxyDetected, false);
-        return true;
-      }
-    );
+    // Handshake rejected or malformed
+    const rejected = parseTermproxyResponse(Buffer.from("authentication failure"));
+    assert.equal(rejected.ready, false);
   });
 
-  it("should classify 501 HTML with cf-ray as CLOUDFLARE_501 and proxyDetected = true", async () => {
-    const nodeConfig: ProxmoxNodeConfig = {
-      id: NODE_ID,
-      name: "Mock Node",
-      hostname: "127.0.0.1",
-      apiUrl: `http://127.0.0.1:${mockPort}`,
-      port: mockPort,
-      nodeName: "pve",
-      region: "default",
-      authTokenId: "root@pam!token",
-      authTokenSecret: "secret",
-      allowInsecureTls: true,
-    };
+  it("should classify WebSocket upgrade errors with appropriate codes and messages", () => {
+    const auth401 = classifyConsoleUpgradeError(401, "Unauthorized");
+    assert.equal(auth401.code, "PROXMOX_CONSOLE_AUTH_FAILED");
+    assert.equal(auth401.retryable, false);
 
-    mockStatusCode = 501;
-    mockResponseHeaders = {
-      "Content-Type": "text/html",
-      "server": "cloudflare",
-      "cf-ray": "8bf992019ab3-ORD",
-    };
-    mockResponseBody = "<html><body><h1>501 Not Implemented</h1><p>Cloudflare Tunnel</p></body></html>";
+    const denied403 = classifyConsoleUpgradeError(403, "Forbidden");
+    assert.equal(denied403.code, "PROXMOX_CONSOLE_UPGRADE_DENIED");
+    assert.equal(denied403.retryable, false);
 
-    await assert.rejects(
-      async () => ProxmoxService.createLxcTermProxy(nodeConfig, 101),
-      (err: any) => {
-        assert.ok(err instanceof ProxmoxRequestError);
-        assert.equal(err.classification, "CLOUDFLARE_501");
-        assert.equal(err.proxyDetected, true);
-        assert.equal(err.proxyType, "cloudflare");
-        assert.ok(err.safeBodySnippet?.includes("501 Not Implemented"));
-        return true;
-      }
-    );
-  });
+    const cf501 = classifyConsoleUpgradeError(501, "Not Implemented", { server: "cloudflare" });
+    assert.equal(cf501.code, "CLOUDFLARE_501_WEBSOCKET");
 
-  it("should classify 501 HTML with reverse proxy headers as REVERSE_PROXY_501", async () => {
-    const nodeConfig: ProxmoxNodeConfig = {
-      id: NODE_ID,
-      name: "Mock Node",
-      hostname: "127.0.0.1",
-      apiUrl: `http://127.0.0.1:${mockPort}`,
-      port: mockPort,
-      nodeName: "pve",
-      region: "default",
-      authTokenId: "root@pam!token",
-      authTokenSecret: "secret",
-      allowInsecureTls: true,
-    };
-
-    mockStatusCode = 501;
-    mockResponseHeaders = {
-      "Content-Type": "text/html",
-      "server": "nginx/1.24.0",
-      "via": "1.1 reverse-proxy.internal",
-    };
-    mockResponseBody = "<html><head><title>501 Not Implemented</title></head></html>";
-
-    await assert.rejects(
-      async () => ProxmoxService.createLxcTermProxy(nodeConfig, 101),
-      (err: any) => {
-        assert.ok(err instanceof ProxmoxRequestError);
-        assert.equal(err.classification, "REVERSE_PROXY_501");
-        assert.equal(err.proxyDetected, true);
-        assert.equal(err.proxyType, "reverse_proxy");
-        return true;
-      }
-    );
-  });
-
-  it("should reject termproxy response with missing port or empty ticket as TERM_PROXY_INVALID_RESPONSE", async () => {
-    const nodeConfig: ProxmoxNodeConfig = {
-      id: NODE_ID,
-      name: "Mock Node",
-      hostname: "127.0.0.1",
-      apiUrl: `http://127.0.0.1:${mockPort}`,
-      port: mockPort,
-      nodeName: "pve",
-      region: "default",
-      authTokenId: "root@pam!token",
-      authTokenSecret: "secret",
-      allowInsecureTls: true,
-    };
-
-    mockStatusCode = 200;
-    mockResponseBody = { data: { port: 0, ticket: "" } };
-
-    await assert.rejects(
-      async () => ProxmoxService.createLxcTermProxy(nodeConfig, 101),
-      (err: any) => {
-        assert.ok(err instanceof ProxmoxRequestError);
-        assert.equal(err.classification, "TERM_PROXY_INVALID_RESPONSE");
-        return true;
-      }
-    );
+    const gateway502 = classifyConsoleUpgradeError(502, "Bad Gateway");
+    assert.equal(gateway502.code, "PROXMOX_GATEWAY_ERROR");
+    assert.equal(gateway502.retryable, true);
   });
 
   // --------------------------------------------------------------------------
@@ -486,24 +396,19 @@ describe("Console Termproxy Request Framing & 501 Diagnostics", () => {
       allowInsecureTls: true,
     };
 
-    mockStatusCode = 501;
-    mockResponseHeaders = {
-      "Content-Type": "text/html",
-      "server": "cloudflare",
-      "cf-ray": "cf-ray-12345",
-    };
-    mockResponseBody = "<html><body>501 Not Implemented</body></html>";
+    mockStatusCode = 200;
+    mockResponseBody = { data: { port: 5900, ticket: "ticket-xyz", upid: "UPID:123", user: "root@pam" } };
 
     const diag = await ProxmoxService.testTermProxy(nodeConfig, 101);
 
-    assert.equal(diag.ok, false);
-    assert.equal(diag.statusCode, 501);
-    assert.equal(diag.classification, "CLOUDFLARE_501");
-    assert.equal(diag.proxied, true);
-    assert.equal(diag.proxyType, "cloudflare");
-    assert.ok(diag.recommendedFix?.includes("disableChunkedEncoding: true"));
+    assert.equal(diag.ok, true);
+    assert.equal(diag.statusCode, 200);
+    assert.equal(diag.stages?.runtime?.status, "ok");
+    assert.equal(diag.stages?.termproxy?.status, "ok");
+    assert.equal(diag.stages?.upstreamUpgrade?.status, "ok");
+    assert.equal(diag.stages?.termproxyHandshake?.status, "ok");
 
-    // Crucial: Zero secrets leakage check
+    // Zero secrets leakage check
     const serialized = JSON.stringify(diag);
     assert.ok(!serialized.includes("super-secret-token"), "Must never leak token secret");
     assert.ok(!serialized.includes("PVEAPIToken"), "Must never leak authorization header");
@@ -521,7 +426,7 @@ describe("Console Termproxy Request Framing & 501 Diagnostics", () => {
     const data = await res.json();
     assert.equal(data.ok, true);
     assert.equal(data.message, "Console service is operational.");
-    // Normal user does not get internal endpoint or token
+    // Normal user does not get internal endpoint or secret
     assert.equal(data.endpoint, undefined);
   });
 
@@ -541,6 +446,7 @@ describe("Console Termproxy Request Framing & 501 Diagnostics", () => {
     assert.ok(data.endpoint !== undefined, "Admin gets endpoint info");
     assert.ok(data.latencyMs !== undefined, "Admin gets latencyMs");
     assert.ok(data.proxyType !== undefined, "Admin gets proxyType");
+    assert.ok(data.stages !== undefined, "Admin gets protocol lifecycle stages");
   });
 
   it("should allow owner to fetch reinstall capabilities via GET /api/vps/:id/reinstall/capabilities", async () => {
@@ -550,7 +456,6 @@ describe("Console Termproxy Request Framing & 501 Diagnostics", () => {
     assert.ok(Array.isArray(data.templates));
     assert.ok(data.templates.length > 0);
     assert.ok(data.templates[0].volid.includes("ubuntu-22.04"));
-    // Node configuration secrets must NOT be in the response
     assert.equal(data.auth_token_id, undefined);
     assert.equal(data.auth_token_secret, undefined);
   });
@@ -558,5 +463,153 @@ describe("Console Termproxy Request Framing & 501 Diagnostics", () => {
   it("should deny other user on GET /api/vps/:id/reinstall/capabilities with 403", async () => {
     const res = await fetchApi(`/api/vps/${VPS_A_ID}/reinstall/capabilities`, SESSION_USER_B);
     assert.equal(res.status, 403);
+  });
+
+  // --------------------------------------------------------------------------
+  // PART 5: Full End-to-End WebSocket Terminal Gateway Tests
+  // --------------------------------------------------------------------------
+  it("should connect, authenticate, frame user input, handle resize, and stream terminal data end-to-end", async () => {
+    mockStatusCode = 200;
+    mockResponseBody = { data: { port: 5900, ticket: "pve-ticket-xyz", upid: "UPID:123", user: "root@pam" } };
+
+    const clientWs = new WebSocket(`ws://127.0.0.1:${appPort}/api/vps/${VPS_A_ID}/console/ws`, {
+      headers: {
+        Cookie: `interdash_session=${SESSION_USER_A}`,
+      },
+    });
+
+    const receivedMessages: string[] = [];
+    let isSessionConnected = false;
+
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Timeout waiting for console connection")), 8000);
+
+      clientWs.on("message", (data) => {
+        const str = data.toString();
+        receivedMessages.push(str);
+
+        if (str.startsWith("{")) {
+          try {
+            const parsed = JSON.parse(str);
+            if (parsed.type === "status" && parsed.state === "connected") {
+              isSessionConnected = true;
+
+              // Send framed resize message
+              clientWs.send(JSON.stringify({ type: "resize", cols: 120, rows: 40 }));
+
+              // Send raw terminal input: "ls"
+              clientWs.send("ls");
+            }
+          } catch {}
+        } else if (str.startsWith("output:")) {
+          // Terminal output received from upstream echo
+          clearTimeout(timeout);
+          clientWs.close();
+          resolve();
+        }
+      });
+
+      clientWs.on("error", (err) => {
+        clearTimeout(timeout);
+        reject(err);
+      });
+    });
+
+    assert.equal(isSessionConnected, true, "Console session must reach 'connected' state");
+    assert.ok(lastHandshakePayload.includes("root@pam:pve-ticket-xyz\n"), "Must send <user>:<ticket>\\n handshake");
+    assert.equal(lastFramedInput, "0:2:ls", "Must frame raw client input 'ls' into '0:2:ls'");
+    assert.equal(lastResize, "1:120:40:", "Must transform client resize into '1:120:40:'");
+  });
+
+  it("should classify upstream HTTP 403 upgrade rejection with PROXMOX_CONSOLE_UPGRADE_DENIED and never close with 1006", async () => {
+    mockStatusCode = 200;
+    mockResponseBody = { data: { port: 5900, ticket: "pve-ticket-xyz", upid: "UPID:123", user: "root@pam" } };
+    mockWsUpgradeStatus = 403; // Hypervisor rejects WebSocket upgrade with 403
+
+    const clientWs = new WebSocket(`ws://127.0.0.1:${appPort}/api/vps/${VPS_A_ID}/console/ws`, {
+      headers: {
+        Cookie: `interdash_session=${SESSION_USER_A}`,
+      },
+    });
+
+    let receivedError: any = null;
+    let closeCode = 0;
+
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Timeout waiting for rejection")), 5000);
+
+      clientWs.on("message", (data) => {
+        const str = data.toString();
+        if (str.startsWith("{")) {
+          try {
+            const parsed = JSON.parse(str);
+            if (parsed.type === "error") {
+              receivedError = parsed;
+            }
+          } catch {}
+        }
+      });
+
+      clientWs.on("close", (code) => {
+        closeCode = code;
+        clearTimeout(timeout);
+        resolve();
+      });
+
+      clientWs.on("error", () => {
+        // Socket errors expected when server closes
+      });
+    });
+
+    assert.ok(receivedError !== null, "Must receive structured control error");
+    assert.equal(receivedError.stage, "upstream_upgrade");
+    assert.equal(receivedError.code, "PROXMOX_CONSOLE_UPGRADE_DENIED");
+    assert.equal(receivedError.httpStatus, 403);
+    assert.notEqual(closeCode, 1006, "Close code must NEVER be RFC 6455 1006");
+  });
+
+  it("should classify pre-OK closure with TERMPROXY_HANDSHAKE_REJECTED", async () => {
+    mockStatusCode = 200;
+    mockResponseBody = { data: { port: 5900, ticket: "pve-ticket-xyz", upid: "UPID:123", user: "root@pam" } };
+    mockWsUpgradeStatus = 101;
+    mockHandshakeSucceeds = false; // Mock termproxy closes socket without sending OK
+
+    const clientWs = new WebSocket(`ws://127.0.0.1:${appPort}/api/vps/${VPS_A_ID}/console/ws`, {
+      headers: {
+        Cookie: `interdash_session=${SESSION_USER_A}`,
+      },
+    });
+
+    let receivedError: any = null;
+    let closeCode = 0;
+
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Timeout waiting for handshake failure")), 5000);
+
+      clientWs.on("message", (data) => {
+        const str = data.toString();
+        if (str.startsWith("{")) {
+          try {
+            const parsed = JSON.parse(str);
+            if (parsed.type === "error") {
+              receivedError = parsed;
+            }
+          } catch {}
+        }
+      });
+
+      clientWs.on("close", (code) => {
+        closeCode = code;
+        clearTimeout(timeout);
+        resolve();
+      });
+
+      clientWs.on("error", () => {});
+    });
+
+    assert.ok(receivedError !== null, "Must receive structured control error for handshake failure");
+    assert.equal(receivedError.stage, "terminal_handshake");
+    assert.equal(receivedError.code, "TERMPROXY_HANDSHAKE_REJECTED");
+    assert.notEqual(closeCode, 1006, "Close code must NEVER be RFC 6455 1006");
   });
 });

@@ -46,6 +46,8 @@ export function ConsoleTab({ vps, isStopped, onStartVps }: ConsoleTabProps) {
   const fitAddonInstance = React.useRef<FitAddon | null>(null)
   const wsInstance = React.useRef<WebSocket | null>(null)
 
+  const consoleErrorRef = React.useRef<ConsoleError | null>(null)
+
   const sendResize = React.useCallback((cols: number, rows: number) => {
     if (wsInstance.current && wsInstance.current.readyState === WebSocket.OPEN) {
       wsInstance.current.send(JSON.stringify({ type: "resize", cols, rows }))
@@ -58,7 +60,7 @@ export function ConsoleTab({ vps, isStopped, onStartVps }: ConsoleTabProps) {
       const res = await fetch(`/api/vps/${vps.id}/console/diagnostic`)
       if (res.ok) {
         const data = await res.json()
-        setConsoleDiagnostic(data.diagnostic)
+        setConsoleDiagnostic(data.diagnostic || data)
       }
     } catch {} finally {
       setIsLoadingDiagnostics(false)
@@ -75,6 +77,7 @@ export function ConsoleTab({ vps, isStopped, onStartVps }: ConsoleTabProps) {
     setConsoleState("connecting")
     setConsoleStatusMessage("Connecting to InterDash console gateway...")
     setConsoleError(null)
+    consoleErrorRef.current = null
 
     if (!terminalRef.current) return
 
@@ -127,7 +130,7 @@ export function ConsoleTab({ vps, isStopped, onStartVps }: ConsoleTabProps) {
     wsInstance.current = ws
 
     ws.onopen = () => {
-      setConsoleState("checking_runtime")
+      setConsoleState("gateway_connected")
       setConsoleStatusMessage("Checking VPS runtime state...")
       term.writeln("\x1b[38;5;244m[InterDash gateway established. Checking VPS runtime state...]\x1b[0m")
     }
@@ -160,14 +163,21 @@ export function ConsoleTab({ vps, isStopped, onStartVps }: ConsoleTabProps) {
           }
 
           if (ctrl.type === "error") {
-            setConsoleState(ctrl.state || "failed")
-            setConsoleStatusMessage(ctrl.message || "Console connection failed.")
-            setConsoleError({
+            const errObj: ConsoleError = {
               code: ctrl.code || "CONSOLE_ERROR",
               message: ctrl.message || "Console error occurred.",
+              stage: ctrl.stage,
+              httpStatus: ctrl.httpStatus,
+              websocketCode: ctrl.websocketCode,
+              retryable: ctrl.retryable,
               details: ctrl.details,
               diagnosticId: ctrl.diagnosticId,
-            })
+            }
+            consoleErrorRef.current = errObj
+            setConsoleState(ctrl.state || "failed")
+            setConsoleStatusMessage(ctrl.message || "Console connection failed.")
+            setConsoleError(errObj)
+            term.writeln(`\x1b[31m[Error (${ctrl.stage || "console"}): ${ctrl.message}]\x1b[0m`)
             fetchConsoleDiagnostic()
             return
           }
@@ -181,18 +191,39 @@ export function ConsoleTab({ vps, isStopped, onStartVps }: ConsoleTabProps) {
     }
 
     ws.onerror = () => {
-      setConsoleState("failed")
-      setConsoleStatusMessage("WebSocket stream connection error.")
-      setConsoleError({
-        code: "WEBSOCKET_ERROR",
-        message: "Failed to connect to the InterDash console WebSocket gateway.",
-      })
-      fetchConsoleDiagnostic()
+      if (!consoleErrorRef.current) {
+        const errObj: ConsoleError = {
+          code: "WEBSOCKET_ERROR",
+          stage: "gateway",
+          message: "Failed to connect to the InterDash console WebSocket gateway.",
+          retryable: true,
+        }
+        consoleErrorRef.current = errObj
+        setConsoleState("failed")
+        setConsoleStatusMessage("WebSocket stream connection error.")
+        setConsoleError(errObj)
+        fetchConsoleDiagnostic()
+      }
     }
 
     ws.onclose = (e) => {
       setConsoleState((prev) => {
         if (prev !== "failed" && prev !== "stopped") {
+          if (!consoleErrorRef.current) {
+            const isAbnormal = e.code === 1006
+            const errObj: ConsoleError = {
+              code: isAbnormal ? "UPSTREAM_CONNECTION_CLOSED" : "DISCONNECTED",
+              stage: isAbnormal ? "upstream_upgrade" : "stream",
+              websocketCode: e.code,
+              message: isAbnormal
+                ? "Terminal session disconnected abnormally (code 1006). Inspect diagnostic stages below."
+                : `Session disconnected (code ${e.code}).`,
+              retryable: isAbnormal,
+            }
+            consoleErrorRef.current = errObj
+            setConsoleError(errObj)
+            fetchConsoleDiagnostic()
+          }
           setConsoleStatusMessage(`Session disconnected (code ${e.code}).`)
           return "disconnected"
         }
@@ -352,21 +383,37 @@ export function ConsoleTab({ vps, isStopped, onStartVps }: ConsoleTabProps) {
                 <AlertTriangle className="size-6 text-red-400 shrink-0 mt-0.5" />
                 <div className="space-y-1">
                   <h4 className="font-semibold text-base text-red-200">
-                    Console Unavailable
+                    Console Connection Failed
                   </h4>
                   <p className="text-xs text-zinc-300">
-                    {consoleError?.message || "Proxmox terminal proxy could not be created."}
+                    {consoleError?.message || "Proxmox terminal connection could not be established."}
                   </p>
                 </div>
               </div>
 
-              {consoleError?.code && (
-                <div className="flex items-center gap-2">
-                  <Badge variant="outline" className="border-red-500/40 text-red-400 font-mono text-[11px]">
-                    {consoleError.code}
+              {/* Status & Diagnostics Badges */}
+              <div className="flex flex-wrap items-center gap-2">
+                {consoleError?.stage && (
+                  <Badge variant="outline" className="border-amber-500/40 text-amber-400 font-mono text-[11px]">
+                    Stage: {consoleError.stage}
                   </Badge>
-                </div>
-              )}
+                )}
+                {consoleError?.code && (
+                  <Badge variant="outline" className="border-red-500/40 text-red-400 font-mono text-[11px]">
+                    Code: {consoleError.code}
+                  </Badge>
+                )}
+                {consoleError?.httpStatus && (
+                  <Badge variant="outline" className="border-purple-500/40 text-purple-400 font-mono text-[11px]">
+                    HTTP: {consoleError.httpStatus}
+                  </Badge>
+                )}
+                {consoleError?.websocketCode && (
+                  <Badge variant="outline" className="border-zinc-700 text-zinc-400 font-mono text-[11px]">
+                    WS Close: {consoleError.websocketCode}
+                  </Badge>
+                )}
+              </div>
 
               {/* Contextual Actionable Guidance */}
               <div className="rounded-md bg-zinc-900/80 p-3.5 border border-zinc-800 text-xs space-y-2">
@@ -383,6 +430,17 @@ export function ConsoleTab({ vps, isStopped, onStartVps }: ConsoleTabProps) {
                 ) : consoleError?.code === "CONSOLE_LXC_STOPPED" ? (
                   <p className="text-zinc-400 leading-relaxed">
                     The container is currently powered off. Start the VPS container to open an interactive terminal.
+                  </p>
+                ) : consoleError?.code === "TERMPROXY_HANDSHAKE_REJECTED" ? (
+                  <p className="text-zinc-400 leading-relaxed">
+                    Proxmox termproxy rejected the console authentication handshake. Verify that the configured API Token has
+                    the <code className="font-mono text-zinc-300">VM.Console</code> privilege on path <code className="font-mono text-zinc-300">/vms/{vps.proxmox_vmid}</code> or datacenter root,
+                    and verify that <strong>Privilege Separation</strong> is unchecked in Proxmox Datacenter API token settings.
+                  </p>
+                ) : consoleError?.code === "PROXMOX_CONSOLE_UPGRADE_DENIED" ? (
+                  <p className="text-zinc-400 leading-relaxed">
+                    Proxmox rejected the console WebSocket HTTP 101 upgrade request with HTTP 403 Forbidden.
+                    Ensure the API token has the required permissions and Privilege Separation is disabled in Proxmox.
                   </p>
                 ) : consoleDiagnostic?.classification === "CLOUDFLARE_501" ||
                   consoleDiagnostic?.classification === "REVERSE_PROXY_501" ||
@@ -449,16 +507,46 @@ export function ConsoleTab({ vps, isStopped, onStartVps }: ConsoleTabProps) {
                   </div>
 
                   {consoleDiagnostic ? (
-                    <div className="space-y-1.5 text-zinc-300">
+                    <div className="space-y-2 text-zinc-300">
                       {consoleDiagnostic.endpoint && (
                         <p><span className="text-zinc-500">Endpoint:</span> {consoleDiagnostic.endpoint}</p>
                       )}
-                      <p><span className="text-zinc-500">Status Code:</span> {consoleDiagnostic.statusCode || "501"}</p>
-                      <p><span className="text-zinc-500">Classification:</span> {consoleDiagnostic.classification || "PROXMOX_501_TERM_PROXY"}</p>
+                      <p><span className="text-zinc-500">Classification:</span> {consoleDiagnostic.classification || "UNKNOWN"}</p>
                       <p><span className="text-zinc-500">Proxy Detected:</span> {consoleDiagnostic.proxied ? `Yes (${consoleDiagnostic.proxyType})` : "Direct / None"}</p>
                       {consoleDiagnostic.latencyMs !== undefined && (
-                        <p><span className="text-zinc-500">Latency:</span> {consoleDiagnostic.latencyMs}ms</p>
+                        <p><span className="text-zinc-500">Total Latency:</span> {consoleDiagnostic.latencyMs}ms</p>
                       )}
+
+                      {/* Multi-stage verification results */}
+                      {consoleDiagnostic.stages && (
+                        <div className="border border-zinc-800 rounded p-2 bg-zinc-950 space-y-1 mt-2">
+                          <p className="font-sans font-medium text-zinc-400 text-[10px] uppercase tracking-wider pb-1 border-b border-zinc-800">
+                            Protocol Lifecycle Stages
+                          </p>
+                          {Object.entries(consoleDiagnostic.stages).map(([stageName, stageData]) => (
+                            <div key={stageName} className="flex items-center justify-between py-0.5 text-[10px]">
+                              <span className="text-zinc-400">{stageName}:</span>
+                              <div className="flex items-center gap-1.5">
+                                {stageData.latencyMs !== undefined && (
+                                  <span className="text-zinc-600">{stageData.latencyMs}ms</span>
+                                )}
+                                <span
+                                  className={
+                                    stageData.status === "ok"
+                                      ? "text-emerald-400 font-semibold"
+                                      : stageData.status === "failed"
+                                      ? "text-red-400 font-semibold"
+                                      : "text-zinc-600"
+                                  }
+                                >
+                                  {stageData.status.toUpperCase()}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
                       {consoleDiagnostic.responseSnippet && (
                         <div>
                           <span className="text-zinc-500">Response Snippet:</span>
