@@ -597,6 +597,88 @@ export const migrations: Migration[] = [
       }
     },
   },
+  {
+    version: 13,
+    name: "node_lifecycle_and_operation_leasing",
+    up: (db: Database) => {
+      // 1. Add heartbeat_at and lease_expires_at to vps_operations
+      const safeAddColumn = (table: string, columnDef: string) => {
+        try {
+          db.run(`ALTER TABLE ${table} ADD COLUMN ${columnDef};`);
+        } catch {
+          // column already exists
+        }
+      };
+
+      safeAddColumn("vps_operations", "heartbeat_at TEXT DEFAULT NULL");
+      safeAddColumn("vps_operations", "lease_expires_at TEXT DEFAULT NULL");
+      db.run("CREATE INDEX IF NOT EXISTS idx_vps_operations_lease ON vps_operations(status, lease_expires_at);");
+
+      // 2. Rebuild proxmox_nodes to expand status CHECK constraint to include disabled, draining, deleting
+      db.run("PRAGMA foreign_keys = OFF;");
+      try {
+        const tableCheck = db.exec(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='proxmox_nodes'"
+        );
+
+        if (tableCheck.length && tableCheck[0].values.length) {
+          db.run(`
+            CREATE TABLE IF NOT EXISTS proxmox_nodes_v3 (
+              id                          TEXT PRIMARY KEY,
+              cluster_id                  TEXT REFERENCES proxmox_clusters(id) ON DELETE SET NULL,
+              name                        TEXT NOT NULL,
+              hostname                    TEXT NOT NULL,
+              api_url                     TEXT NOT NULL,
+              port                        INTEGER NOT NULL DEFAULT 8006,
+              node_name                   TEXT NOT NULL DEFAULT 'pve',
+              region                      TEXT NOT NULL DEFAULT 'default',
+              flag_url                    TEXT,
+              auth_token_id               TEXT NOT NULL,
+              auth_token_secret_encrypted TEXT NOT NULL,
+              allow_insecure_tls          INTEGER NOT NULL DEFAULT 0,
+              default_storage             TEXT,
+              default_template_storage    TEXT,
+              default_rootfs_storage      TEXT,
+              default_bridge              TEXT,
+              enabled                     INTEGER NOT NULL DEFAULT 1,
+              status                      TEXT NOT NULL DEFAULT 'unverified' CHECK(status IN ('healthy','online','offline','degraded','misconfigured','unverified','unknown','disabled','draining','deleting')),
+              last_health_check           TEXT,
+              last_verified_at            TEXT,
+              health_info                 TEXT,
+              verification_info           TEXT,
+              created_at                  TEXT NOT NULL DEFAULT (datetime('now')),
+              updated_at                  TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+          `);
+
+          db.run(`
+            INSERT INTO proxmox_nodes_v3 (
+              id, cluster_id, name, hostname, api_url, port, node_name, region, flag_url,
+              auth_token_id, auth_token_secret_encrypted, allow_insecure_tls,
+              default_storage, default_template_storage, default_rootfs_storage, default_bridge,
+              enabled, status, last_health_check, last_verified_at, health_info, verification_info,
+              created_at, updated_at
+            )
+            SELECT 
+              id, cluster_id, name, hostname, api_url, port, node_name, region, flag_url,
+              auth_token_id, auth_token_secret_encrypted, allow_insecure_tls,
+              default_storage, default_template_storage, default_rootfs_storage, default_bridge,
+              enabled, status, last_health_check, last_verified_at, health_info, verification_info,
+              created_at, updated_at
+            FROM proxmox_nodes;
+          `);
+
+          db.run("DROP TABLE proxmox_nodes;");
+          db.run("ALTER TABLE proxmox_nodes_v3 RENAME TO proxmox_nodes;");
+
+          db.run("CREATE INDEX IF NOT EXISTS idx_proxmox_nodes_status ON proxmox_nodes(status);");
+          db.run("CREATE INDEX IF NOT EXISTS idx_proxmox_nodes_enabled ON proxmox_nodes(enabled);");
+        }
+      } finally {
+        db.run("PRAGMA foreign_keys = ON;");
+      }
+    },
+  },
 ];
 
 /**

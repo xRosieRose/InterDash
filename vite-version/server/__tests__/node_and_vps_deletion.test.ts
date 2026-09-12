@@ -353,5 +353,80 @@ describe("Node & VPS Deletion Lifecycle Integration Tests", () => {
         }
       }
     });
+
+    it("should set heartbeat_at and lease_expires_at when claiming an operation", async () => {
+      const dummyVpsId = "vps-lease-test-" + crypto.randomUUID();
+      execute(
+        `INSERT INTO vps (id, owner_user_id, proxmox_node_id, proxmox_vmid, name, hostname, status, os_image_id, cpu_cores, memory_mb, swap_mb, disk_gb)
+         VALUES (?, ?, ?, 9999, 'Lease Test', 'lease.local', 'running', 'ubuntu', 1, 1024, 512, 10)`,
+        [dummyVpsId, USER_A_ID, NODE_WITH_VPS_ID]
+      );
+      try {
+        const opId = VpsOperationsService.claimOperation(dummyVpsId, USER_A_ID, "reboot");
+        const op = VpsOperationsService.getOperation(opId);
+        assert.ok(op);
+        assert.ok(op.heartbeat_at, "heartbeat_at must be populated");
+        assert.ok(op.lease_expires_at, "lease_expires_at must be populated");
+
+        // Test heartbeat update
+        VpsOperationsService.updateOperationHeartbeat(opId, 600);
+        const updated = VpsOperationsService.getOperation(opId);
+        assert.ok(updated.lease_expires_at);
+
+        VpsOperationsService.completeOperation(opId, dummyVpsId);
+      } finally {
+        execute("DELETE FROM vps WHERE id = ?", [dummyVpsId]);
+      }
+    });
+
+    it("should allow admin to update node status to draining and reflect in overview metrics", async () => {
+      // Create a test node
+      const drainNodeId = "node-drain-" + crypto.randomUUID();
+      execute(
+        `INSERT INTO proxmox_nodes (id, name, hostname, api_url, port, node_name, region, auth_token_id, auth_token_secret_encrypted, status, enabled)
+         VALUES (?, 'Drain Node', 'pve-drain.local', 'https://pve-drain.local:8006', 8006, 'pve', 'us-east', 'token', 'secret', 'healthy', 1)`,
+        [drainNodeId]
+      );
+
+      try {
+        // Set node to draining via PATCH
+        const patchRes = await fetchApi(`/api/admin/nodes/${drainNodeId}`, {
+          method: "PATCH",
+          headers: {
+            Cookie: `interdash_session=${SESSION_ADMIN}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ status: "draining" }),
+        });
+        assert.strictEqual(patchRes.status, 200);
+
+        const nodeRow = queryOne<any>("SELECT status FROM proxmox_nodes WHERE id = ?", [drainNodeId]);
+        assert.strictEqual(nodeRow.status, "draining");
+
+        // Overview metrics should report this node in disabledNodes (since draining is offline from new provisioning)
+        const overviewRes = await fetchApi("/api/admin/overview", {
+          headers: { Cookie: `interdash_session=${SESSION_ADMIN}` },
+        });
+        assert.strictEqual(overviewRes.status, 200);
+        const overviewData = await overviewRes.json();
+        assert.ok(overviewData.metrics.disabledNodes >= 1);
+
+        // Preflight should reject provisioning on this draining node
+        const preflightRes = await fetchApi("/api/admin/vps/preflight", {
+          method: "POST",
+          headers: {
+            Cookie: `interdash_session=${SESSION_ADMIN}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            targetNodeId: drainNodeId,
+            hostname: "test-drain-deploy.local",
+          }),
+        });
+        assert.strictEqual(preflightRes.status, 422);
+      } finally {
+        execute("DELETE FROM proxmox_nodes WHERE id = ?", [drainNodeId]);
+      }
+    });
   });
 });

@@ -81,6 +81,8 @@ export class ProvisioningService {
       defaultRootfsStorage: defaultRootfs,
       defaultBridge: row.default_bridge || null,
       defaultStorage: defaultRootfs || undefined,
+      enabled: row.enabled !== 0,
+      status: row.status,
     };
   }
 
@@ -135,6 +137,14 @@ export class ProvisioningService {
     if (!node) {
       const err = new Error(`Target Proxmox node '${req.targetNodeId}' not found.`);
       (err as any).statusCode = 404;
+      throw err;
+    }
+
+    if (node.enabled === false || ["disabled", "draining", "deleting", "offline"].includes(node.status || "")) {
+      const err = new Error(
+        `Target Proxmox node '${node.name}' is currently ${node.status || "disabled"} and cannot accept new VPS deployments.`
+      );
+      (err as any).statusCode = 422;
       throw err;
     }
 

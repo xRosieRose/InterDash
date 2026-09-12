@@ -37,7 +37,9 @@ router.get("/overview", (_req: Request, res: Response) => {
       COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0) as running_vps,
       COALESCE(SUM(CASE WHEN status = 'stopped' THEN 1 ELSE 0 END), 0) as stopped_vps,
       COALESCE(SUM(CASE WHEN status = 'provisioning' THEN 1 ELSE 0 END), 0) as provisioning_vps,
+      COALESCE(SUM(CASE WHEN status = 'deleting' THEN 1 ELSE 0 END), 0) as deleting_vps,
       COALESCE(SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END), 0) as failed_vps,
+      COALESCE(SUM(CASE WHEN status = 'recovery_required' THEN 1 ELSE 0 END), 0) as recovery_required_vps,
       COALESCE(SUM(cpu_cores), 0) as total_cores,
       COALESCE(SUM(memory_mb), 0) as total_memory_mb,
       COALESCE(SUM(disk_gb), 0) as total_disk_gb
@@ -53,15 +55,16 @@ router.get("/overview", (_req: Request, res: Response) => {
      FROM users`
   );
 
-  // Node counts
+  // Node counts - operational status aware
   const nodeStats = queryOne<any>(
     `SELECT 
       COUNT(*) as total_nodes,
-      COALESCE(SUM(CASE WHEN status = 'online' THEN 1 ELSE 0 END), 0) as online_nodes,
-      COALESCE(SUM(CASE WHEN status = 'offline' THEN 1 ELSE 0 END), 0) as offline_nodes,
-      COALESCE(SUM(CASE WHEN status = 'unknown' OR status = 'degraded' THEN 1 ELSE 0 END), 0) as degraded_nodes
-     FROM proxmox_nodes
-     WHERE enabled = 1`
+      COALESCE(SUM(CASE WHEN (status IN ('healthy', 'online')) AND enabled = 1 THEN 1 ELSE 0 END), 0) as online_nodes,
+      COALESCE(SUM(CASE WHEN status = 'offline' AND enabled = 1 THEN 1 ELSE 0 END), 0) as offline_nodes,
+      COALESCE(SUM(CASE WHEN (status IN ('unknown', 'degraded', 'misconfigured')) AND enabled = 1 THEN 1 ELSE 0 END), 0) as degraded_nodes,
+      COALESCE(SUM(CASE WHEN status = 'unverified' AND enabled = 1 THEN 1 ELSE 0 END), 0) as unverified_nodes,
+      COALESCE(SUM(CASE WHEN enabled = 0 OR status IN ('disabled', 'draining', 'deleting') THEN 1 ELSE 0 END), 0) as disabled_nodes
+     FROM proxmox_nodes`
   );
 
   // Recent audit events
@@ -76,13 +79,14 @@ router.get("/overview", (_req: Request, res: Response) => {
   const totalNodes = nodeStats?.total_nodes || 0;
   const onlineNodes = nodeStats?.online_nodes || 0;
   const offlineNodes = nodeStats?.offline_nodes || 0;
+  const degradedNodes = nodeStats?.degraded_nodes || 0;
 
   let systemHealth: "operational" | "degraded" | "outage" | "unconfigured" = "operational";
   if (totalNodes === 0) {
     systemHealth = "unconfigured";
   } else if (offlineNodes > 0 && onlineNodes === 0) {
     systemHealth = "outage";
-  } else if (offlineNodes > 0 || (nodeStats?.degraded_nodes || 0) > 0) {
+  } else if (offlineNodes > 0 || degradedNodes > 0) {
     systemHealth = "degraded";
   }
 
@@ -92,7 +96,9 @@ router.get("/overview", (_req: Request, res: Response) => {
       runningVps: vpsStats?.running_vps || 0,
       stoppedVps: vpsStats?.stopped_vps || 0,
       provisioningVps: vpsStats?.provisioning_vps || 0,
+      deletingVps: vpsStats?.deleting_vps || 0,
       failedVps: vpsStats?.failed_vps || 0,
+      recoveryRequiredVps: vpsStats?.recovery_required_vps || 0,
       totalUsers: userStats?.total_users || 0,
       activeUsers: userStats?.active_users || 0,
       adminUsers: userStats?.admin_users || 0,
@@ -102,6 +108,9 @@ router.get("/overview", (_req: Request, res: Response) => {
       totalNodes,
       onlineNodes,
       offlineNodes,
+      degradedNodes,
+      unverifiedNodes: nodeStats?.unverified_nodes || 0,
+      disabledNodes: nodeStats?.disabled_nodes || 0,
       systemHealth,
     },
     recentEvents,
@@ -571,7 +580,7 @@ router.get("/nodes/:id/capabilities", async (req: Request, res: Response) => {
 // ============================================================================
 router.patch("/nodes/:id", (req: Request, res: Response) => {
   const { id } = req.params;
-  const targetNode = queryOne<any>("SELECT id, name FROM proxmox_nodes WHERE id = ?", [id]);
+  const targetNode = queryOne<any>("SELECT id, name, status, enabled FROM proxmox_nodes WHERE id = ?", [id]);
   if (!targetNode) {
     res.status(404).json({ error: "Proxmox node not found." });
     return;
@@ -593,6 +602,7 @@ router.patch("/nodes/:id", (req: Request, res: Response) => {
     defaultBridge,
     allowInsecureTls,
     enabled,
+    status,
   } = req.body;
 
   const updates: string[] = [];
@@ -661,9 +671,34 @@ router.patch("/nodes/:id", (req: Request, res: Response) => {
     updates.push("allow_insecure_tls = ?");
     params.push(allowInsecureTls ? 1 : 0);
   }
+  if (status !== undefined) {
+    const validStatuses = [
+      "healthy", "online", "offline", "degraded",
+      "misconfigured", "unverified", "unknown",
+      "disabled", "draining", "deleting"
+    ];
+    if (!validStatuses.includes(String(status))) {
+      res.status(400).json({ error: `Invalid node status: ${status}` });
+      return;
+    }
+    updates.push("status = ?");
+    params.push(String(status));
+    if (status === "disabled" && enabled === undefined) {
+      updates.push("enabled = ?");
+      params.push(0);
+    }
+  }
   if (enabled !== undefined) {
+    const isEnabled = enabled ? 1 : 0;
     updates.push("enabled = ?");
-    params.push(enabled ? 1 : 0);
+    params.push(isEnabled);
+    if (status === undefined) {
+      if (isEnabled === 0 && (targetNode.status === "healthy" || targetNode.status === "online")) {
+        updates.push("status = 'disabled'");
+      } else if (isEnabled === 1 && targetNode.status === "disabled") {
+        updates.push("status = 'unverified'");
+      }
+    }
   }
 
   if (updates.length === 0) {
@@ -814,8 +849,13 @@ router.post("/vps/preflight", async (req: Request, res: Response) => {
   // Check 2: Target Node
   const nodeConfig = ProvisioningService.getNodeConfig(targetNodeId);
   if (!nodeConfig) {
-    checks.push({ name: "node", status: "failed", message: "Target Proxmox node does not exist or is disabled." });
-    res.status(422).json({ valid: false, error: "Target Proxmox node does not exist or is disabled.", checks });
+    checks.push({ name: "node", status: "failed", message: "Target Proxmox node does not exist." });
+    res.status(422).json({ valid: false, error: "Target Proxmox node does not exist.", checks });
+    return;
+  }
+  if (nodeConfig.enabled === false || ["disabled", "draining", "deleting", "offline"].includes(nodeConfig.status || "")) {
+    checks.push({ name: "node", status: "failed", message: `Node '${nodeConfig.name}' is ${nodeConfig.status || "disabled"} and cannot accept deployments.` });
+    res.status(422).json({ valid: false, error: `Target node '${nodeConfig.name}' is currently ${nodeConfig.status || "disabled"}.`, checks });
     return;
   }
   checks.push({ name: "node", status: "passed", message: `Node '${nodeConfig.name}' active.` });

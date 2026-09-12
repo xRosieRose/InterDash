@@ -134,6 +134,7 @@ export default function AdminVpsCreatePage() {
     error?: string
   } | null>(null)
   const [isDeploying, setIsDeploying] = React.useState(false)
+  const capRequestIdRef = React.useRef(0)
 
   // Helper for CSRF
   const getCsrfHeader = async (): Promise<Record<string, string>> => {
@@ -141,7 +142,9 @@ export default function AdminVpsCreatePage() {
       const res = await fetch("/api/auth/csrf")
       if (res.ok) {
         const data = await res.json()
-        if (data.token) return { "x-csrf-token": String(data.token) }
+        if (data.token) {
+          return { "x-csrf-token": String(data.token) }
+        }
       }
     } catch {}
     return {}
@@ -168,8 +171,12 @@ export default function AdminVpsCreatePage() {
 
         if (nodesRes.ok) {
           const nData = await nodesRes.json()
-          // Only show enabled nodes
-          const readyNodes = (nData.nodes || []).filter((n: NodeOption) => n.enabled !== 0)
+          // Only show enabled, non-draining, non-offline nodes
+          const readyNodes = (nData.nodes || []).filter(
+            (n: NodeOption) =>
+              n.enabled !== 0 &&
+              !["disabled", "draining", "deleting", "offline"].includes(n.status)
+          )
           setNodes(readyNodes)
           if (readyNodes.length > 0 && !selectedNodeId) {
             setSelectedNodeId(readyNodes[0].id)
@@ -184,17 +191,27 @@ export default function AdminVpsCreatePage() {
     loadData()
   }, [])
 
-  // Load capabilities whenever selected node changes
+  // Load capabilities whenever selected node changes with request versioning
   React.useEffect(() => {
     if (!selectedNodeId) return
 
+    const currentReqId = ++capRequestIdRef.current
+    setIsLoadingCaps(true)
+    setPreflightResults(null)
+    setSelectedTemplate("")
+    setTemplateStorage("")
+    setRootfsStorage("")
+    setBridge("")
+    setIpv4PoolId("")
+
     async function loadNodeCapabilities() {
-      setIsLoadingCaps(true)
-      setPreflightResults(null)
       try {
         const res = await fetch(`/api/admin/nodes/${selectedNodeId}/capabilities`)
         if (!res.ok) throw new Error("Failed to query node capabilities.")
         const data = await res.json()
+
+        // Discard stale responses if user switched nodes
+        if (currentReqId !== capRequestIdRef.current) return
 
         const templates: DiscoveredTemplate[] = data.templates || []
         const tStorages: string[] = data.templateStorages || []
@@ -243,9 +260,12 @@ export default function AdminVpsCreatePage() {
           setIpv4PoolId("")
         }
       } catch (err: unknown) {
+        if (currentReqId !== capRequestIdRef.current) return
         toast.error(err instanceof Error ? err.message : "Error fetching node capabilities")
       } finally {
-        setIsLoadingCaps(false)
+        if (currentReqId === capRequestIdRef.current) {
+          setIsLoadingCaps(false)
+        }
       }
     }
 

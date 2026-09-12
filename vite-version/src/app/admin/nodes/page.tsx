@@ -20,6 +20,7 @@ import {
   Eye,
   EyeOff,
   Key,
+  Clock,
 } from "lucide-react"
 import { BaseLayout } from "@/components/layouts/base-layout"
 import { Badge } from "@/components/ui/badge"
@@ -179,6 +180,8 @@ export default function AdminNodesPage() {
   const [editDefaultRootfsStorage, setEditDefaultRootfsStorage] = React.useState("")
   const [editDefaultBridge, setEditDefaultBridge] = React.useState("")
   const [editAllowInsecureTls, setEditAllowInsecureTls] = React.useState(false)
+  const [editStatus, setEditStatus] = React.useState("healthy")
+  const [editEnabled, setEditEnabled] = React.useState(true)
   const [isSavingEdit, setIsSavingEdit] = React.useState(false)
   const [isRefreshingEditCaps, setIsRefreshingEditCaps] = React.useState(false)
   const [editDiscoveredTemplateStorages, setEditDiscoveredTemplateStorages] = React.useState<string[]>([])
@@ -486,6 +489,8 @@ export default function AdminNodesPage() {
     setEditDefaultRootfsStorage(node.default_rootfs_storage || node.default_storage || "")
     setEditDefaultBridge(node.default_bridge || "")
     setEditAllowInsecureTls(node.allow_insecure_tls === 1)
+    setEditStatus(node.status || "healthy")
+    setEditEnabled(node.enabled === 1)
     setEditDiscoveredTemplateStorages([])
     setEditDiscoveredRootfsStorages([])
     setEditDiscoveredBridges([])
@@ -591,6 +596,8 @@ export default function AdminNodesPage() {
           defaultRootfsStorage: editDefaultRootfsStorage.trim() || null,
           defaultBridge: editDefaultBridge.trim() || null,
           allowInsecureTls: editAllowInsecureTls,
+          status: editStatus,
+          enabled: editEnabled ? 1 : 0,
         }),
       })
 
@@ -609,6 +616,7 @@ export default function AdminNodesPage() {
 
   const handleToggleEnabled = async (node: ProxmoxNode) => {
     const nextEnabled = node.enabled === 1 ? 0 : 1
+    const nextStatus = nextEnabled === 1 ? "unverified" : "disabled"
     try {
       const csrfRes = await fetch("/api/auth/csrf")
       let csrfToken = ""
@@ -622,10 +630,10 @@ export default function AdminNodesPage() {
           "Content-Type": "application/json",
           ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
         },
-        body: JSON.stringify({ enabled: nextEnabled }),
+        body: JSON.stringify({ enabled: nextEnabled, status: nextStatus }),
       })
       if (!res.ok) throw new Error("Failed to update node status.")
-      toast.success(nextEnabled === 1 ? `Node '${node.name}' enabled for deployments.` : `Node '${node.name}' disabled / draining.`)
+      toast.success(nextEnabled === 1 ? `Node '${node.name}' enabled for deployments.` : `Node '${node.name}' disabled.`)
       fetchNodes()
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : "Error updating node status")
@@ -745,10 +753,10 @@ export default function AdminNodesPage() {
   }
 
   const getStatusBadge = (status: string, enabled?: number) => {
-    if (enabled === 0) {
+    if (enabled === 0 || status === "disabled") {
       return (
         <Badge variant="outline" className="border-zinc-500/30 bg-zinc-500/10 text-zinc-400 gap-1 text-[10px] py-0">
-          Disabled / Drain
+          Disabled
         </Badge>
       )
     }
@@ -763,6 +771,12 @@ export default function AdminNodesPage() {
         return (
           <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-500 gap-1 text-[10px] py-0">
             <CheckCircle2 className="size-3" /> Online
+          </Badge>
+        )
+      case "draining":
+        return (
+          <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-500 gap-1 text-[10px] py-0">
+            <Clock className="size-3" /> Draining
           </Badge>
         )
       case "degraded":
@@ -781,6 +795,12 @@ export default function AdminNodesPage() {
         return (
           <Badge variant="outline" className="border-blue-500/30 bg-blue-500/10 text-blue-400 gap-1 text-[10px] py-0">
             <ShieldAlert className="size-3" /> Unverified
+          </Badge>
+        )
+      case "deleting":
+        return (
+          <Badge variant="outline" className="border-destructive/30 bg-destructive/10 text-destructive gap-1 text-[10px] py-0">
+            <XCircle className="size-3" /> Deleting
           </Badge>
         )
       case "offline":
@@ -1805,6 +1825,27 @@ export default function AdminNodesPage() {
                   className="text-xs font-mono"
                 />
               )}
+            </div>
+
+            {/* Operational Lifecycle State */}
+            <div className="space-y-1.5">
+              <Label className="text-xs font-bold">Operational Lifecycle State</Label>
+              <Select
+                value={editStatus}
+                onValueChange={(val) => {
+                  setEditStatus(val)
+                  setEditEnabled(val !== "disabled")
+                }}
+              >
+                <SelectTrigger className="text-xs">
+                  <SelectValue placeholder="Select operational state" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="healthy" className="text-xs">Active / Healthy (Enabled for deployments)</SelectItem>
+                  <SelectItem value="draining" className="text-xs">Draining (Maintenance / No new deployments)</SelectItem>
+                  <SelectItem value="disabled" className="text-xs">Disabled (Offline from deployments)</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
 
             {/* Self-signed TLS Toggle */}

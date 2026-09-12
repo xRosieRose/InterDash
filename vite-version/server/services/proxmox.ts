@@ -30,17 +30,23 @@ export interface ProxmoxNodeConfig {
   defaultRootfsStorage?: string | null;
   defaultBridge?: string | null;
   defaultStorage?: string; // legacy fallback
+  enabled?: boolean;
+  status?: NodeOperationalStatus;
 }
 
 export type VerificationStatus = "passed" | "warning" | "failed";
 
 export type NodeOperationalStatus =
   | "healthy"
+  | "online"
   | "degraded"
   | "offline"
   | "misconfigured"
   | "unverified"
-  | "unknown";
+  | "unknown"
+  | "disabled"
+  | "draining"
+  | "deleting";
 
 export interface NodeVerificationCheck {
   name: string;

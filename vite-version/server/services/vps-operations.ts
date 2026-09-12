@@ -98,15 +98,16 @@ export class VpsOperationsService {
         throw err;
       }
 
-      // 2. Insert new operation
+      // 2. Insert new operation with leasing
       const operationId = uuidv4();
       const paramsJson = paramsSafe ? JSON.stringify(paramsSafe) : null;
 
       execute(
         `INSERT INTO vps_operations (
           id, vps_id, requested_by_user_id, operation_type,
-          status, current_step, params_json, started_at
-        ) VALUES (?, ?, ?, ?, 'running', 'initiating', ?, datetime('now'))`,
+          status, current_step, params_json, started_at,
+          heartbeat_at, lease_expires_at
+        ) VALUES (?, ?, ?, ?, 'running', 'initiating', ?, datetime('now'), datetime('now'), datetime('now', '+5 minutes'))`,
         [operationId, vpsId, userId, operationType, paramsJson]
       );
 
@@ -917,12 +918,26 @@ export class VpsOperationsService {
   }
 
   /**
+   * Update heartbeat and lease extension for an active operation
+   */
+  public static updateOperationHeartbeat(operationId: string, extensionSeconds = 300): void {
+    execute(
+      `UPDATE vps_operations SET
+        heartbeat_at = datetime('now'),
+        lease_expires_at = datetime('now', '+' || ? || ' seconds')
+       WHERE id = ?`,
+      [extensionSeconds, operationId]
+    );
+  }
+
+  /**
    * Get single operation status by operation ID
    */
   public static getOperation(operationId: string): any | null {
     return queryOne<any>(
       `SELECT id, vps_id, requested_by_user_id, operation_type,
               status, current_step, result_json, error_code, error_message,
+              heartbeat_at, lease_expires_at,
               started_at, completed_at, created_at
        FROM vps_operations
        WHERE id = ? LIMIT 1`,
@@ -937,6 +952,7 @@ export class VpsOperationsService {
     return queryAll<any>(
       `SELECT id, vps_id, requested_by_user_id, operation_type,
               status, current_step, result_json, error_code, error_message,
+              heartbeat_at, lease_expires_at,
               started_at, completed_at, created_at
        FROM vps_operations
        WHERE vps_id = ?
