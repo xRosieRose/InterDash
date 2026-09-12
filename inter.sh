@@ -854,21 +854,30 @@ case "${1:-}" in
   build|--build|-b)
     run_build
     ;;
+  patch-pve|--patch-pve)
+    SCRIPT_PATH="$SCRIPT_DIR/scripts/patch-pve-termproxy.sh"
+    if [ -f "$SCRIPT_PATH" ]; then
+      bash "$SCRIPT_PATH"
+    else
+      curl -fsSL "https://raw.githubusercontent.com/xRosieRose/InterDash/main/scripts/patch-pve-termproxy.sh" | bash
+    fi
+    ;;
   help|--help|-h)
     print_banner
     echo -e "  ${WHITE_BOLD}Usage:${NC} ./inter.sh [command]"
     echo ""
     echo -e "  ${WHITE_BOLD}Commands:${NC}"
-    echo -e "    ${WHITE}install, --install, -i${NC}  Run automated installation & start with PM2"
-    echo -e "    ${WHITE}update,  --update,  -u${NC}  Pull latest changes from GitHub & reload PM2"
-    echo -e "    ${WHITE}start,   --start,   -s${NC}  Launch or reload InterDash under PM2"
-    echo -e "    ${WHITE}stop,    --stop${NC}        Stop InterDash PM2 daemon"
-    echo -e "    ${WHITE}restart, --restart, -r${NC}  Restart InterDash PM2 daemon"
-    echo -e "    ${WHITE}logs,    --logs,    -l${NC}  Stream real-time PM2 application logs"
-    echo -e "    ${WHITE}status${NC}                Show PM2 daemon and service status"
-    echo -e "    ${WHITE}dev,     --dev,     -d${NC}  Start interactive Vite dev server (0.0.0.0:5173)"
-    echo -e "    ${WHITE}build,   --build,   -b${NC}  Compile production distribution"
-    echo -e "    ${WHITE}help,    --help,    -h${NC}  Show this help reference"
+    echo -e "    ${WHITE}install,   --install,   -i${NC}  Run automated installation & start with PM2"
+    echo -e "    ${WHITE}update,    --update,    -u${NC}  Pull latest changes from GitHub & reload PM2"
+    echo -e "    ${WHITE}start,     --start,     -s${NC}  Launch or reload InterDash under PM2"
+    echo -e "    ${WHITE}stop,      --stop${NC}          Stop InterDash PM2 daemon"
+    echo -e "    ${WHITE}restart,   --restart,   -r${NC}  Restart InterDash PM2 daemon"
+    echo -e "    ${WHITE}logs,      --logs,      -l${NC}  Stream real-time PM2 application logs"
+    echo -e "    ${WHITE}status${NC}                  Show PM2 daemon and service status"
+    echo -e "    ${WHITE}dev,       --dev,       -d${NC}  Start interactive Vite dev server (0.0.0.0:5173)"
+    echo -e "    ${WHITE}build,     --build,     -b${NC}  Compile production distribution"
+    echo -e "    ${WHITE}patch-pve, --patch-pve${NC}    Apply Proxmox termproxy API Token authentication patch"
+    echo -e "    ${WHITE}help,      --help,      -h${NC}  Show this help reference"
     echo ""
     echo -e "  Run without arguments for interactive management interface."
     echo ""
