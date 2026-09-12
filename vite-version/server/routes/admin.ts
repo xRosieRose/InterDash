@@ -21,6 +21,8 @@ import { encryptCredential, decryptCredential } from "../services/crypto.js";
 import { ProvisioningService } from "../services/provisioning.js";
 import { AuthConfigService } from "../services/auth-config.js";
 import { VpsExpiryService } from "../services/vps-expiry.js";
+import { ApiKeyService } from "../services/api-key.js";
+import { SCOPE_REGISTRY } from "../services/api-scopes.js";
 
 const router = Router();
 
@@ -1259,6 +1261,136 @@ router.patch("/vps/:id/expiry", (req: Request, res: Response) => {
       error: err.message || "Failed to update VPS expiration.",
       code: err.code,
     });
+  }
+});
+
+// ============================================================================
+// GET /api/admin/api-keys — List All Admin API Keys
+// ============================================================================
+router.get("/api-keys", (_req: Request, res: Response) => {
+  try {
+    const keys = ApiKeyService.listKeys();
+    res.json({ keys, availableScopes: SCOPE_REGISTRY });
+  } catch (err: any) {
+    res.status(err.statusCode || 500).json({ error: err.message || "Failed to list API keys." });
+  }
+});
+
+// ============================================================================
+// POST /api/admin/api-keys — Create New API Key
+// ============================================================================
+router.post("/api-keys", (req: Request, res: Response) => {
+  try {
+    if (!req.user) {
+      res.status(401).json({ error: "Authentication required." });
+      return;
+    }
+    const result = ApiKeyService.createKey(req.body, req.user.id);
+    res.status(201).json({
+      success: true,
+      key: result.key,
+      rawToken: result.rawToken,
+      message: "API key created successfully. Please copy this key now. It will not be shown again.",
+    });
+  } catch (err: any) {
+    res.status(err.statusCode || 500).json({ error: err.message || "Failed to create API key." });
+  }
+});
+
+// ============================================================================
+// GET /api/admin/api-keys/:id — Get API Key Details
+// ============================================================================
+router.get("/api-keys/:id", (req: Request, res: Response) => {
+  try {
+    const key = ApiKeyService.getKeyById(req.params.id);
+    if (!key) {
+      res.status(404).json({ error: "API key not found." });
+      return;
+    }
+    res.json({ key });
+  } catch (err: any) {
+    res.status(err.statusCode || 500).json({ error: err.message || "Failed to get API key." });
+  }
+});
+
+// ============================================================================
+// PATCH /api/admin/api-keys/:id — Update API Key
+// ============================================================================
+router.patch("/api-keys/:id", (req: Request, res: Response) => {
+  try {
+    if (!req.user) {
+      res.status(401).json({ error: "Authentication required." });
+      return;
+    }
+    const updated = ApiKeyService.updateKey(req.params.id, req.body, req.user.id);
+    res.json({ success: true, key: updated });
+  } catch (err: any) {
+    res.status(err.statusCode || 500).json({ error: err.message || "Failed to update API key." });
+  }
+});
+
+// ============================================================================
+// POST /api/admin/api-keys/:id/rotate — Rotate API Key
+// ============================================================================
+router.post("/api-keys/:id/rotate", (req: Request, res: Response) => {
+  try {
+    if (!req.user) {
+      res.status(401).json({ error: "Authentication required." });
+      return;
+    }
+    const result = ApiKeyService.rotateKey(req.params.id, req.user.id);
+    res.json({
+      success: true,
+      key: result.key,
+      rawToken: result.rawToken,
+      message: "API key rotated successfully. The previous key has been immediately revoked. Copy the new key now.",
+    });
+  } catch (err: any) {
+    res.status(err.statusCode || 500).json({ error: err.message || "Failed to rotate API key." });
+  }
+});
+
+// ============================================================================
+// POST /api/admin/api-keys/:id/revoke — Revoke API Key
+// ============================================================================
+router.post("/api-keys/:id/revoke", (req: Request, res: Response) => {
+  try {
+    if (!req.user) {
+      res.status(401).json({ error: "Authentication required." });
+      return;
+    }
+    const revoked = ApiKeyService.revokeKey(req.params.id, req.user.id);
+    res.json({ success: true, key: revoked, message: "API key revoked successfully." });
+  } catch (err: any) {
+    res.status(err.statusCode || 500).json({ error: err.message || "Failed to revoke API key." });
+  }
+});
+
+// ============================================================================
+// DELETE /api/admin/api-keys/:id — Delete / Purge API Key
+// ============================================================================
+router.delete("/api-keys/:id", (req: Request, res: Response) => {
+  try {
+    if (!req.user) {
+      res.status(401).json({ error: "Authentication required." });
+      return;
+    }
+    ApiKeyService.deleteKey(req.params.id, req.user.id);
+    res.json({ success: true, message: "API key purged successfully." });
+  } catch (err: any) {
+    res.status(err.statusCode || 500).json({ error: err.message || "Failed to delete API key." });
+  }
+});
+
+// ============================================================================
+// GET /api/admin/api-keys/:id/usage — Usage Telemetry
+// ============================================================================
+router.get("/api-keys/:id/usage", (req: Request, res: Response) => {
+  try {
+    const usage = ApiKeyService.getKeyUsage(req.params.id);
+    res.json(usage);
+  } catch (err: any) {
+    res.status(err.statusCode || 500).json({ error: err.message || "Failed to get API key usage." });
   }
 });
 

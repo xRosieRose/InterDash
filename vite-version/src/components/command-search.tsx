@@ -12,6 +12,7 @@ import {
   Users,
   Settings,
   Globe,
+  Key,
   type LucideIcon,
 } from "lucide-react"
 
@@ -131,6 +132,7 @@ export function CommandSearch({ open, onOpenChange }: CommandSearchProps) {
     { title: "User Accounts", url: "/admin/users", group: "Admin", icon: Users },
     { title: "Proxmox Nodes", url: "/admin/nodes", group: "Admin", icon: Server },
     { title: "Panel Settings", url: "/admin/settings", group: "Admin", icon: Settings },
+    { title: "API Keys & External Access", url: "/admin/settings?tab=api-keys", group: "Admin", icon: Key },
 
     // Public / Landing
     { title: "Landing Page", url: "/landing", group: "General", icon: Globe },

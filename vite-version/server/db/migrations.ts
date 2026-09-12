@@ -762,6 +762,79 @@ export const migrations: Migration[] = [
       db.run("CREATE INDEX IF NOT EXISTS idx_vps_expires_at ON vps(expires_at);");
     },
   },
+  {
+    version: 17,
+    name: "api_platform_core_schema",
+    up: (db: Database) => {
+      // API keys table
+      db.run(`
+        CREATE TABLE IF NOT EXISTS api_keys (
+          id                  TEXT PRIMARY KEY,
+          name                TEXT NOT NULL,
+          description         TEXT,
+          prefix              TEXT NOT NULL,
+          key_hash            TEXT NOT NULL UNIQUE,
+          created_by_user_id  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          scopes              TEXT NOT NULL,
+          metadata            TEXT,
+          status              TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','revoked','expired')),
+          rate_limit_rpm      INTEGER NOT NULL DEFAULT 120,
+          expires_at          TEXT DEFAULT NULL,
+          revoked_at          TEXT DEFAULT NULL,
+          revoked_by_user_id  TEXT DEFAULT NULL REFERENCES users(id),
+          last_used_at        TEXT DEFAULT NULL,
+          last_used_ip        TEXT DEFAULT NULL,
+          last_used_user_agent TEXT DEFAULT NULL,
+          rotation_parent_id  TEXT DEFAULT NULL REFERENCES api_keys(id),
+          rotated_at          TEXT DEFAULT NULL,
+          created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+      `);
+      db.run("CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash);");
+      db.run("CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(prefix);");
+      db.run("CREATE INDEX IF NOT EXISTS idx_api_keys_created_by ON api_keys(created_by_user_id);");
+      db.run("CREATE INDEX IF NOT EXISTS idx_api_keys_expires_at ON api_keys(expires_at);");
+      db.run("CREATE INDEX IF NOT EXISTS idx_api_keys_revoked_at ON api_keys(revoked_at);");
+      db.run("CREATE INDEX IF NOT EXISTS idx_api_keys_status ON api_keys(status);");
+
+      // Idempotency table
+      db.run(`
+        CREATE TABLE IF NOT EXISTS api_idempotency_keys (
+          id                INTEGER PRIMARY KEY AUTOINCREMENT,
+          idempotency_key   TEXT NOT NULL,
+          api_key_id        TEXT NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+          method            TEXT NOT NULL,
+          path              TEXT NOT NULL,
+          request_hash      TEXT NOT NULL,
+          status_code       INTEGER NOT NULL,
+          response_headers  TEXT,
+          response_body     TEXT NOT NULL,
+          resource_id       TEXT,
+          created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+          expires_at        TEXT NOT NULL DEFAULT (datetime('now', '+24 hours'))
+        );
+      `);
+      db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_api_idempotency ON api_idempotency_keys(api_key_id, idempotency_key);");
+      db.run("CREATE INDEX IF NOT EXISTS idx_api_idempotency_expires ON api_idempotency_keys(expires_at);");
+
+      // Usage telemetry table
+      db.run(`
+        CREATE TABLE IF NOT EXISTS api_usage_metrics (
+          id                INTEGER PRIMARY KEY AUTOINCREMENT,
+          api_key_id        TEXT NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+          endpoint          TEXT NOT NULL,
+          method            TEXT NOT NULL,
+          status_code       INTEGER NOT NULL,
+          response_time_ms  INTEGER,
+          ip_address        TEXT,
+          created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+      `);
+      db.run("CREATE INDEX IF NOT EXISTS idx_api_usage_key ON api_usage_metrics(api_key_id);");
+      db.run("CREATE INDEX IF NOT EXISTS idx_api_usage_created ON api_usage_metrics(created_at);");
+    },
+  },
 ];
 
 /**

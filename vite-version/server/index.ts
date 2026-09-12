@@ -34,6 +34,8 @@ import { setupConsoleWebSocket } from "./services/console.js";
 import { ProvisioningService } from "./services/provisioning.js";
 import { VpsOperationsService } from "./services/vps-operations.js";
 import { VpsExpiryService } from "./services/vps-expiry.js";
+import { ApiKeyService } from "./services/api-key.js";
+import v1Routes from "./routes/v1/index.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -89,6 +91,15 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/provisioning", csrfProtection, provisioningRoutes);
   app.use("/api/admin", csrfProtection, adminRoutes);
   app.use("/api/users", csrfProtection, adminRoutes);
+
+  // ==========================================================================
+  // Versioned External REST Control Plane (v1)
+  // Bearer token authenticated, rate-limited, idempotent. CSRF NOT required.
+  // ==========================================================================
+  app.use("/api/v1", v1Routes);
+  app.get("/docs/api", (_req, res) => {
+    res.redirect(302, "/api/v1/docs");
+  });
 
   // Catch-all for unknown API routes (Express 5 wildcard syntax: /api/{*splat})
   app.all("/api/{*splat}", (_req, res) => {
@@ -340,11 +351,18 @@ export async function main() {
   }, 60 * 1000);
   expiryReconciliationInterval.unref();
 
+  // API Telemetry & Idempotency Key Cleanup (every 15 minutes)
+  const apiCleanupInterval = setInterval(() => {
+    ApiKeyService.cleanupOldMetrics();
+  }, 15 * 60 * 1000);
+  apiCleanupInterval.unref();
+
   // Graceful Shutdown
   const shutdown = () => {
     console.log("\n[SERVER] Shutting down...");
     if (cleanupInterval) clearInterval(cleanupInterval);
     if (expiryReconciliationInterval) clearInterval(expiryReconciliationInterval);
+    clearInterval(apiCleanupInterval);
     closeDatabase();
     process.exit(0);
   };

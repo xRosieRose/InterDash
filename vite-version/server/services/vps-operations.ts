@@ -175,7 +175,39 @@ export class VpsOperationsService {
   }
 
   /**
-   * Power action: start
+   * Asynchronously initiate a power operation (start, stop, reboot) and return operationId immediately (202 Accepted).
+   */
+  public static startPowerOperation(
+    vpsId: string,
+    action: "start" | "stop" | "reboot",
+    userId: string,
+    force = false
+  ): { operationId: string; status: string } {
+    const { vps } = this.resolveVpsAndNode(vpsId);
+    VpsExpiryService.assertVpsActionAllowed(vps, action);
+
+    const opType = action === "stop" && force ? "force_stop" : action;
+    const opId = this.claimOperation(vpsId, userId, opType, { force });
+
+    setImmediate(async () => {
+      try {
+        if (action === "start") {
+          await this.executeStartWithOpId(opId, vpsId, userId);
+        } else if (action === "stop") {
+          await this.executeStopWithOpId(opId, vpsId, userId, force);
+        } else {
+          await this.executeRebootWithOpId(opId, vpsId, userId);
+        }
+      } catch (err: unknown) {
+        console.error(`[POWER_${action.toUpperCase()}] Async execution failed:`, err);
+      }
+    });
+
+    return { operationId: opId, status: "queued" };
+  }
+
+  /**
+   * Power action: start (synchronous/awaitable)
    */
   public static async start(vpsId: string, userId: string): Promise<OperationResult> {
     const target = await this.resolveVpsAndRuntimeTarget(vpsId);
@@ -193,8 +225,18 @@ export class VpsOperationsService {
     VpsExpiryService.assertVpsActionAllowed(vps, "start");
 
     const opId = this.claimOperation(vpsId, userId, "start");
+    return this.executeStartWithOpId(opId, vpsId, userId);
+  }
 
+  private static async executeStartWithOpId(
+    opId: string,
+    vpsId: string,
+    userId: string
+  ): Promise<OperationResult> {
     try {
+      const target = await this.resolveVpsAndRuntimeTarget(vpsId);
+      const { vps, node, runtimeNode } = target;
+
       // Check current live status on runtime node
       const current = await ProxmoxService.getLxcStatus(node, vps.proxmox_vmid, runtimeNode);
       if (current.ok && current.status === "running") {
@@ -262,8 +304,19 @@ export class VpsOperationsService {
     }
 
     const opId = this.claimOperation(vpsId, userId, force ? "force_stop" : "stop", { force });
+    return this.executeStopWithOpId(opId, vpsId, userId, force);
+  }
 
+  private static async executeStopWithOpId(
+    opId: string,
+    vpsId: string,
+    userId: string,
+    force = false
+  ): Promise<OperationResult> {
     try {
+      const target = await this.resolveVpsAndRuntimeTarget(vpsId);
+      const { vps, node, runtimeNode } = target;
+
       const current = await ProxmoxService.getLxcStatus(node, vps.proxmox_vmid, runtimeNode);
       if (current.ok && current.status === "stopped") {
         execute(
@@ -331,8 +384,18 @@ export class VpsOperationsService {
     VpsExpiryService.assertVpsActionAllowed(vps, "reboot");
 
     const opId = this.claimOperation(vpsId, userId, "reboot");
+    return this.executeRebootWithOpId(opId, vpsId, userId);
+  }
 
+  private static async executeRebootWithOpId(
+    opId: string,
+    vpsId: string,
+    userId: string
+  ): Promise<OperationResult> {
     try {
+      const target = await this.resolveVpsAndRuntimeTarget(vpsId);
+      const { vps, node, runtimeNode } = target;
+
       execute(
         "UPDATE vps_operations SET current_step = 'sending_reboot_signal' WHERE id = ?",
         [opId]
@@ -370,7 +433,38 @@ export class VpsOperationsService {
   }
 
   /**
-   * Settings: Change root password
+   * Asynchronously initiate VPS password reset and return operationId immediately (202 Accepted).
+   */
+  public static startPasswordReset(
+    vpsId: string,
+    userId: string,
+    password: string
+  ): { operationId: string; status: string } {
+    const { vps } = this.resolveVpsAndNode(vpsId);
+
+    if (!password || typeof password !== "string" || password.length < 8) {
+      const err = new Error("Root password must be at least 8 characters.");
+      (err as any).statusCode = 400;
+      throw err;
+    }
+
+    VpsExpiryService.assertVpsActionAllowed(vps, "password_reset");
+
+    const opId = this.claimOperation(vpsId, userId, "password_reset");
+
+    setImmediate(async () => {
+      try {
+        await this.executePasswordResetWithOpId(opId, vpsId, userId, password);
+      } catch (err) {
+        console.error(`[PASSWORD_RESET] Async execution failed:`, err);
+      }
+    });
+
+    return { operationId: opId, status: "queued" };
+  }
+
+  /**
+   * Settings: Change root password (synchronous/awaitable)
    */
   public static async changeRootPassword(
     vpsId: string,
@@ -398,8 +492,19 @@ export class VpsOperationsService {
 
     // Password is NEVER saved in paramsSafe or params_json!
     const opId = this.claimOperation(vpsId, userId, "password_reset");
+    return this.executePasswordResetWithOpId(opId, vpsId, userId, newPassword);
+  }
 
+  private static async executePasswordResetWithOpId(
+    opId: string,
+    vpsId: string,
+    userId: string,
+    newPassword: string
+  ): Promise<OperationResult> {
     try {
+      const target = await this.resolveVpsAndRuntimeTarget(vpsId);
+      const { vps, node, runtimeNode } = target;
+
       execute(
         "UPDATE vps_operations SET current_step = 'applying_password_to_hypervisor' WHERE id = ?",
         [opId]
@@ -495,7 +600,57 @@ export class VpsOperationsService {
   }
 
   /**
-   * Destructive OS Reinstall:
+   * Asynchronously initiate VPS reinstall and return operationId immediately (202 Accepted).
+   */
+  public static startReinstall(
+    vpsId: string,
+    userId: string,
+    osTemplate: string,
+    rootPassword?: string,
+    confirmHostname?: string,
+    sshKey?: string
+  ): { operationId: string; status: string } {
+    const { vps } = this.resolveVpsAndNode(vpsId);
+
+    if (!confirmHostname || confirmHostname.trim() !== vps.hostname.trim()) {
+      const err = new Error(
+        `Confirmation mismatch: You must enter the exact VPS hostname '${vps.hostname}' to reinstall.`
+      );
+      (err as any).statusCode = 400;
+      throw err;
+    }
+
+    if (!osTemplate || typeof osTemplate !== "string") {
+      const err = new Error("A valid OS template must be specified for reinstall.");
+      (err as any).statusCode = 400;
+      throw err;
+    }
+
+    VpsExpiryService.assertVpsActionAllowed(vps, "reinstall");
+
+    const opId = this.claimOperation(vpsId, userId, "reinstall", {
+      template: osTemplate,
+      targetVmid: vps.proxmox_vmid,
+    });
+
+    setImmediate(async () => {
+      try {
+        await this.executeReinstallWithOpId(opId, vpsId, userId, {
+          template: osTemplate,
+          rootPassword,
+          sshKey,
+          confirmHostname,
+        });
+      } catch (err) {
+        console.error(`[REINSTALL] Async execution failed:`, err);
+      }
+    });
+
+    return { operationId: opId, status: "queued" };
+  }
+
+  /**
+   * Destructive OS Reinstall (synchronous/awaitable):
    * Requires exact hostname confirmation.
    * Stops, destroys, and recreates the container on Proxmox with identical VMID & network.
    */
@@ -543,6 +698,23 @@ export class VpsOperationsService {
       targetVmid: vps.proxmox_vmid,
       runtimeNode,
     });
+
+    return this.executeReinstallWithOpId(opId, vpsId, userId, params);
+  }
+
+  private static async executeReinstallWithOpId(
+    opId: string,
+    vpsId: string,
+    userId: string,
+    params: {
+      template: string;
+      rootPassword?: string;
+      sshKey?: string;
+      confirmHostname: string;
+    }
+  ): Promise<OperationResult> {
+    const target = await this.resolveVpsAndRuntimeTarget(vpsId);
+    const { vps, node, runtimeNode } = target;
 
     let oldContainerDestroyed = false;
 

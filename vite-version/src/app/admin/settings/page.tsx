@@ -13,7 +13,9 @@ import {
   AlertTriangle,
   Lock,
   Settings2,
+  Key,
 } from "lucide-react"
+import { ApiKeysManager } from "@/components/admin/api-keys-manager"
 import { BaseLayout } from "@/components/layouts/base-layout"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -131,7 +133,8 @@ function ImagePreview({
 export default function AdminSettingsPage() {
   const { refreshSettings } = useSettings()
   const [searchParams, setSearchParams] = useSearchParams()
-  const activeTab = searchParams.get("tab") === "authentication" ? "authentication" : "general"
+  const tabParam = searchParams.get("tab")
+  const activeTab = tabParam === "api-keys" ? "api-keys" : tabParam === "authentication" ? "authentication" : "general"
 
   // General tab state
   const [brandName, setBrandName] = React.useState("InterDash")
@@ -386,7 +389,7 @@ export default function AdminSettingsPage() {
       <div className="@container/main px-4 lg:px-6 max-w-4xl mx-auto w-full space-y-6">
         <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
           <div className="border-b pb-3 mb-6">
-            <TabsList className="grid w-full max-w-md grid-cols-2">
+            <TabsList className="grid w-full max-w-lg grid-cols-3">
               <TabsTrigger value="general" className="gap-2">
                 <Settings2 className="size-4" />
                 General Settings
@@ -394,6 +397,10 @@ export default function AdminSettingsPage() {
               <TabsTrigger value="authentication" className="gap-2">
                 <KeyRound className="size-4" />
                 Authentication
+              </TabsTrigger>
+              <TabsTrigger value="api-keys" className="gap-2">
+                <Key className="size-4" />
+                API Keys
               </TabsTrigger>
             </TabsList>
           </div>
@@ -821,6 +828,13 @@ export default function AdminSettingsPage() {
                 </CardFooter>
               </Card>
             </form>
+          </TabsContent>
+
+          {/* ================================================================= */}
+          {/* TAB 3: API KEYS & EXTERNAL AUTOMATION */}
+          {/* ================================================================= */}
+          <TabsContent value="api-keys" className="space-y-6 outline-hidden">
+            <ApiKeysManager />
           </TabsContent>
         </Tabs>
       </div>
