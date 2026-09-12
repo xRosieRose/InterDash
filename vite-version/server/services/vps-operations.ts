@@ -22,6 +22,7 @@ import { ProxmoxService, type ProxmoxNodeConfig } from "./proxmox.js";
 import { ProvisioningService } from "./provisioning.js";
 import { VpsRuntimeResolver, type VpsRuntimeTarget } from "./runtime-resolver.js";
 import { VpsExpiryService } from "./vps-expiry.js";
+import { StartupScriptService } from "./startup-script.js";
 
 export interface OperationResult {
   operationId: string;
@@ -795,6 +796,22 @@ export class VpsOperationsService {
          WHERE id = ?`,
         [params.template, verified.ok && verified.status === "running" ? "running" : "stopped", vpsId]
       );
+
+      // Execute startup script for reinstalled container if enabled
+      if (verified.ok && verified.status === "running") {
+        try {
+          await StartupScriptService.executeForVps({
+            node,
+            vmid: vps.proxmox_vmid,
+            vpsId,
+            hostname: vps.hostname,
+            ipv4: vps.ipv4_address,
+            runtimeNode,
+          });
+        } catch (scriptErr) {
+          console.warn(`[REINSTALL] Startup script execution warning for VPS ${vpsId}:`, scriptErr);
+        }
+      }
 
       this.completeOperation(opId, vpsId, {
         template: params.template,

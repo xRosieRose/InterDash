@@ -1830,6 +1830,45 @@ export class ProxmoxService {
   }
 
   /**
+   * Execute a Bash script inside a running LXC container.
+   * Transmits the script via base64 encoded payload to /root/.interdash-startup.sh
+   * and pipes logs to /var/log/interdash-startup.log.
+   */
+  public static async execLxcScript(
+    node: ProxmoxNodeConfig,
+    vmid: number,
+    scriptContent: string,
+    runtimeNode?: string
+  ): Promise<{ ok: boolean; upid?: string; output?: string; error?: string }> {
+    let target = runtimeNode;
+    if (!target) {
+      const resolved = await this.resolveLxcRuntimeTarget(node, vmid);
+      target = resolved.ok ? resolved.nodeName : node.nodeName;
+    }
+
+    const b64 = Buffer.from(scriptContent, "utf8").toString("base64");
+    const shellCommand = [
+      "/bin/bash",
+      "-c",
+      `mkdir -p /root && echo '${b64}' | base64 -d > /root/.interdash-startup.sh && chmod 700 /root/.interdash-startup.sh && /root/.interdash-startup.sh >> /var/log/interdash-startup.log 2>&1`,
+    ];
+
+    try {
+      const res = await this.request<any>(
+        node,
+        "POST",
+        `/api2/json/nodes/${encodeURIComponent(target)}/lxc/${vmid}/exec`,
+        { command: shellCommand }
+      );
+
+      const upid = typeof res?.data === "string" ? res.data : res?.data?.upid;
+      return { ok: true, upid };
+    } catch (err: any) {
+      return { ok: false, error: err?.message || String(err) };
+    }
+  }
+
+  /**
    * Destroy an LXC container and purge its volumes
    */
   public static async destroyLxc(

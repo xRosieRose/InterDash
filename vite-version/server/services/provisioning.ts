@@ -18,6 +18,7 @@ import { queryOne, queryAll, execute } from "../db/index.js";
 import { ProxmoxService, resolveProxmoxEndpoint, type ProxmoxNodeConfig } from "./proxmox.js";
 import { decryptCredential } from "./crypto.js";
 import { parseDatabaseTimestampUtc } from "../utils/timestamp.js";
+import { StartupScriptService } from "./startup-script.js";
 
 export interface ProvisioningJobRequest {
   ownerUserId: string;
@@ -482,6 +483,25 @@ export class ProvisioningService {
           `UPDATE ip_addresses SET status = 'assigned', vps_id = ?, assigned_at = datetime('now') WHERE id = ?`,
           [vpsId, reservedIpId]
         );
+      }
+
+      // Step 9b: Execute First-Install Startup Script (if enabled by admin)
+      if (finalStatus === "running") {
+        this.updateJobStep(jobId, "configuring", "executing_startup_script");
+        try {
+          await StartupScriptService.executeForVps({
+            node,
+            vmid: allocatedVmid,
+            vpsId,
+            hostname: specs.hostname,
+            ipv4: reservedIpAddr,
+          });
+        } catch (scriptErr) {
+          console.warn(
+            `[PROVISIONING] Startup script had non-fatal warning on VMID ${allocatedVmid}:`,
+            scriptErr
+          );
+        }
       }
 
       // Mark Job as Completed

@@ -795,6 +795,41 @@ PATCH /api/v1/settings/auth-providers
 }
 ```
 
+#### Get First-Install Startup Script
+```http
+GET /api/v1/settings/startup-script
+```
+*Required Scope*: `settings:read`  
+*Rate Limit Class*: `standard`
+
+**Response Example (200 OK)**:
+```json
+{
+  "data": {
+    "enabled": true,
+    "content": "#!/usr/bin/env bash\nset -euo pipefail\napt-get update -q -y\nexit 0\n",
+    "updatedAt": "2026-09-12T12:30:00.000Z",
+    "updatedBy": "usr_admin_01"
+  },
+  "requestId": "5e1a2b3c-4d5e-6f7a-8b9c-0d1e2f3a4b5c"
+}
+```
+
+#### Update First-Install Startup Script
+```http
+PATCH /api/v1/settings/startup-script
+```
+*Required Scope*: `settings:write`  
+*Rate Limit Class*: `heavy`
+
+**Request Body**:
+```json
+{
+  "enabled": true,
+  "content": "#!/usr/bin/env bash\nset -euo pipefail\napt-get update -q -y\napt-get install -q -y curl wget git\nexit 0\n"
+}
+```
+
 ---
 
 ### 8. Analytics & Fleet Telemetry

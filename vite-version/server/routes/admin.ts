@@ -23,6 +23,7 @@ import { AuthConfigService } from "../services/auth-config.js";
 import { VpsExpiryService } from "../services/vps-expiry.js";
 import { ApiKeyService } from "../services/api-key.js";
 import { SCOPE_REGISTRY } from "../services/api-scopes.js";
+import { StartupScriptService } from "../services/startup-script.js";
 
 const router = Router();
 
@@ -1229,6 +1230,37 @@ router.patch("/settings/authentication", (req: Request, res: Response) => {
   } catch (err: any) {
     res.status(err.statusCode || 500).json({
       error: err.message || "Failed to update authentication settings.",
+      code: err.code,
+    });
+  }
+});
+
+// ============================================================================
+// GET /api/admin/settings/startup-script — Get First-Install Startup Script
+// ============================================================================
+router.get("/settings/startup-script", (_req: Request, res: Response) => {
+  try {
+    const config = StartupScriptService.getConfig();
+    res.json(config);
+  } catch (err: any) {
+    res.status(err.statusCode || 500).json({ error: err.message || "Failed to load startup script." });
+  }
+});
+
+// ============================================================================
+// PATCH /api/admin/settings/startup-script — Update First-Install Startup Script
+// ============================================================================
+router.patch("/settings/startup-script", (req: Request, res: Response) => {
+  try {
+    if (!req.user) {
+      res.status(401).json({ error: "Authentication required." });
+      return;
+    }
+    const updated = StartupScriptService.updateConfig(req.body, req.user.id);
+    res.json({ success: true, settings: updated });
+  } catch (err: any) {
+    res.status(err.statusCode || 500).json({
+      error: err.message || "Failed to update startup script.",
       code: err.code,
     });
   }

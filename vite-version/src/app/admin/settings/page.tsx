@@ -14,8 +14,10 @@ import {
   Lock,
   Settings2,
   Key,
+  Terminal,
 } from "lucide-react"
 import { ApiKeysManager } from "@/components/admin/api-keys-manager"
+import { StartupScriptManager } from "@/components/admin/startup-script-manager"
 import { BaseLayout } from "@/components/layouts/base-layout"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -134,7 +136,7 @@ export default function AdminSettingsPage() {
   const { refreshSettings } = useSettings()
   const [searchParams, setSearchParams] = useSearchParams()
   const tabParam = searchParams.get("tab")
-  const activeTab = tabParam === "api-keys" ? "api-keys" : tabParam === "authentication" ? "authentication" : "general"
+  const activeTab = tabParam === "startup-script" ? "startup-script" : tabParam === "api-keys" ? "api-keys" : tabParam === "authentication" ? "authentication" : "general"
 
   // General tab state
   const [brandName, setBrandName] = React.useState("InterDash")
@@ -389,7 +391,7 @@ export default function AdminSettingsPage() {
       <div className="@container/main px-4 lg:px-6 max-w-4xl mx-auto w-full space-y-6">
         <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
           <div className="border-b pb-3 mb-6">
-            <TabsList className="grid w-full max-w-lg grid-cols-3">
+            <TabsList className="grid w-full max-w-2xl grid-cols-4">
               <TabsTrigger value="general" className="gap-2">
                 <Settings2 className="size-4" />
                 General Settings
@@ -401,6 +403,10 @@ export default function AdminSettingsPage() {
               <TabsTrigger value="api-keys" className="gap-2">
                 <Key className="size-4" />
                 API Keys
+              </TabsTrigger>
+              <TabsTrigger value="startup-script" className="gap-2">
+                <Terminal className="size-4" />
+                Startup Script
               </TabsTrigger>
             </TabsList>
           </div>
@@ -835,6 +841,13 @@ export default function AdminSettingsPage() {
           {/* ================================================================= */}
           <TabsContent value="api-keys" className="space-y-6 outline-hidden">
             <ApiKeysManager />
+          </TabsContent>
+
+          {/* ================================================================= */}
+          {/* TAB 4: STARTUP SCRIPT */}
+          {/* ================================================================= */}
+          <TabsContent value="startup-script" className="space-y-6 outline-hidden">
+            <StartupScriptManager />
           </TabsContent>
         </Tabs>
       </div>

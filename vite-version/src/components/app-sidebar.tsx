@@ -11,6 +11,7 @@ import {
   Settings,
   PlusCircle,
   Key,
+  Terminal,
 } from "lucide-react"
 import { Link } from "react-router-dom"
 import { Logo } from "@/components/logo"
@@ -112,6 +113,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
           title: "API Keys",
           url: "/admin/settings?tab=api-keys",
           icon: Key,
+        },
+        {
+          title: "Startup Script",
+          url: "/admin/settings?tab=startup-script",
+          icon: Terminal,
         },
       ],
     })

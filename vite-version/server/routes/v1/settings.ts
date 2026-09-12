@@ -12,6 +12,7 @@ import { apiSuccess, apiError } from "../../middleware/api-envelope.js";
 import { SCOPES } from "../../services/api-scopes.js";
 import { queryAll, execute } from "../../db/index.js";
 import { AuthConfigService } from "../../services/auth-config.js";
+import { StartupScriptService } from "../../services/startup-script.js";
 
 const router = Router();
 router.use(requireApiKey);
@@ -122,6 +123,43 @@ router.patch(
       apiSuccess(res, result);
     } catch (err: any) {
       apiError(res, err.statusCode || 500, err.code || "AUTH_UPDATE_FAILED", err.message);
+    }
+  }
+);
+
+// ============================================================================
+// GET /api/v1/settings/startup-script — Get First-Install Startup Script
+// ============================================================================
+router.get(
+  "/startup-script",
+  requireApiScope(SCOPES.SETTINGS_READ),
+  apiRateLimit("standard"),
+  (_req: Request, res: Response) => {
+    try {
+      const config = StartupScriptService.getConfig();
+      apiSuccess(res, config);
+    } catch (err: any) {
+      apiError(res, err.statusCode || 500, err.code || "SETTINGS_FAILED", err.message);
+    }
+  }
+);
+
+// ============================================================================
+// PATCH /api/v1/settings/startup-script — Update First-Install Startup Script
+// ============================================================================
+router.patch(
+  "/startup-script",
+  requireApiScope(SCOPES.SETTINGS_WRITE),
+  apiRateLimit("heavy"),
+  (req: Request, res: Response) => {
+    try {
+      const updated = StartupScriptService.updateConfig(
+        req.body,
+        req.apiPrincipal?.createdByUserId || "api"
+      );
+      apiSuccess(res, updated);
+    } catch (err: any) {
+      apiError(res, err.statusCode || 500, err.code || "SETTINGS_UPDATE_FAILED", err.message);
     }
   }
 );

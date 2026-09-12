@@ -835,6 +835,48 @@ export const migrations: Migration[] = [
       db.run("CREATE INDEX IF NOT EXISTS idx_api_usage_created ON api_usage_metrics(created_at);");
     },
   },
+
+  {
+    version: 18,
+    name: "startup_script_settings",
+    up: (db: Database) => {
+      const defaultStartupSettings: [string, string][] = [
+        ["startup_script_enabled", "false"],
+        [
+          "startup_script_content",
+          `#!/usr/bin/env bash
+# ==============================================================================
+# InterDash — VPS First-Install Startup Script
+# ==============================================================================
+# This script executes automatically once upon initial provisioning or reinstallation.
+# Runtime Environment Variables:
+#   $INTERDASH_VPS_ID   - Assigned VPS Identifier
+#   $INTERDASH_HOSTNAME - Assigned Hostname
+#   $INTERDASH_IPV4     - Primary Assigned IPv4 Address
+# ==============================================================================
+
+set -euo pipefail
+
+echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Initializing InterDash instance ($INTERDASH_HOSTNAME)..."
+
+# Update package metadata
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -q -y || true
+
+echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] InterDash first-install startup completed."
+exit 0
+`,
+        ],
+      ];
+
+      for (const [key, value] of defaultStartupSettings) {
+        db.run(
+          "INSERT OR IGNORE INTO panel_settings (key, value, updated_at) VALUES (?, ?, datetime('now'));",
+          [key, value]
+        );
+      }
+    },
+  },
 ];
 
 /**
