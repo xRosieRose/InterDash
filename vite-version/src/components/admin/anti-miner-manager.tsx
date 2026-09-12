@@ -390,11 +390,11 @@ export function AntiMinerManager() {
             <div className="flex items-center gap-3">
               <Button
                 type="button"
-                variant="outline"
+                variant="default"
                 size="sm"
                 onClick={handleScanNow}
                 disabled={isScanning}
-                className="gap-2 shrink-0 cursor-pointer"
+                className="gap-2 shrink-0 cursor-pointer shadow-xs"
               >
                 {isScanning ? (
                   <Loader2 className="size-3.5 animate-spin" />
@@ -800,9 +800,26 @@ export function AntiMinerManager() {
               type="button"
               variant="outline"
               size="sm"
+              onClick={handleScanNow}
+              disabled={isScanning}
+              className="h-8 gap-1.5 text-xs cursor-pointer"
+            >
+              {isScanning ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="size-3.5" />
+              )}
+              <span>Scan All Instances</span>
+            </Button>
+
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
               onClick={fetchIncidents}
               disabled={isLoadingIncidents}
               className="h-8 px-2"
+              title="Refresh incident list"
             >
               <RefreshCw className={`size-3.5 ${isLoadingIncidents ? "animate-spin" : ""}`} />
             </Button>

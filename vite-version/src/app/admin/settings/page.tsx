@@ -393,28 +393,30 @@ export default function AdminSettingsPage() {
       <div className="@container/main px-4 lg:px-6 max-w-4xl mx-auto w-full space-y-6">
         <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
           <div className="border-b pb-3 mb-6">
-            <TabsList className="grid w-full max-w-3xl grid-cols-5">
-              <TabsTrigger value="general" className="gap-2">
-                <Settings2 className="size-4" />
-                General Settings
-              </TabsTrigger>
-              <TabsTrigger value="authentication" className="gap-2">
-                <KeyRound className="size-4" />
-                Authentication
-              </TabsTrigger>
-              <TabsTrigger value="api-keys" className="gap-2">
-                <Key className="size-4" />
-                API Keys
-              </TabsTrigger>
-              <TabsTrigger value="startup-script" className="gap-2">
-                <Terminal className="size-4" />
-                Startup Script
-              </TabsTrigger>
-              <TabsTrigger value="anti-miner" className="gap-2">
-                <ShieldAlert className="size-4" />
-                Anti-Miner
-              </TabsTrigger>
-            </TabsList>
+            <div className="overflow-x-auto pb-0.5">
+              <TabsList className="grid w-full min-w-[720px] grid-cols-5 h-10 p-1">
+                <TabsTrigger value="general" className="gap-2 px-3">
+                  <Settings2 className="size-4" />
+                  General Settings
+                </TabsTrigger>
+                <TabsTrigger value="authentication" className="gap-2 px-3">
+                  <KeyRound className="size-4" />
+                  Authentication
+                </TabsTrigger>
+                <TabsTrigger value="api-keys" className="gap-2 px-3">
+                  <Key className="size-4" />
+                  API Keys
+                </TabsTrigger>
+                <TabsTrigger value="startup-script" className="gap-2 px-3">
+                  <Terminal className="size-4" />
+                  Startup Script
+                </TabsTrigger>
+                <TabsTrigger value="anti-miner" className="gap-2 px-3">
+                  <ShieldAlert className="size-4" />
+                  Anti-Miner
+                </TabsTrigger>
+              </TabsList>
+            </div>
           </div>
 
           {/* ================================================================= */}
