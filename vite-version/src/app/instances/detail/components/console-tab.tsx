@@ -127,6 +127,7 @@ export function ConsoleTab({ vps, isStopped, onStartVps }: ConsoleTabProps) {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
     const wsUrl = `${protocol}//${window.location.host}/api/vps/${vps.id}/console/ws`
     const ws = new WebSocket(wsUrl)
+    ws.binaryType = "arraybuffer"
     wsInstance.current = ws
 
     ws.onopen = () => {
@@ -136,58 +137,73 @@ export function ConsoleTab({ vps, isStopped, onStartVps }: ConsoleTabProps) {
     }
 
     ws.onmessage = (event) => {
-      const dataStr = typeof event.data === "string" ? event.data : ""
+      // 1. Text payload (JSON control messages or plain text stream)
+      if (typeof event.data === "string") {
+        if (event.data.startsWith("{")) {
+          try {
+            const ctrl: ConsoleControlMessage = JSON.parse(event.data)
 
-      if (dataStr.startsWith("{")) {
-        try {
-          const ctrl: ConsoleControlMessage = JSON.parse(dataStr)
-
-          if (ctrl.type === "status" && ctrl.state) {
-            setConsoleState(ctrl.state)
-            if (ctrl.message) {
-              setConsoleStatusMessage(ctrl.message)
-            }
-
-            if (ctrl.state === "connected") {
-              setConsoleStatusMessage("Terminal connected.")
-              term.writeln("\x1b[32m✔ Connected to LXC terminal.\x1b[0m\r\n")
-              term.focus()
-              if (fitAddonInstance.current && xtermInstance.current) {
-                fitAddonInstance.current.fit()
-                sendResize(xtermInstance.current.cols, xtermInstance.current.rows)
+            if (ctrl.type === "status" && ctrl.state) {
+              setConsoleState(ctrl.state)
+              if (ctrl.message) {
+                setConsoleStatusMessage(ctrl.message)
               }
-            } else {
-              term.writeln(`\x1b[38;5;244m[${ctrl.message || ctrl.state}]\x1b[0m`)
-            }
-            return
-          }
 
-          if (ctrl.type === "error") {
-            const errObj: ConsoleError = {
-              code: ctrl.code || "CONSOLE_ERROR",
-              message: ctrl.message || "Console error occurred.",
-              stage: ctrl.stage,
-              httpStatus: ctrl.httpStatus,
-              websocketCode: ctrl.websocketCode,
-              retryable: ctrl.retryable,
-              details: ctrl.details,
-              diagnosticId: ctrl.diagnosticId,
+              if (ctrl.state === "connected") {
+                setConsoleStatusMessage("Terminal connected.")
+                term.writeln("\x1b[32m✔ Connected to LXC terminal.\x1b[0m\r\n")
+                term.focus()
+                if (fitAddonInstance.current && xtermInstance.current) {
+                  fitAddonInstance.current.fit()
+                  sendResize(xtermInstance.current.cols, xtermInstance.current.rows)
+                }
+              } else {
+                term.writeln(`\x1b[38;5;244m[${ctrl.message || ctrl.state}]\x1b[0m`)
+              }
+              return
             }
-            consoleErrorRef.current = errObj
-            setConsoleState(ctrl.state || "failed")
-            setConsoleStatusMessage(ctrl.message || "Console connection failed.")
-            setConsoleError(errObj)
-            term.writeln(`\x1b[31m[Error (${ctrl.stage || "console"}): ${ctrl.message}]\x1b[0m`)
-            fetchConsoleDiagnostic()
-            return
+
+            if (ctrl.type === "error") {
+              const errObj: ConsoleError = {
+                code: ctrl.code || "CONSOLE_ERROR",
+                message: ctrl.message || "Console error occurred.",
+                stage: ctrl.stage,
+                httpStatus: ctrl.httpStatus,
+                websocketCode: ctrl.websocketCode,
+                retryable: ctrl.retryable,
+                details: ctrl.details,
+                diagnosticId: ctrl.diagnosticId,
+              }
+              consoleErrorRef.current = errObj
+              setConsoleState(ctrl.state || "failed")
+              setConsoleStatusMessage(ctrl.message || "Console connection failed.")
+              setConsoleError(errObj)
+              term.writeln(`\x1b[31m[Error (${ctrl.stage || "console"}): ${ctrl.message}]\x1b[0m`)
+              fetchConsoleDiagnostic()
+              return
+            }
+          } catch {
+            // Not a JSON control message; proceed to write terminal raw data
           }
-        } catch {
-          // Not a JSON control message; proceed to write terminal raw data
         }
+
+        term.write(event.data)
+        return
       }
 
-      // Raw terminal output from Proxmox VE
-      term.write(event.data)
+      // 2. Binary ArrayBuffer payload (raw hypervisor tty bytes)
+      if (event.data instanceof ArrayBuffer) {
+        term.write(new Uint8Array(event.data))
+        return
+      }
+
+      // 3. Fallback Blob payload
+      if (event.data instanceof Blob) {
+        event.data.arrayBuffer().then((buf) => {
+          term.write(new Uint8Array(buf))
+        })
+        return
+      }
     }
 
     ws.onerror = () => {
@@ -563,7 +579,13 @@ export function ConsoleTab({ vps, isStopped, onStartVps }: ConsoleTabProps) {
               )}
             </div>
           ) : (
-            <div ref={terminalRef} className="p-4 h-[560px] w-full" />
+            <div
+              ref={terminalRef}
+              className="p-4 h-[560px] w-full cursor-text"
+              onClick={() => {
+                xtermInstance.current?.focus()
+              }}
+            />
           )}
         </CardContent>
       </Card>

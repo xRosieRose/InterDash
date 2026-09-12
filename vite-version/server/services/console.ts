@@ -544,11 +544,13 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
                   }
                 }, KEEPALIVE_INTERVAL_MS);
 
-                // If dimensions were queued before connected, send latest dimensions once
-                if (pendingResize && upstreamWs?.readyState === WebSocket.OPEN) {
-                  upstreamWs.send(buildTermproxyResizeFrame(pendingResize.cols, pendingResize.rows));
-                  pendingResize = null;
+                // Send initial window dimensions to Proxmox
+                const initialCols = pendingResize?.cols || 80;
+                const initialRows = pendingResize?.rows || 24;
+                if (upstreamWs?.readyState === WebSocket.OPEN) {
+                  upstreamWs.send(buildTermproxyResizeFrame(initialCols, initialRows));
                 }
+                pendingResize = null;
 
                 // If initial terminal payload was attached after "OK", forward surviving bytes to browser
                 if (
@@ -558,6 +560,13 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
                 ) {
                   clientWs.send(parsed.remaining);
                 }
+
+                // Send a wake-up carriage return to dtach/getty so the login prompt is immediately emitted
+                setTimeout(() => {
+                  if (upstreamWs && upstreamWs.readyState === WebSocket.OPEN) {
+                    upstreamWs.send(buildTermproxyInputFrame("\r"));
+                  }
+                }, 100);
                 return;
               } else {
                 // Pre-OK payload was malformed or rejected
@@ -693,7 +702,7 @@ export function setupConsoleWebSocket(server: Server): WebSocketServer {
             // Normal interactive keystrokes / terminal data
             if (isConnected && upstreamWs && upstreamWs.readyState === WebSocket.OPEN) {
               // If already formatted with termproxy application protocol:
-              if (str.startsWith("0:") || str === "2") {
+              if (/^0:\d+:/.test(str) || str === "2") {
                 upstreamWs.send(data);
               } else {
                 // Frame raw user input as 0:<byteLength>:<data> with exact UTF-8 byte length
