@@ -15,9 +15,11 @@ import {
   Settings2,
   Key,
   Terminal,
+  ShieldAlert,
 } from "lucide-react"
 import { ApiKeysManager } from "@/components/admin/api-keys-manager"
 import { StartupScriptManager } from "@/components/admin/startup-script-manager"
+import { AntiMinerManager } from "@/components/admin/anti-miner-manager"
 import { BaseLayout } from "@/components/layouts/base-layout"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -136,7 +138,7 @@ export default function AdminSettingsPage() {
   const { refreshSettings } = useSettings()
   const [searchParams, setSearchParams] = useSearchParams()
   const tabParam = searchParams.get("tab")
-  const activeTab = tabParam === "startup-script" ? "startup-script" : tabParam === "api-keys" ? "api-keys" : tabParam === "authentication" ? "authentication" : "general"
+  const activeTab = tabParam === "anti-miner" ? "anti-miner" : tabParam === "startup-script" ? "startup-script" : tabParam === "api-keys" ? "api-keys" : tabParam === "authentication" ? "authentication" : "general"
 
   // General tab state
   const [brandName, setBrandName] = React.useState("InterDash")
@@ -391,7 +393,7 @@ export default function AdminSettingsPage() {
       <div className="@container/main px-4 lg:px-6 max-w-4xl mx-auto w-full space-y-6">
         <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
           <div className="border-b pb-3 mb-6">
-            <TabsList className="grid w-full max-w-2xl grid-cols-4">
+            <TabsList className="grid w-full max-w-3xl grid-cols-5">
               <TabsTrigger value="general" className="gap-2">
                 <Settings2 className="size-4" />
                 General Settings
@@ -407,6 +409,10 @@ export default function AdminSettingsPage() {
               <TabsTrigger value="startup-script" className="gap-2">
                 <Terminal className="size-4" />
                 Startup Script
+              </TabsTrigger>
+              <TabsTrigger value="anti-miner" className="gap-2">
+                <ShieldAlert className="size-4" />
+                Anti-Miner
               </TabsTrigger>
             </TabsList>
           </div>
@@ -848,6 +854,13 @@ export default function AdminSettingsPage() {
           {/* ================================================================= */}
           <TabsContent value="startup-script" className="space-y-6 outline-hidden">
             <StartupScriptManager />
+          </TabsContent>
+
+          {/* ================================================================= */}
+          {/* TAB 5: ANTI-MINER PROTECTION */}
+          {/* ================================================================= */}
+          <TabsContent value="anti-miner" className="space-y-6 outline-hidden">
+            <AntiMinerManager />
           </TabsContent>
         </Tabs>
       </div>

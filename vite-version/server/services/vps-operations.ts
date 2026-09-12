@@ -214,6 +214,18 @@ export class VpsOperationsService {
     const target = await this.resolveVpsAndRuntimeTarget(vpsId);
     const { vps, node, runtimeNode } = target;
 
+    // Mining suspension check
+    if (vps.lock_state === "mining_suspended") {
+      const err = new Error(
+        "VPS instance is suspended due to cryptocurrency mining detection. Contact an administrator to resolve this incident."
+      );
+      (err as any).statusCode = 403;
+      throw err;
+    }
+
+    // Expiry check: start is prohibited on expired VPS
+    VpsExpiryService.assertVpsActionAllowed(vps, "start");
+
     // Check hypervisor lock on runtime node
     const pveLock = await ProxmoxService.checkLxcLocked(node, vps.proxmox_vmid, runtimeNode);
     if (pveLock.locked) {
@@ -221,9 +233,6 @@ export class VpsOperationsService {
       (err as any).statusCode = 409;
       throw err;
     }
-
-    // Expiry check: start is prohibited on expired VPS
-    VpsExpiryService.assertVpsActionAllowed(vps, "start");
 
     const opId = this.claimOperation(vpsId, userId, "start");
     return this.executeStartWithOpId(opId, vpsId, userId);
@@ -374,15 +383,24 @@ export class VpsOperationsService {
     const target = await this.resolveVpsAndRuntimeTarget(vpsId);
     const { vps, node, runtimeNode } = target;
 
+    // Mining suspension check
+    if (vps.lock_state === "mining_suspended") {
+      const err = new Error(
+        "VPS instance is suspended due to cryptocurrency mining detection. Contact an administrator to resolve this incident."
+      );
+      (err as any).statusCode = 403;
+      throw err;
+    }
+
+    // Expiry check: reboot is prohibited on expired VPS
+    VpsExpiryService.assertVpsActionAllowed(vps, "reboot");
+
     const pveLock = await ProxmoxService.checkLxcLocked(node, vps.proxmox_vmid, runtimeNode);
     if (pveLock.locked) {
       const err = new Error(`VPS is locked on hypervisor (${pveLock.lockName || "busy"}).`);
       (err as any).statusCode = 409;
       throw err;
     }
-
-    // Expiry check: reboot is prohibited on expired VPS
-    VpsExpiryService.assertVpsActionAllowed(vps, "reboot");
 
     const opId = this.claimOperation(vpsId, userId, "reboot");
     return this.executeRebootWithOpId(opId, vpsId, userId);

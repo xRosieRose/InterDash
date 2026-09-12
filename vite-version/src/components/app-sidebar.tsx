@@ -12,6 +12,7 @@ import {
   PlusCircle,
   Key,
   Terminal,
+  ShieldAlert,
 } from "lucide-react"
 import { Link } from "react-router-dom"
 import { Logo } from "@/components/logo"
@@ -118,6 +119,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
           title: "Startup Script",
           url: "/admin/settings?tab=startup-script",
           icon: Terminal,
+        },
+        {
+          title: "Anti-Miner",
+          url: "/admin/settings?tab=anti-miner",
+          icon: ShieldAlert,
         },
       ],
     })

@@ -282,6 +282,7 @@ export interface LxcStatusResult {
   vmid?: number;
   name?: string;
   cpus?: number;
+  cpu?: number;
   maxmem?: number;
   maxdisk?: number;
   uptime?: number;
@@ -1869,6 +1870,36 @@ export class ProxmoxService {
   }
 
   /**
+   * Execute a command array inside a running LXC container.
+   */
+  public static async execLxcCommand(
+    node: ProxmoxNodeConfig,
+    vmid: number,
+    command: string[],
+    runtimeNode?: string
+  ): Promise<{ ok: boolean; upid?: string; error?: string }> {
+    let target = runtimeNode;
+    if (!target) {
+      const resolved = await this.resolveLxcRuntimeTarget(node, vmid);
+      target = resolved.ok ? resolved.nodeName : node.nodeName;
+    }
+
+    try {
+      const res = await this.request<any>(
+        node,
+        "POST",
+        `/api2/json/nodes/${encodeURIComponent(target)}/lxc/${vmid}/exec`,
+        { command }
+      );
+
+      const upid = typeof res?.data === "string" ? res.data : res?.data?.upid;
+      return { ok: true, upid };
+    } catch (err: any) {
+      return { ok: false, error: err?.message || String(err) };
+    }
+  }
+
+  /**
    * Destroy an LXC container and purge its volumes
    */
   public static async destroyLxc(
@@ -2570,6 +2601,7 @@ export class ProxmoxService {
         status: "running" | "stopped";
         name?: string;
         cpus?: number;
+        cpu?: number;
         maxmem?: number;
         maxdisk?: number;
         uptime?: number;
@@ -2586,6 +2618,7 @@ export class ProxmoxService {
         runtimeNodeSource: runtimeNode ? "direct" : "configured",
         name: res.data.name,
         cpus: res.data.cpus,
+        cpu: res.data.cpu,
         maxmem: res.data.maxmem,
         maxdisk: res.data.maxdisk,
         uptime: res.data.uptime,
@@ -2601,6 +2634,7 @@ export class ProxmoxService {
               status: "running" | "stopped";
               name?: string;
               cpus?: number;
+              cpu?: number;
               maxmem?: number;
               maxdisk?: number;
               uptime?: number;
@@ -2617,6 +2651,7 @@ export class ProxmoxService {
               runtimeNodeSource: "cluster",
               name: res.data.name,
               cpus: res.data.cpus,
+              cpu: res.data.cpu,
               maxmem: res.data.maxmem,
               maxdisk: res.data.maxdisk,
               uptime: res.data.uptime,

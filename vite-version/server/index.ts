@@ -35,6 +35,7 @@ import { ProvisioningService } from "./services/provisioning.js";
 import { VpsOperationsService } from "./services/vps-operations.js";
 import { VpsExpiryService } from "./services/vps-expiry.js";
 import { ApiKeyService } from "./services/api-key.js";
+import { AntiMinerService } from "./services/anti-miner.js";
 import v1Routes from "./routes/v1/index.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -318,6 +319,7 @@ export async function createApp(): Promise<express.Express> {
 
 let cleanupInterval: ReturnType<typeof setInterval> | null = null;
 let expiryReconciliationInterval: ReturnType<typeof setInterval> | null = null;
+let antiMinerInterval: ReturnType<typeof setInterval> | null = null;
 
 export async function main() {
   const app = await createApp();
@@ -351,6 +353,14 @@ export async function main() {
   }, 60 * 1000);
   expiryReconciliationInterval.unref();
 
+  // Anti-Miner Background Scan (every 60 seconds)
+  antiMinerInterval = setInterval(() => {
+    AntiMinerService.runScheduledScan().catch((err) => {
+      console.error("[ANTI-MINER] Background scan error:", err);
+    });
+  }, 60 * 1000);
+  antiMinerInterval.unref();
+
   // API Telemetry & Idempotency Key Cleanup (every 15 minutes)
   const apiCleanupInterval = setInterval(() => {
     ApiKeyService.cleanupOldMetrics();
@@ -362,6 +372,7 @@ export async function main() {
     console.log("\n[SERVER] Shutting down...");
     if (cleanupInterval) clearInterval(cleanupInterval);
     if (expiryReconciliationInterval) clearInterval(expiryReconciliationInterval);
+    if (antiMinerInterval) clearInterval(antiMinerInterval);
     clearInterval(apiCleanupInterval);
     closeDatabase();
     process.exit(0);

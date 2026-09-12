@@ -877,6 +877,84 @@ exit 0
       }
     },
   },
+  {
+    version: 19,
+    name: "anti_miner_protection",
+    up: (db: Database) => {
+      // 1. Create anti_miner_incidents table
+      db.run(`
+        CREATE TABLE IF NOT EXISTS anti_miner_incidents (
+          id              TEXT PRIMARY KEY,
+          vps_id          TEXT NOT NULL REFERENCES vps(id) ON DELETE CASCADE,
+          owner_user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          hostname        TEXT NOT NULL,
+          trigger_type    TEXT NOT NULL,
+          matched_target  TEXT NOT NULL,
+          pid             INTEGER,
+          cmdline         TEXT,
+          action_taken    TEXT NOT NULL,
+          status          TEXT NOT NULL DEFAULT 'detected',
+          details_json    TEXT,
+          detected_at     TEXT NOT NULL DEFAULT (datetime('now')),
+          resolved_at     TEXT,
+          resolved_by     TEXT REFERENCES users(id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_anti_miner_incidents_vps_id ON anti_miner_incidents(vps_id);
+        CREATE INDEX IF NOT EXISTS idx_anti_miner_incidents_status ON anti_miner_incidents(status);
+        CREATE INDEX IF NOT EXISTS idx_anti_miner_incidents_detected_at ON anti_miner_incidents(detected_at);
+      `);
+
+      // 2. Default Anti-Miner Panel Settings
+      const defaultAntiMinerSettings: [string, string][] = [
+        ["anti_miner_enabled", "false"],
+        ["anti_miner_policy", "alert"],
+        ["anti_miner_cpu_threshold", "90"],
+        ["anti_miner_sustained_checks", "3"],
+        ["anti_miner_scan_interval_sec", "60"],
+        [
+          "anti_miner_process_signatures",
+          JSON.stringify([
+            "xmrig",
+            "minerd",
+            "cpuminer",
+            "xmr-stak",
+            "cryptonight",
+            "stratum",
+            "ethminer",
+            "nbminer",
+            "ccminer",
+            "nicehash",
+            "kinsing",
+            "kdevtmpfsi",
+            "nanominer",
+            "teamredminer",
+            "t-rex",
+            "gminer",
+            "srbminer",
+            "randomx",
+            "rx/0",
+            "donate-level",
+            "moneroocean",
+            "supportxmr",
+            "hashvault",
+          ]),
+        ],
+        [
+          "anti_miner_network_ports",
+          JSON.stringify([3333, 4444, 5555, 7777, 8888, 9999, 14444, 14433, 45560, 45700, 18080, 18081]),
+        ],
+        ["anti_miner_whitelist_vps_ids", JSON.stringify([])],
+      ];
+
+      for (const [key, value] of defaultAntiMinerSettings) {
+        db.run(
+          "INSERT OR IGNORE INTO panel_settings (key, value, updated_at) VALUES (?, ?, datetime('now'));",
+          [key, value]
+        );
+      }
+    },
+  },
 ];
 
 /**

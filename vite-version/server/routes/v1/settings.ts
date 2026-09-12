@@ -13,6 +13,7 @@ import { SCOPES } from "../../services/api-scopes.js";
 import { queryAll, execute } from "../../db/index.js";
 import { AuthConfigService } from "../../services/auth-config.js";
 import { StartupScriptService } from "../../services/startup-script.js";
+import { AntiMinerService } from "../../services/anti-miner.js";
 
 const router = Router();
 router.use(requireApiKey);
@@ -154,6 +155,43 @@ router.patch(
   (req: Request, res: Response) => {
     try {
       const updated = StartupScriptService.updateConfig(
+        req.body,
+        req.apiPrincipal?.createdByUserId || "api"
+      );
+      apiSuccess(res, updated);
+    } catch (err: any) {
+      apiError(res, err.statusCode || 500, err.code || "SETTINGS_UPDATE_FAILED", err.message);
+    }
+  }
+);
+
+// ============================================================================
+// GET /api/v1/settings/anti-miner — Get Anti-Miner Configuration
+// ============================================================================
+router.get(
+  "/anti-miner",
+  requireApiScope(SCOPES.SETTINGS_READ),
+  apiRateLimit("standard"),
+  (_req: Request, res: Response) => {
+    try {
+      const config = AntiMinerService.getConfig();
+      apiSuccess(res, config);
+    } catch (err: any) {
+      apiError(res, err.statusCode || 500, err.code || "SETTINGS_FAILED", err.message);
+    }
+  }
+);
+
+// ============================================================================
+// PATCH /api/v1/settings/anti-miner — Update Anti-Miner Configuration
+// ============================================================================
+router.patch(
+  "/anti-miner",
+  requireApiScope(SCOPES.SETTINGS_WRITE),
+  apiRateLimit("heavy"),
+  (req: Request, res: Response) => {
+    try {
+      const updated = AntiMinerService.updateConfig(
         req.body,
         req.apiPrincipal?.createdByUserId || "api"
       );

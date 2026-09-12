@@ -135,6 +135,7 @@ export function CommandSearch({ open, onOpenChange }: CommandSearchProps) {
     { title: "Panel Settings", url: "/admin/settings", group: "Admin", icon: Settings },
     { title: "API Keys & External Access", url: "/admin/settings?tab=api-keys", group: "Admin", icon: Key },
     { title: "Startup Script (First Install)", url: "/admin/settings?tab=startup-script", group: "Admin", icon: Terminal },
+    { title: "Anti-Miner Protection", url: "/admin/settings?tab=anti-miner", group: "Admin", icon: ShieldAlert },
 
     // Public / Landing
     { title: "Landing Page", url: "/landing", group: "General", icon: Globe },

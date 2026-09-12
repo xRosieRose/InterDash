@@ -24,6 +24,7 @@ import { VpsExpiryService } from "../services/vps-expiry.js";
 import { ApiKeyService } from "../services/api-key.js";
 import { SCOPE_REGISTRY } from "../services/api-scopes.js";
 import { StartupScriptService } from "../services/startup-script.js";
+import { AntiMinerService } from "../services/anti-miner.js";
 
 const router = Router();
 
@@ -1423,6 +1424,114 @@ router.get("/api-keys/:id/usage", (req: Request, res: Response) => {
     res.json(usage);
   } catch (err: any) {
     res.status(err.statusCode || 500).json({ error: err.message || "Failed to get API key usage." });
+  }
+});
+
+// ============================================================================
+// GET /api/admin/settings/anti-miner — Get Anti-Miner Protection Configuration
+// ============================================================================
+router.get("/settings/anti-miner", (_req: Request, res: Response) => {
+  try {
+    const config = AntiMinerService.getConfig();
+    res.json(config);
+  } catch (err: any) {
+    res.status(err.statusCode || 500).json({
+      error: err.message || "Failed to load anti-miner configuration.",
+    });
+  }
+});
+
+// ============================================================================
+// PATCH /api/admin/settings/anti-miner — Update Anti-Miner Protection Configuration
+// ============================================================================
+router.patch("/settings/anti-miner", (req: Request, res: Response) => {
+  try {
+    if (!req.user) {
+      res.status(401).json({ error: "Authentication required." });
+      return;
+    }
+    const updated = AntiMinerService.updateConfig(req.body, req.user.id);
+    res.json({ success: true, settings: updated });
+  } catch (err: any) {
+    res.status(err.statusCode || 500).json({
+      error: err.message || "Failed to update anti-miner configuration.",
+    });
+  }
+});
+
+// ============================================================================
+// GET /api/admin/anti-miner/incidents — List Detected Mining Incidents
+// ============================================================================
+router.get("/anti-miner/incidents", (req: Request, res: Response) => {
+  try {
+    const status = req.query.status as any;
+    const vpsId = req.query.vpsId as string | undefined;
+    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+    const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : undefined;
+
+    const result = AntiMinerService.listIncidents({ status, vpsId, limit, offset });
+    res.json(result);
+  } catch (err: any) {
+    res.status(err.statusCode || 500).json({
+      error: err.message || "Failed to list anti-miner incidents.",
+    });
+  }
+});
+
+// ============================================================================
+// POST /api/admin/anti-miner/incidents/:id/resolve — Resolve Incident & Unlock VPS
+// ============================================================================
+router.post("/anti-miner/incidents/:id/resolve", (req: Request, res: Response) => {
+  try {
+    if (!req.user) {
+      res.status(401).json({ error: "Authentication required." });
+      return;
+    }
+    const result = AntiMinerService.resolveIncident(
+      req.params.id,
+      req.user.id,
+      req.body?.notes
+    );
+    res.json({
+      success: true,
+      incidentId: result.incidentId,
+      vpsUnlocked: result.vpsUnlocked,
+      message: result.vpsUnlocked
+        ? "Incident resolved and VPS suspension lock removed successfully."
+        : "Incident resolved successfully.",
+    });
+  } catch (err: any) {
+    res.status(err.statusCode || 500).json({
+      error: err.message || "Failed to resolve incident.",
+    });
+  }
+});
+
+// ============================================================================
+// POST /api/admin/anti-miner/scan — Trigger Immediate On-Demand Anti-Miner Scan
+// ============================================================================
+router.post("/anti-miner/scan", async (req: Request, res: Response) => {
+  try {
+    const targetVpsId = req.body?.vpsId;
+    if (targetVpsId && typeof targetVpsId === "string") {
+      const singleRes = await AntiMinerService.scanVps(targetVpsId, { force: true });
+      res.json({
+        success: true,
+        single: true,
+        result: singleRes,
+      });
+    } else {
+      const bulkRes = await AntiMinerService.runScheduledScan();
+      res.json({
+        success: true,
+        bulk: true,
+        result: bulkRes,
+      });
+    }
+  } catch (err: any) {
+    res.status(err.statusCode || 500).json({
+      error: err.message || "Failed to execute anti-miner scan.",
+    });
   }
 });
 
