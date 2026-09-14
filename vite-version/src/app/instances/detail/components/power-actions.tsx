@@ -43,6 +43,12 @@ export function PowerActions({
   }>({ open: false, action: "stop" })
 
   const getCsrfHeader = async (): Promise<Record<string, string>> => {
+    // 1. Instant extraction from document.cookie (0ms)
+    const match = typeof document !== "undefined" ? document.cookie.match(/(?:^|;\s*)interdash_csrf=([^;]*)/) : null
+    if (match && match[1]) {
+      return { "x-csrf-token": decodeURIComponent(match[1]) }
+    }
+    // 2. Fallback if cookie not yet populated
     try {
       const res = await fetch("/api/auth/csrf")
       if (res.ok) {

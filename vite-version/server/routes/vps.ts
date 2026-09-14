@@ -166,10 +166,11 @@ router.get("/:id/status", async (req: Request, res: Response) => {
   }
 
   const { id } = req.params;
+  const force = req.query.force === "true" || req.query.force === "1";
 
   try {
     verifyVpsOwnership(id, req.user);
-    const liveStatus = await VpsOperationsService.syncStatus(id);
+    const liveStatus = await VpsOperationsService.syncStatus(id, force);
     res.json(liveStatus);
   } catch (err: any) {
     res.status(err.statusCode || 500).json({ error: err.message });

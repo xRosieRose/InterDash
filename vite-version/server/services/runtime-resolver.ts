@@ -97,10 +97,11 @@ export class VpsRuntimeResolver {
     node: ProxmoxNodeConfig
   ): Promise<VpsRuntimeTarget> {
     const configuredNode = node.nodeName || "pve";
+    const primaryNode = vps.runtime_node_name || configuredNode;
     const vmid = vps.proxmox_vmid;
     const nowIso = new Date().toISOString();
 
-    // 1. First: Try direct query on configured node
+    // 1. First: Try direct query on primaryNode (runtime_node_name if cached, else configuredNode)
     try {
       const directStatus = await ProxmoxService.request<{
         status: "running" | "stopped" | "paused";
@@ -112,9 +113,9 @@ export class VpsRuntimeResolver {
       }>(
         node,
         "GET",
-        `/api2/json/nodes/${encodeURIComponent(configuredNode)}/lxc/${vmid}/status/current`,
+        `/api2/json/nodes/${encodeURIComponent(primaryNode)}/lxc/${vmid}/status/current`,
         undefined,
-        10000
+        4000
       );
 
       if (directStatus.data && directStatus.data.status) {
@@ -133,7 +134,7 @@ export class VpsRuntimeResolver {
               last_proxmox_sync_at = ?, runtime_state_fresh = 1,
               runtime_sync_error_code = NULL, runtime_sync_error = NULL
              WHERE id = ?`,
-            [configuredNode, nowIso, vps.id]
+            [primaryNode, nowIso, vps.id]
           );
         } catch {}
 
@@ -143,10 +144,10 @@ export class VpsRuntimeResolver {
           node,
           integrationId: node.id,
           configuredNode,
-          runtimeNode: configuredNode,
+          runtimeNode: primaryNode,
           vmid,
           runtimeStatus: directStatus.data.status,
-          runtimeNodeSource: "direct",
+          runtimeNodeSource: primaryNode === configuredNode ? "direct" : "cluster",
           verifiedAt: nowIso,
           uptime: directStatus.data.uptime,
           cpus: directStatus.data.cpus || vps.cpu_cores,
@@ -165,7 +166,7 @@ export class VpsRuntimeResolver {
             node,
             integrationId: node.id,
             configuredNode,
-            runtimeNode: configuredNode,
+            runtimeNode: primaryNode,
             vmid,
             runtimeStatus: "permission_denied",
             runtimeNodeSource: "configured",
@@ -176,7 +177,7 @@ export class VpsRuntimeResolver {
           };
         }
       }
-      // Direct query failed (could be 404 because container is on another node in cluster)
+      // Direct query on primaryNode failed (could be 404 because container moved)
       // Proceed to cluster resource discovery
     }
 
@@ -194,7 +195,7 @@ export class VpsRuntimeResolver {
           maxdisk?: number;
           cpus?: number;
         }>
-      >(node, "GET", "/api2/json/cluster/resources?type=vm", undefined, 12000);
+      >(node, "GET", "/api2/json/cluster/resources?type=vm", undefined, 6000);
 
       const items = Array.isArray(clusterRes.data) ? clusterRes.data : [];
       const discovered = items.find(
@@ -218,7 +219,7 @@ export class VpsRuntimeResolver {
             "GET",
             `/api2/json/nodes/${encodeURIComponent(runtimeNode)}/lxc/${vmid}/status/current`,
             undefined,
-            10000
+            4000
           );
 
           const status = detailRes.data?.status || (discovered.status === "running" ? "running" : "stopped");

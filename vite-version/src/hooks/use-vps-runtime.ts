@@ -15,18 +15,20 @@ export interface VpsRuntimeInfo {
   error?: string | null
 }
 
-export function useVpsRuntime(id: string | undefined) {
+export function useVpsRuntime(id: string | undefined, initialStatus?: string) {
   const [runtime, setRuntime] = React.useState<VpsRuntimeInfo>({
+    status: initialStatus,
     fresh: true,
     error: null,
   })
   const [runtimeSyncError, setRuntimeSyncError] = React.useState<string | null>(null)
 
   const loadRuntimeStatus = React.useCallback(
-    async (showToast = false) => {
+    async (showToast = false, force = false) => {
       if (!id) return
       try {
-        const res = await fetch(`/api/vps/${id}/status`)
+        const url = force ? `/api/vps/${id}/status?force=true` : `/api/vps/${id}/status`
+        const res = await fetch(url)
         if (res.ok) {
           const data = await res.json()
           setRuntime({

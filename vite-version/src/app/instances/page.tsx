@@ -40,6 +40,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useAuth } from "@/contexts/auth-context"
 import { AdminDeployModal } from "@/components/vps/admin-deploy-modal"
 import type { VpsRecord } from "@/types/vps"
+import { setVpsCacheMany, prefetchVps } from "@/hooks/use-vps"
 import { toast } from "sonner"
 import { Tour, useTour, type TourStep } from "@/components/ui/product-tour"
 
@@ -165,7 +166,9 @@ export default function InstancesPage() {
         throw new Error("Unable to retrieve infrastructure data.")
       }
       const data = await res.json()
-      setInstances(data.instances || [])
+      const fetchedInstances = data.instances || []
+      setInstances(fetchedInstances)
+      setVpsCacheMany(fetchedInstances)
       setError(null)
       if (showToast) {
         toast.success("Instance inventory updated.")
@@ -511,7 +514,11 @@ export default function InstancesPage() {
                   {filteredInstances.map((inst) => {
                     const isRunning = inst.status === "running"
                     return (
-                      <TableRow key={inst.id} className="hover:bg-muted/40 transition-colors">
+                      <TableRow
+                        key={inst.id}
+                        className="hover:bg-muted/40 transition-colors"
+                        onMouseEnter={() => prefetchVps(inst.id)}
+                      >
                         {/* Status */}
                         <TableCell>
                           <div className="flex items-center gap-2">
@@ -534,6 +541,7 @@ export default function InstancesPage() {
                         <TableCell>
                           <Link
                             to={`/instances/${inst.id}`}
+                            state={{ vps: inst }}
                             className="flex flex-col group cursor-pointer"
                           >
                             <span className="font-mono font-semibold text-sm text-foreground group-hover:text-primary transition-colors">
@@ -640,7 +648,7 @@ export default function InstancesPage() {
 
                         {/* Manage Action */}
                         <TableCell className="text-right">
-                          <Link to={`/instances/${inst.id}`}>
+                          <Link to={`/instances/${inst.id}`} state={{ vps: inst }}>
                             <Button size="sm" variant="outline" className="h-7 text-xs gap-1 hover:border-primary">
                               Manage <ChevronRight className="size-3 text-muted-foreground" />
                             </Button>

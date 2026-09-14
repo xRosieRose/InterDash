@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { useParams, useSearchParams, useNavigate } from "react-router-dom"
+import { useParams, useSearchParams, useNavigate, useLocation } from "react-router-dom"
 import {
   LayoutDashboard,
   Terminal as TerminalIcon,
@@ -29,22 +29,25 @@ import { SettingsTab } from "./components/settings-tab"
 import { PasswordDialog } from "./components/password-dialog"
 import { ReinstallDialog } from "./components/reinstall-dialog"
 import { DeleteDialog } from "./components/delete-dialog"
+import type { VpsRecord } from "@/types/vps"
 import { toast } from "sonner"
 
 export default function InstanceDetailPage() {
   const { id } = useParams<{ id: string }>()
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
+  const location = useLocation()
+  const routerStateVps = (location.state as { vps?: VpsRecord } | null)?.vps || null
   const { user } = useAuth()
   const isAdmin = user?.role === "admin"
 
   const activeTab = searchParams.get("tab") || "overview"
 
-  // 1. VPS Metadata Hook
-  const { vps, isLoading, isRefreshing, pageLoadError, loadVps } = useVps(id)
+  // 1. VPS Metadata Hook (instant SWR with router state / cache)
+  const { vps, isLoading, isRefreshing, pageLoadError, loadVps } = useVps(id, routerStateVps)
 
-  // 2. Hypervisor Runtime Status Hook (15-second background polling)
-  const { runtime, runtimeSyncError, loadRuntimeStatus } = useVpsRuntime(id)
+  // 2. Hypervisor Runtime Status Hook (with instant status seeding from metadata)
+  const { runtime, runtimeSyncError, loadRuntimeStatus } = useVpsRuntime(id, routerStateVps?.status)
 
   // 3. Operations History Hook
   const { operations, activeOperation, operationsSyncError, loadOperations } = useVpsOperations(id)
@@ -58,7 +61,7 @@ export default function InstanceDetailPage() {
   const handleRefreshAll = React.useCallback(async () => {
     await Promise.all([
       loadVps(true),
-      loadRuntimeStatus(true),
+      loadRuntimeStatus(true, true), // force hypervisor refresh
       loadOperations(true),
     ])
   }, [loadVps, loadRuntimeStatus, loadOperations])
@@ -74,11 +77,14 @@ export default function InstanceDetailPage() {
   const handleStartVps = React.useCallback(async () => {
     if (!id) return
     try {
-      const csrfRes = await fetch("/api/auth/csrf")
-      let csrfToken = ""
-      if (csrfRes.ok) {
-        const c = await csrfRes.json()
-        csrfToken = c.token
+      const match = typeof document !== "undefined" ? document.cookie.match(/(?:^|;\s*)interdash_csrf=([^;]*)/) : null
+      let csrfToken = match && match[1] ? decodeURIComponent(match[1]) : ""
+      if (!csrfToken) {
+        const csrfRes = await fetch("/api/auth/csrf")
+        if (csrfRes.ok) {
+          const c = await csrfRes.json()
+          csrfToken = c.token
+        }
       }
       const res = await fetch(`/api/vps/${id}/power`, {
         method: "POST",
@@ -149,7 +155,7 @@ export default function InstanceDetailPage() {
           activeOp={activeOperation}
           isRefreshing={isRefreshing}
           onRefreshAll={handleRefreshAll}
-          onRetrySync={() => loadRuntimeStatus(true)}
+          onRetrySync={() => loadRuntimeStatus(true, true)}
           onRefreshOp={() => loadOperations(true)}
           onActionComplete={handleActionComplete}
         />
