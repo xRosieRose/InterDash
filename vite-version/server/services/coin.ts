@@ -1,0 +1,458 @@
+/**
+ * InterDash Server — Coin Economy Service
+ *
+ * Single authoritative mutation boundary for virtual coins.
+ * Guarantees:
+ * - Atomic balance updates
+ * - Immutable append-only ledger (coin_transactions)
+ * - Strict non-negative balance constraint
+ * - Safe integer validation (no floating point)
+ * - Idempotency key tracking
+ * - Integrity verification against ledger history
+ */
+
+import { v4 as uuidv4 } from "uuid";
+import { queryOne, queryAll, execute, transaction } from "../db/index.js";
+
+export const MAX_SINGLE_COIN_AMOUNT = 1_000_000_000; // 1 billion max per single grant
+export const MAX_REASON_LENGTH = 255;
+export const MAX_DESCRIPTION_LENGTH = 1000;
+
+export type CoinTransactionType =
+  | "admin_grant"
+  | "admin_adjustment"
+  | "deployment_charge"
+  | "refund"
+  | "reward"
+  | "bonus"
+  | "deduction"
+  | "reversal";
+
+export interface CoinAccount {
+  id: string;
+  user_id: string;
+  balance: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CoinTransaction {
+  id: string;
+  user_id: string;
+  type: CoinTransactionType;
+  amount: number;
+  balance_before: number;
+  balance_after: number;
+  reason: string;
+  description: string | null;
+  reference_type: string | null;
+  reference_id: string | null;
+  idempotency_key: string | null;
+  created_by_user_id: string | null;
+  metadata: string | null;
+  created_at: string;
+}
+
+export interface GrantCoinsParams {
+  userId: string;
+  amount: number;
+  reason: string;
+  description?: string | null;
+  referenceType?: string | null;
+  referenceId?: string | null;
+  idempotencyKey?: string | null;
+  adminUserId?: string | null;
+  metadata?: Record<string, any> | null;
+}
+
+export interface CoinTransactionQuery {
+  page?: number;
+  pageSize?: number;
+  type?: string;
+  dateFrom?: string;
+  dateTo?: string;
+}
+
+export interface CoinTransactionsResult {
+  transactions: CoinTransaction[];
+  pagination: {
+    total: number;
+    page: number;
+    pageSize: number;
+    totalPages: number;
+  };
+}
+
+export interface AccountIntegrityResult {
+  valid: boolean;
+  accountBalance: number;
+  ledgerSum: number;
+  discrepancy: number;
+}
+
+export class CoinError extends Error {
+  code: string;
+  statusCode: number;
+
+  constructor(message: string, code: string, statusCode: number = 400) {
+    super(message);
+    this.name = "CoinError";
+    this.code = code;
+    this.statusCode = statusCode;
+  }
+}
+
+export class CoinService {
+  /**
+   * Ensure a coin account exists for the given user, creating one with balance 0 if missing.
+   */
+  static getOrCreateAccount(userId: string): CoinAccount {
+    if (!userId || typeof userId !== "string") {
+      throw new CoinError("Invalid user ID", "COIN_USER_NOT_FOUND", 400);
+    }
+
+    // Verify user exists in the users table
+    const user = queryOne<{ id: string }>("SELECT id FROM users WHERE id = ?", [userId]);
+    if (!user) {
+      throw new CoinError("User not found", "COIN_USER_NOT_FOUND", 404);
+    }
+
+    const existing = queryOne<CoinAccount>(
+      "SELECT id, user_id, balance, created_at, updated_at FROM coin_accounts WHERE user_id = ?",
+      [userId]
+    );
+
+    if (existing) {
+      return existing;
+    }
+
+    // Create a new account with 0 balance
+    const accountId = uuidv4();
+    execute(
+      `INSERT OR IGNORE INTO coin_accounts (id, user_id, balance, created_at, updated_at)
+       VALUES (?, ?, 0, datetime('now'), datetime('now'))`,
+      [accountId, userId]
+    );
+
+    const created = queryOne<CoinAccount>(
+      "SELECT id, user_id, balance, created_at, updated_at FROM coin_accounts WHERE user_id = ?",
+      [userId]
+    );
+
+    if (!created) {
+      throw new CoinError("Failed to initialize coin account", "COIN_ACCOUNT_CREATION_FAILED", 500);
+    }
+
+    return created;
+  }
+
+  /**
+   * Get the current coin balance for a user. Returns 0 if account was just created.
+   */
+  static getBalance(userId: string): number {
+    const account = this.getOrCreateAccount(userId);
+    return account.balance;
+  }
+
+  /**
+   * Grant virtual coins to a user balance by an administrator.
+   * Atomic, ledger-backed, and idempotent.
+   */
+  static grantCoins(params: GrantCoinsParams): {
+    transaction: CoinTransaction;
+    account: CoinAccount;
+    isCached?: boolean;
+  } {
+    const {
+      userId,
+      amount,
+      reason,
+      description,
+      referenceType,
+      referenceId,
+      idempotencyKey,
+      adminUserId,
+      metadata,
+    } = params;
+
+    // 1. Validate userId & ensure user exists
+    if (!userId || typeof userId !== "string") {
+      throw new CoinError("Target user ID is required", "COIN_USER_NOT_FOUND", 400);
+    }
+
+    const user = queryOne<{ id: string; username: string }>(
+      "SELECT id, username FROM users WHERE id = ?",
+      [userId]
+    );
+    if (!user) {
+      throw new CoinError("Target user does not exist", "COIN_USER_NOT_FOUND", 404);
+    }
+
+    // 2. Validate amount: positive integer, within limits
+    if (
+      typeof amount !== "number" ||
+      !Number.isSafeInteger(amount) ||
+      amount <= 0
+    ) {
+      throw new CoinError(
+        "Coin grant amount must be a positive whole integer",
+        "INVALID_COIN_AMOUNT",
+        400
+      );
+    }
+
+    if (amount > MAX_SINGLE_COIN_AMOUNT) {
+      throw new CoinError(
+        `Coin amount exceeds the maximum allowable single grant of ${MAX_SINGLE_COIN_AMOUNT.toLocaleString()} coins`,
+        "COIN_AMOUNT_TOO_LARGE",
+        400
+      );
+    }
+
+    // 3. Validate reason
+    const trimmedReason = (reason || "").trim();
+    if (!trimmedReason) {
+      throw new CoinError("A grant reason is required", "INVALID_COIN_REASON", 400);
+    }
+    if (trimmedReason.length > MAX_REASON_LENGTH) {
+      throw new CoinError(
+        `Reason cannot exceed ${MAX_REASON_LENGTH} characters`,
+        "INVALID_COIN_REASON",
+        400
+      );
+    }
+
+    const trimmedDescription = description ? description.trim().substring(0, MAX_DESCRIPTION_LENGTH) : null;
+
+    // 4. Validate admin user if provided
+    if (adminUserId) {
+      const admin = queryOne<{ id: string }>("SELECT id FROM users WHERE id = ?", [adminUserId]);
+      if (!admin) {
+        throw new CoinError("Admin user not found", "ADMIN_USER_NOT_FOUND", 404);
+      }
+    }
+
+    // 5. Check idempotency key if supplied
+    const cleanIdempotencyKey = idempotencyKey ? idempotencyKey.trim() : null;
+    if (cleanIdempotencyKey) {
+      const existingTx = queryOne<CoinTransaction>(
+        "SELECT * FROM coin_transactions WHERE idempotency_key = ?",
+        [cleanIdempotencyKey]
+      );
+
+      if (existingTx) {
+        // If parameters match, return existing transaction safely (idempotent replay)
+        if (
+          existingTx.user_id === userId &&
+          existingTx.amount === amount &&
+          existingTx.reason === trimmedReason
+        ) {
+          const currentAccount = this.getOrCreateAccount(userId);
+          return {
+            transaction: existingTx,
+            account: currentAccount,
+            isCached: true,
+          };
+        }
+
+        // Conflict: same idempotency key used with mismatched payload
+        throw new CoinError(
+          "Idempotency key has already been used for a different transaction request",
+          "COIN_IDEMPOTENCY_CONFLICT",
+          409
+        );
+      }
+    }
+
+    // 6. Atomic Mutation inside DB transaction
+    return transaction(() => {
+      // Ensure account exists
+      const currentAccount = this.getOrCreateAccount(userId);
+      const balanceBefore = currentAccount.balance;
+      const balanceAfter = balanceBefore + amount;
+
+      // Update account balance atomically with guard
+      execute(
+        `UPDATE coin_accounts
+         SET balance = balance + ?, updated_at = datetime('now')
+         WHERE user_id = ? AND (balance + ?) >= 0`,
+        [amount, userId, amount]
+      );
+
+      // Verify account update succeeded
+      const updatedAccount = queryOne<CoinAccount>(
+        "SELECT id, user_id, balance, created_at, updated_at FROM coin_accounts WHERE user_id = ?",
+        [userId]
+      );
+
+      if (!updatedAccount || updatedAccount.balance !== balanceAfter) {
+        throw new CoinError("Failed to update account balance atomically", "COIN_INTEGRITY_ERROR", 500);
+      }
+
+      // Create ledger transaction
+      const txId = uuidv4();
+      const metadataStr = metadata ? JSON.stringify(metadata) : null;
+
+      execute(
+        `INSERT INTO coin_transactions (
+           id, user_id, type, amount, balance_before, balance_after,
+           reason, description, reference_type, reference_id,
+           idempotency_key, created_by_user_id, metadata, created_at
+         ) VALUES (?, ?, 'admin_grant', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+        [
+          txId,
+          userId,
+          amount,
+          balanceBefore,
+          balanceAfter,
+          trimmedReason,
+          trimmedDescription,
+          referenceType || null,
+          referenceId || null,
+          cleanIdempotencyKey,
+          adminUserId || null,
+          metadataStr,
+        ]
+      );
+
+      const createdTx = queryOne<CoinTransaction>(
+        "SELECT * FROM coin_transactions WHERE id = ?",
+        [txId]
+      );
+
+      if (!createdTx) {
+        throw new CoinError("Failed to write ledger transaction", "COIN_LEDGER_WRITE_FAILED", 500);
+      }
+
+      // Record in system audit logs
+      execute(
+        `INSERT INTO audit_logs (user_id, event_type, metadata, created_at)
+         VALUES (?, 'coin_grant', ?, datetime('now'))`,
+        [
+          adminUserId || null,
+          JSON.stringify({
+            target_user_id: userId,
+            target_username: user.username,
+            amount,
+            reason: trimmedReason,
+            balance_before: balanceBefore,
+            balance_after: balanceAfter,
+            transaction_id: txId,
+            idempotency_key: cleanIdempotencyKey,
+          }),
+        ]
+      );
+
+      return {
+        transaction: createdTx,
+        account: updatedAccount,
+        isCached: false,
+      };
+    });
+  }
+
+  /**
+   * Query paginated transaction history for a user.
+   */
+  static getTransactions(userId: string, query: CoinTransactionQuery = {}): CoinTransactionsResult {
+    // Ensure account exists
+    this.getOrCreateAccount(userId);
+
+    const page = Math.max(1, Math.floor(Number(query.page) || 1));
+    const pageSize = Math.min(100, Math.max(1, Math.floor(Number(query.pageSize) || 20)));
+    const offset = (page - 1) * pageSize;
+
+    const conditions: string[] = ["user_id = ?"];
+    const params: any[] = [userId];
+
+    if (query.type && typeof query.type === "string") {
+      conditions.push("type = ?");
+      params.push(query.type);
+    }
+
+    if (query.dateFrom && typeof query.dateFrom === "string") {
+      conditions.push("created_at >= ?");
+      params.push(query.dateFrom);
+    }
+
+    if (query.dateTo && typeof query.dateTo === "string") {
+      conditions.push("created_at <= ?");
+      params.push(query.dateTo);
+    }
+
+    const whereClause = conditions.join(" AND ");
+
+    // Count total matching transactions
+    const countRow = queryOne<{ count: number }>(
+      `SELECT COUNT(*) as count FROM coin_transactions WHERE ${whereClause}`,
+      params
+    );
+    const total = countRow?.count || 0;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+    // Fetch transactions
+    const transactions = queryAll<CoinTransaction>(
+      `SELECT * FROM coin_transactions
+       WHERE ${whereClause}
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT ? OFFSET ?`,
+      [...params, pageSize, offset]
+    );
+
+    return {
+      transactions,
+      pagination: {
+        total,
+        page,
+        pageSize,
+        totalPages,
+      },
+    };
+  }
+
+  /**
+   * Verify that a user's account balance matches the net sum of all immutable ledger entries.
+   */
+  static verifyAccountIntegrity(userId: string): AccountIntegrityResult {
+    const account = this.getOrCreateAccount(userId);
+
+    const sumRow = queryOne<{ net_sum: number | null }>(
+      "SELECT SUM(amount) as net_sum FROM coin_transactions WHERE user_id = ?",
+      [userId]
+    );
+
+    const ledgerSum = sumRow?.net_sum != null ? Number(sumRow.net_sum) : 0;
+    const discrepancy = account.balance - ledgerSum;
+
+    return {
+      valid: discrepancy === 0,
+      accountBalance: account.balance,
+      ledgerSum,
+      discrepancy,
+    };
+  }
+
+  /**
+   * Future Capability Stub: Debit coins from a user balance.
+   * Explicitly forbidden in this foundational phase.
+   */
+  static debitCoins(_params: { userId: string; amount: number; reason: string }): never {
+    throw new CoinError(
+      "Coin spending and deductions are not enabled in this phase of InterDash",
+      "COIN_OPERATION_FORBIDDEN",
+      403
+    );
+  }
+
+  /**
+   * Future Capability Stub: Generic credit (non-admin).
+   * Explicitly forbidden in this foundational phase.
+   */
+  static creditCoins(_params: { userId: string; amount: number; reason: string }): never {
+    throw new CoinError(
+      "Automated coin crediting is not enabled in this phase of InterDash",
+      "COIN_OPERATION_FORBIDDEN",
+      403
+    );
+  }
+}

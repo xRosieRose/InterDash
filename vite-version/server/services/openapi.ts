@@ -102,6 +102,48 @@ export function getOpenApiSpec(): Record<string, any> {
             requestId: { type: "string" },
           },
         },
+        CoinAccount: {
+          type: "object",
+          properties: {
+            userId: { type: "string", example: "usr_123" },
+            balance: { type: "integer", example: 1250 },
+            accountId: { type: "string" },
+            createdAt: { type: "string", format: "date-time" },
+            updatedAt: { type: "string", format: "date-time" },
+            integrity: {
+              type: "object",
+              properties: {
+                valid: { type: "boolean", example: true },
+                ledgerSum: { type: "integer", example: 1250 },
+              },
+            },
+          },
+        },
+        CoinTransaction: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            userId: { type: "string" },
+            type: { type: "string", example: "admin_grant" },
+            amount: { type: "integer", example: 500 },
+            balanceBefore: { type: "integer", example: 750 },
+            balanceAfter: { type: "integer", example: 1250 },
+            reason: { type: "string", example: "Support compensation" },
+            description: { type: "string", nullable: true },
+            idempotencyKey: { type: "string", nullable: true },
+            createdAt: { type: "string", format: "date-time" },
+          },
+        },
+        CoinGrantRequest: {
+          type: "object",
+          required: ["amount", "reason"],
+          properties: {
+            amount: { type: "integer", minimum: 1, maximum: 1000000000, example: 500 },
+            reason: { type: "string", maxLength: 255, example: "Promotional credit" },
+            description: { type: "string", maxLength: 1000, nullable: true },
+            idempotencyKey: { type: "string", nullable: true },
+          },
+        },
       },
     },
     security: [{ ApiKeyAuth: [] }],
@@ -117,6 +159,7 @@ export function getOpenApiSpec(): Record<string, any> {
       { name: "Analytics", description: "Fleet resource metrics and utilization" },
       { name: "Operations", description: "Lifecycle operations tracking" },
       { name: "Audit", description: "Security and administrative audit events" },
+      { name: "Coins", description: "Virtual coin economy, balances, ledger history, and admin grants" },
     ],
     paths: {
       "/": {
@@ -489,6 +532,45 @@ export function getOpenApiSpec(): Record<string, any> {
           tags: ["Audit"],
           summary: "Query Audit Log Trail",
           responses: { 200: { description: "Sanitized audit records" } },
+        },
+      },
+      "/coins/{userId}": {
+        get: {
+          tags: ["Coins"],
+          summary: "Get User Coin Balance",
+          parameters: [{ name: "userId", in: "path", required: true, schema: { type: "string" } }],
+          responses: {
+            200: { description: "User coin account balance", content: { "application/json": { schema: { $ref: "#/components/schemas/CoinAccount" } } } },
+          },
+        },
+      },
+      "/coins/{userId}/transactions": {
+        get: {
+          tags: ["Coins"],
+          summary: "List User Coin Transactions",
+          parameters: [
+            { name: "userId", in: "path", required: true, schema: { type: "string" } },
+            { name: "page", in: "query", schema: { type: "integer", default: 1 } },
+            { name: "pageSize", in: "query", schema: { type: "integer", default: 20 } },
+          ],
+          responses: {
+            200: { description: "Paginated list of ledger transactions" },
+          },
+        },
+      },
+      "/coins/{userId}/grant": {
+        post: {
+          tags: ["Coins"],
+          summary: "Grant Coins to User Balance",
+          parameters: [{ name: "userId", in: "path", required: true, schema: { type: "string" } }],
+          requestBody: {
+            required: true,
+            content: { "application/json": { schema: { $ref: "#/components/schemas/CoinGrantRequest" } } },
+          },
+          responses: {
+            201: { description: "Coin grant executed successfully" },
+            200: { description: "Idempotent cached response replayed" },
+          },
         },
       },
     },

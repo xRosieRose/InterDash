@@ -21,6 +21,7 @@ import {
 import { rateLimitMiddleware } from "../middleware/rate-limit.js";
 import { AuthConfigService } from "../services/auth-config.js";
 import { PasswordService } from "../services/password.js";
+import { CoinService } from "../services/coin.js";
 
 const router = Router();
 
@@ -236,6 +237,9 @@ router.get(
             finalRole,
           ]
         );
+
+        // Ensure coin account is initialized
+        CoinService.getOrCreateAccount(finalUserId);
       }
 
       // Create session
@@ -318,6 +322,8 @@ router.get("/me", requireAuth, (req: Request, res: Response) => {
   }
 
   // Return ONLY safe user fields — never password, token, or session info
+  const coinBalance = CoinService.getBalance(req.user.id);
+
   res.json({
     id: req.user.id,
     discord_id: req.user.discord_id,
@@ -328,6 +334,7 @@ router.get("/me", requireAuth, (req: Request, res: Response) => {
     role: req.user.role,
     status: req.user.status,
     is_admin: req.user.role === "admin",
+    coin_balance: coinBalance,
   });
 });
 
@@ -526,6 +533,9 @@ router.post(
           passwordHash,
         ]
       );
+
+      // Ensure coin account is initialized
+      CoinService.getOrCreateAccount(userId);
 
       // Create session
       const sessionToken = generateSessionToken();

@@ -11,6 +11,8 @@ import {
   UserCheck,
   Loader2,
   CircleUser,
+  Coins,
+  History,
 } from "lucide-react"
 import { BaseLayout } from "@/components/layouts/base-layout"
 import { Badge } from "@/components/ui/badge"
@@ -33,6 +35,8 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { useAuth } from "@/contexts/auth-context"
 import { toast } from "sonner"
+import { GiveCoinsDialog } from "@/components/admin/give-coins-dialog"
+import { CoinHistoryDialog } from "@/components/admin/coin-history-dialog"
 
 interface AdminUserRecord {
   id: string
@@ -46,6 +50,7 @@ interface AdminUserRecord {
   created_at: string
   last_login_at: string | null
   vps_count: number
+  coin_balance?: number
 }
 
 export default function AdminUsersPage() {
@@ -54,6 +59,16 @@ export default function AdminUsersPage() {
   const [isLoading, setIsLoading] = React.useState(true)
   const [isRefreshing, setIsRefreshing] = React.useState(false)
   const [searchQuery, setSearchQuery] = React.useState("")
+  const [giveCoinsTarget, setGiveCoinsTarget] = React.useState<{
+    id: string
+    username: string
+    email?: string | null
+    currentBalance: number
+  } | null>(null)
+  const [coinHistoryTarget, setCoinHistoryTarget] = React.useState<{
+    id: string
+    username: string
+  } | null>(null)
 
   const fetchUsers = React.useCallback(async (showToast = false) => {
     try {
@@ -197,6 +212,7 @@ export default function AdminUsersPage() {
                   <TableHead>Role</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>VPS Count</TableHead>
+                  <TableHead>Coins</TableHead>
                   <TableHead>Joined</TableHead>
                   <TableHead>Last Login</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
@@ -275,6 +291,14 @@ export default function AdminUsersPage() {
                         {u.vps_count} instance(s)
                       </TableCell>
 
+                      {/* Coins */}
+                      <TableCell className="font-mono text-xs font-semibold">
+                        <div className="flex items-center gap-1 text-amber-400">
+                          <Coins className="size-3.5 shrink-0" />
+                          <span>{(u.coin_balance ?? 0).toLocaleString()}</span>
+                        </div>
+                      </TableCell>
+
                       {/* Joined Date */}
                       <TableCell className="text-xs text-muted-foreground font-mono">
                         {u.created_at ? u.created_at.split("T")[0] : "—"}
@@ -294,6 +318,33 @@ export default function AdminUsersPage() {
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end" className="text-xs">
+                            <DropdownMenuItem
+                              onClick={() =>
+                                setGiveCoinsTarget({
+                                  id: u.id,
+                                  username: u.username,
+                                  email: u.email,
+                                  currentBalance: u.coin_balance ?? 0,
+                                })
+                              }
+                              className="text-amber-500 focus:text-amber-400 font-medium"
+                            >
+                              <Coins className="size-3.5 mr-2" /> Give Coins
+                            </DropdownMenuItem>
+
+                            <DropdownMenuItem
+                              onClick={() =>
+                                setCoinHistoryTarget({
+                                  id: u.id,
+                                  username: u.username,
+                                })
+                              }
+                            >
+                              <History className="size-3.5 mr-2 text-muted-foreground" /> Coin History
+                            </DropdownMenuItem>
+
+                            <DropdownMenuSeparator />
+
                             {isAdmin ? (
                               <DropdownMenuItem
                                 onClick={() => handleRoleChange(u.id, "user")}
@@ -333,6 +384,19 @@ export default function AdminUsersPage() {
           )}
         </div>
       </div>
+
+      <GiveCoinsDialog
+        open={Boolean(giveCoinsTarget)}
+        onOpenChange={(open) => !open && setGiveCoinsTarget(null)}
+        targetUser={giveCoinsTarget}
+        onSuccess={() => fetchUsers()}
+      />
+
+      <CoinHistoryDialog
+        open={Boolean(coinHistoryTarget)}
+        onOpenChange={(open) => !open && setCoinHistoryTarget(null)}
+        targetUser={coinHistoryTarget}
+      />
     </BaseLayout>
   )
 }

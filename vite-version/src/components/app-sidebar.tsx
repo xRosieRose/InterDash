@@ -42,6 +42,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         avatar: user.avatar_url,
         isAdmin: user.is_admin,
         role: user.role,
+        coins: user.coin_balance ?? 0,
       }
     : {
         name: "Connecting...",
@@ -49,6 +50,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         avatar: "",
         isAdmin: false,
         role: "guest",
+        coins: 0,
       }
 
   // Build nav groups dynamically based on verified server role

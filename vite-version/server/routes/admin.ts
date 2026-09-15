@@ -25,6 +25,7 @@ import { ApiKeyService } from "../services/api-key.js";
 import { SCOPE_REGISTRY } from "../services/api-scopes.js";
 import { StartupScriptService } from "../services/startup-script.js";
 import { AntiMinerService } from "../services/anti-miner.js";
+import { CoinService, CoinError } from "../services/coin.js";
 
 const router = Router();
 
@@ -145,12 +146,91 @@ router.get("/users", (_req: Request, res: Response) => {
   const users = queryAll<any>(
     `SELECT u.id, u.discord_id, u.username, u.global_name, u.email,
             u.avatar_hash, u.role, u.status, u.created_at, u.last_login_at,
+            COALESCE(ca.balance, 0) as coin_balance,
             (SELECT COUNT(*) FROM vps WHERE owner_user_id = u.id) as vps_count
      FROM users u
+     LEFT JOIN coin_accounts ca ON ca.user_id = u.id
      ORDER BY u.created_at DESC`
   );
 
   res.json({ users });
+});
+
+// ============================================================================
+// GET /api/admin/users/:userId/coins — Get User Coin Account & Integrity
+// ============================================================================
+router.get("/users/:userId/coins", (req: Request, res: Response) => {
+  const { userId } = req.params;
+  try {
+    const account = CoinService.getOrCreateAccount(userId);
+    const integrity = CoinService.verifyAccountIntegrity(userId);
+    res.json({ account, integrity });
+  } catch (err: any) {
+    if (err instanceof CoinError) {
+      res.status(err.statusCode).json({ error: err.message, code: err.code });
+      return;
+    }
+    res.status(500).json({ error: "Failed to retrieve user coin account." });
+  }
+});
+
+// ============================================================================
+// POST /api/admin/users/:userId/coins/grant — Admin Grant Coins to User
+// ============================================================================
+router.post("/users/:userId/coins/grant", (req: Request, res: Response) => {
+  const { userId } = req.params;
+  const { amount, reason, description, idempotency_key, metadata } = req.body;
+
+  try {
+    const result = CoinService.grantCoins({
+      userId,
+      amount: Number(amount),
+      reason,
+      description,
+      idempotencyKey: idempotency_key,
+      adminUserId: req.user?.id,
+      metadata,
+    });
+
+    res.json({
+      success: true,
+      transaction: result.transaction,
+      account: result.account,
+      is_cached: Boolean(result.isCached),
+    });
+  } catch (err: any) {
+    if (err instanceof CoinError) {
+      res.status(err.statusCode).json({ error: err.message, code: err.code });
+      return;
+    }
+    res.status(500).json({ error: "Failed to process coin grant." });
+  }
+});
+
+// ============================================================================
+// GET /api/admin/users/:userId/coins/transactions — User Transaction Ledger
+// ============================================================================
+router.get("/users/:userId/coins/transactions", (req: Request, res: Response) => {
+  const { userId } = req.params;
+  const { page, pageSize, type, dateFrom, dateTo } = req.query;
+
+  try {
+    const result = CoinService.getTransactions(userId, {
+      page: page ? Number(page) : undefined,
+      pageSize: pageSize ? Number(pageSize) : undefined,
+      type: typeof type === "string" ? type : undefined,
+      dateFrom: typeof dateFrom === "string" ? dateFrom : undefined,
+      dateTo: typeof dateTo === "string" ? dateTo : undefined,
+    });
+
+    res.json(result);
+  } catch (err: any) {
+    if (err instanceof CoinError) {
+      res.status(err.statusCode).json({ error: err.message, code: err.code });
+      return;
+    }
+    res.status(500).json({ error: "Failed to retrieve coin transactions." });
+  }
 });
 
 // ============================================================================

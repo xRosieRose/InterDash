@@ -7,6 +7,7 @@
  */
 
 import type { Database } from "sql.js";
+import { v4 as uuidv4 } from "uuid";
 
 export interface Migration {
   version: number;
@@ -952,6 +953,59 @@ exit 0
           "INSERT OR IGNORE INTO panel_settings (key, value, updated_at) VALUES (?, ?, datetime('now'));",
           [key, value]
         );
+      }
+    },
+  },
+  {
+    version: 20,
+    name: "coin_economy_foundation",
+    up: (db: Database) => {
+      // 1. Coin accounts table
+      db.run(`
+        CREATE TABLE IF NOT EXISTS coin_accounts (
+          id          TEXT PRIMARY KEY,
+          user_id     TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE RESTRICT,
+          balance     INTEGER NOT NULL DEFAULT 0 CHECK(balance >= 0),
+          created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_coin_accounts_user_id ON coin_accounts(user_id);
+      `);
+
+      // 2. Coin transactions immutable ledger table
+      db.run(`
+        CREATE TABLE IF NOT EXISTS coin_transactions (
+          id                  TEXT PRIMARY KEY,
+          user_id             TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+          type                TEXT NOT NULL CHECK(type IN ('admin_grant','admin_adjustment','deployment_charge','refund','reward','bonus','deduction','reversal')),
+          amount              INTEGER NOT NULL CHECK(amount != 0),
+          balance_before      INTEGER NOT NULL CHECK(balance_before >= 0),
+          balance_after       INTEGER NOT NULL CHECK(balance_after >= 0),
+          reason              TEXT NOT NULL,
+          description         TEXT,
+          reference_type      TEXT,
+          reference_id        TEXT,
+          idempotency_key     TEXT UNIQUE,
+          created_by_user_id  TEXT REFERENCES users(id) ON DELETE SET NULL,
+          metadata            TEXT,
+          created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_coin_tx_user_id ON coin_transactions(user_id);
+        CREATE INDEX IF NOT EXISTS idx_coin_tx_type ON coin_transactions(type);
+        CREATE INDEX IF NOT EXISTS idx_coin_tx_created_at ON coin_transactions(created_at);
+        CREATE INDEX IF NOT EXISTS idx_coin_tx_idempotency ON coin_transactions(idempotency_key);
+      `);
+
+      // 3. Backfill coin accounts for existing users (balance=0)
+      const usersResult = db.exec("SELECT id FROM users WHERE id NOT IN (SELECT user_id FROM coin_accounts);");
+      if (usersResult.length && usersResult[0].values.length) {
+        for (const row of usersResult[0].values) {
+          const userId = row[0] as string;
+          db.run(
+            "INSERT INTO coin_accounts (id, user_id, balance, created_at, updated_at) VALUES (?, ?, 0, datetime('now'), datetime('now'));",
+            [uuidv4(), userId]
+          );
+        }
       }
     },
   },

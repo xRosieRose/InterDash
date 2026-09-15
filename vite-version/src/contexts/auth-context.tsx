@@ -24,6 +24,7 @@ export interface AuthUser {
   role: "user" | "admin"
   status: string
   is_admin: boolean
+  coin_balance?: number
 }
 
 interface AuthContextType {

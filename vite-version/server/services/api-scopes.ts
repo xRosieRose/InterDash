@@ -8,7 +8,7 @@
 export interface ScopeDefinition {
   id: string;
   name: string;
-  category: "Wildcard" | "Instances" | "Provisioning" | "Nodes" | "Tickets" | "Users" | "Settings" | "Analytics" | "Operations" | "Audit";
+  category: "Wildcard" | "Instances" | "Provisioning" | "Nodes" | "Tickets" | "Users" | "Settings" | "Analytics" | "Operations" | "Audit" | "Economy";
   description: string;
   isDangerous?: boolean;
   requiresAdminRole?: boolean;
@@ -55,6 +55,10 @@ export const SCOPES = {
   ANALYTICS_READ: "analytics:read",
   OPERATIONS_READ: "operations:read",
   AUDIT_READ: "audit:read",
+
+  // Economy / Virtual Coins
+  COINS_READ: "coins:read",
+  COINS_WRITE: "coins:write",
 } as const;
 
 export type ScopeId = (typeof SCOPES)[keyof typeof SCOPES];
@@ -245,6 +249,23 @@ export const SCOPE_REGISTRY: ScopeDefinition[] = [
     name: "Read Audit Logs",
     category: "Audit",
     description: "Search system audit trail and security events (sanitized, no secrets).",
+    requiresAdminRole: true,
+  },
+
+  // Economy
+  {
+    id: SCOPES.COINS_READ,
+    name: "Read Coin Balances & Ledger",
+    category: "Economy",
+    description: "View user virtual coin balances and ledger transaction history.",
+    requiresAdminRole: true,
+  },
+  {
+    id: SCOPES.COINS_WRITE,
+    name: "Grant & Mutate Coins",
+    category: "Economy",
+    description: "Grant virtual coins to user balances and create ledger transactions.",
+    isDangerous: true,
     requiresAdminRole: true,
   },
 ];

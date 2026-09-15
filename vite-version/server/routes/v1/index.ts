@@ -22,6 +22,7 @@ import settingsRouter from "./settings.js";
 import analyticsRouter from "./analytics.js";
 import operationsRouter from "./operations.js";
 import auditRouter from "./audit.js";
+import coinsRouter from "./coins.js";
 
 const router = Router();
 
@@ -81,6 +82,7 @@ router.get("/", (_req: Request, res: Response) => {
       analytics: "/api/v1/analytics",
       operations: "/api/v1/operations",
       audit: "/api/v1/audit",
+      coins: "/api/v1/coins",
     },
     scopesCatalog: SCOPE_REGISTRY.map((s) => ({
       id: s.id,
@@ -143,6 +145,7 @@ router.use("/settings", settingsRouter);
 router.use("/analytics", analyticsRouter);
 router.use("/operations", operationsRouter);
 router.use("/audit", auditRouter);
+router.use("/coins", coinsRouter);
 
 // ============================================================================
 // API v1 Catch-All 404

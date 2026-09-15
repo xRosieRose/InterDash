@@ -7,6 +7,7 @@ import {
   Server,
   LifeBuoy,
   Settings,
+  Coins,
 } from "lucide-react"
 import { Link } from "react-router-dom"
 import { useAuth } from "@/contexts/auth-context"
@@ -36,6 +37,7 @@ export function NavUser({
     avatar: string
     isAdmin?: boolean
     role?: string
+    coins?: number
   }
 }) {
   const { isMobile } = useSidebar()
@@ -70,9 +72,17 @@ export function NavUser({
                     </span>
                   )}
                 </div>
-                <span className="text-muted-foreground truncate text-xs">
-                  {user.email}
-                </span>
+                <div className="flex items-center justify-between gap-1">
+                  <span className="text-muted-foreground truncate text-xs">
+                    {user.email}
+                  </span>
+                  {user.coins !== undefined && (
+                    <span className="text-[11px] font-medium text-amber-400/90 flex items-center gap-0.5 shrink-0 font-mono">
+                      <Coins className="size-3 text-amber-400" />
+                      {user.coins.toLocaleString()}
+                    </span>
+                  )}
+                </div>
               </div>
               <EllipsisVertical className="ml-auto size-4" />
             </SidebarMenuButton>
@@ -108,6 +118,12 @@ export function NavUser({
                   <span className="text-muted-foreground truncate text-xs">
                     {user.email}
                   </span>
+                  {user.coins !== undefined && (
+                    <div className="flex items-center gap-1 text-xs font-semibold text-amber-400 mt-1 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20 w-fit">
+                      <Coins className="size-3.5" />
+                      <span>{user.coins.toLocaleString()} coins</span>
+                    </div>
+                  )}
                 </div>
               </div>
             </DropdownMenuLabel>
