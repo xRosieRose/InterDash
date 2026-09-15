@@ -1613,6 +1613,8 @@ router.post("/anti-miner/scan", async (req: Request, res: Response) => {
     res.status(err.statusCode || 500).json({
       error: err.message || "Failed to execute anti-miner scan.",
     });
+  }
+});
 // ============================================================================
 // VPS PLANS MANAGEMENT (ADMIN ONLY)
 // ============================================================================
