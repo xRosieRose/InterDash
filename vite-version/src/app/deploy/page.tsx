@@ -24,7 +24,7 @@ import {
   XCircle,
   Clock,
 } from "lucide-react"
-import { Link, useNavigate } from "react-router-dom"
+import { Link } from "react-router-dom"
 import { BaseLayout } from "@/components/layouts/base-layout"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -129,8 +129,7 @@ function formatRam(mb: number): string {
 type DeployStep = "plan" | "configure" | "confirm"
 
 export default function DeployPage() {
-  const { user, refreshUser } = useAuth()
-  const navigate = useNavigate()
+  const { refreshUser } = useAuth()
 
   // Data state
   const [plans, setPlans] = React.useState<VpsPlan[]>([])
@@ -374,7 +373,7 @@ export default function DeployPage() {
               }}
             />
 
-            {steps.map((s, i) => {
+            {steps.map((s) => {
               const isCurrent = s.key === step
               const isPast =
                 (s.key === "plan" && step !== "plan") ||

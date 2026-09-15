@@ -8,11 +8,7 @@ import {
   ToggleLeft,
   ToggleRight,
   Loader2,
-  Cpu,
-  MemoryStick,
-  HardDrive,
   Coins,
-  Network,
   Server,
   AlertCircle,
   Check,
@@ -27,9 +23,6 @@ import { Switch } from "@/components/ui/switch"
 import {
   Card,
   CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
 } from "@/components/ui/card"
 import {
   Dialog,
