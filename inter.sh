@@ -470,9 +470,133 @@ logs_pm2() {
   fi
 }
 
+# ------------------------------------------------------------------------------
+# Release & Commit Channel Management Helpers
+# ------------------------------------------------------------------------------
+save_channel_state() {
+  local channel="$1"
+  local target="$2"
+  find_project_root
+  local state_file="${ROOT_DIR}/.interdash-channel"
+  cat << EOF > "$state_file"
+CHANNEL="$channel"
+TARGET="$target"
+UPDATED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date)"
+EOF
+  if [ -d "$VITE_DIR" ] && [ "$VITE_DIR" != "$ROOT_DIR" ]; then
+    cp "$state_file" "$VITE_DIR/.interdash-channel" 2>/dev/null || true
+  fi
+}
+
+detect_current_channel() {
+  find_project_root
+  CURRENT_CHANNEL=""
+  CURRENT_TARGET=""
+
+  local state_file="${ROOT_DIR}/.interdash-channel"
+  if [ ! -f "$state_file" ] && [ -f "$VITE_DIR/.interdash-channel" ]; then
+    state_file="$VITE_DIR/.interdash-channel"
+  fi
+
+  if [ -f "$state_file" ]; then
+    CURRENT_CHANNEL=$(grep -E "^CHANNEL=" "$state_file" 2>/dev/null | cut -d= -f2 | tr -d ' "' || true)
+    CURRENT_TARGET=$(grep -E "^TARGET=" "$state_file" 2>/dev/null | cut -d= -f2 | tr -d ' "' || true)
+  fi
+
+  if [ -d "$ROOT_DIR/.git" ]; then
+    local exact_tag
+    exact_tag=$(git -C "$ROOT_DIR" describe --tags --exact-match 2>/dev/null || true)
+    if [ -n "$exact_tag" ]; then
+      CURRENT_CHANNEL="release"
+      CURRENT_TARGET="$exact_tag"
+    elif [ -z "$CURRENT_CHANNEL" ]; then
+      local cur_branch
+      cur_branch=$(git -C "$ROOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "$DEFAULT_BRANCH")
+      if [ "$cur_branch" = "HEAD" ]; then
+        CURRENT_CHANNEL="commit"
+        CURRENT_TARGET=$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+      else
+        CURRENT_CHANNEL="commit"
+        CURRENT_TARGET="$cur_branch"
+      fi
+    fi
+  else
+    CURRENT_CHANNEL="${CURRENT_CHANNEL:-commit}"
+    CURRENT_TARGET="${CURRENT_TARGET:-main}"
+  fi
+}
+
+get_available_releases() {
+  find_project_root
+  if [ -d "$ROOT_DIR/.git" ]; then
+    git -C "$ROOT_DIR" fetch --tags origin --quiet 2>/dev/null || true
+    git -C "$ROOT_DIR" tag -l "v*" --sort=-v:refname 2>/dev/null || git -C "$ROOT_DIR" tag -l --sort=-v:refname 2>/dev/null
+  else
+    git ls-remote --tags "$REPO_URL" 2>/dev/null | awk -F'/' '{print $3}' | grep -E '^v[0-9]' | sort -V -r || true
+  fi
+}
+
+get_latest_release() {
+  local api_tag
+  api_tag=$(curl -fsSL https://api.github.com/repos/xRosieRose/InterDash/releases/latest 2>/dev/null | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+  if [ -n "$api_tag" ]; then
+    echo "$api_tag"
+    return 0
+  fi
+
+  local git_tag
+  git_tag=$(get_available_releases | head -n 1 || true)
+  if [ -n "$git_tag" ]; then
+    echo "$git_tag"
+    return 0
+  fi
+
+  echo "v1.0.0"
+}
+
+get_latest_commit_hash() {
+  local branch="${1:-$DEFAULT_BRANCH}"
+  find_project_root
+  if [ -d "$ROOT_DIR/.git" ]; then
+    git -C "$ROOT_DIR" fetch origin "$branch" --quiet 2>/dev/null || true
+    git -C "$ROOT_DIR" rev-parse --short "origin/$branch" 2>/dev/null || echo "unknown"
+  else
+    git ls-remote "$REPO_URL" "refs/heads/$branch" 2>/dev/null | head -1 | awk '{print substr($1, 1, 7)}' || echo "unknown"
+  fi
+}
+
 status_pm2() {
   print_banner
-  print_header "PM2 Infrastructure Status"
+  print_header "PM2 Infrastructure & Version Status"
+  detect_current_channel
+
+  local local_sha="unknown"
+  if [ -d "$ROOT_DIR/.git" ]; then
+    local_sha=$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+  fi
+
+  echo -e "  ${WHITE_BOLD}Source Channel:${NC}  ${WHITE}${CURRENT_CHANNEL}${NC} (${GRAY_LIGHT}${CURRENT_TARGET}${NC})"
+  echo -e "  ${WHITE_BOLD}Local Commit:${NC}    ${GRAY_LIGHT}${local_sha}${NC}"
+
+  if [ "$CURRENT_CHANNEL" = "release" ]; then
+    local latest_rel
+    latest_rel=$(get_latest_release)
+    if [ "$CURRENT_TARGET" = "$latest_rel" ]; then
+      echo -e "  ${WHITE_BOLD}Release Status:${NC}  ${WHITE_BOLD}Up to date${NC} (Latest: ${latest_rel})"
+    else
+      echo -e "  ${WHITE_BOLD}Release Status:${NC}  ${GRAY_LIGHT}New release available: ${WHITE_BOLD}${latest_rel}${NC}"
+    fi
+  else
+    local remote_sha
+    remote_sha=$(get_latest_commit_hash "${CURRENT_TARGET:-main}")
+    if [ "$local_sha" = "$remote_sha" ]; then
+      echo -e "  ${WHITE_BOLD}Commit Status:${NC}   ${WHITE_BOLD}Up to date${NC} (${remote_sha})"
+    else
+      echo -e "  ${WHITE_BOLD}Commit Status:${NC}   ${GRAY_LIGHT}New commits available: ${local_sha} → ${WHITE_BOLD}${remote_sha}${NC}"
+    fi
+  fi
+  echo ""
+
   if command -v pm2 >/dev/null 2>&1; then
     pm2 status interdash 2>/dev/null || pm2 status
   else
@@ -481,9 +605,12 @@ status_pm2() {
 }
 
 # ------------------------------------------------------------------------------
-# Auto Installer
+# Auto Installer (Supports Release and Commit channels)
 # ------------------------------------------------------------------------------
 run_installer() {
+  local mode="${1:-}"
+  local target_ref="${2:-}"
+
   print_banner
   print_header "Automated Installation"
 
@@ -491,7 +618,65 @@ run_installer() {
   install_dependencies
   verify_system
 
-  # 2. Verify or Clone Repository into a dedicated directory
+  # 2. Determine Channel (Release vs Commit)
+  local selected_channel="release"
+  local target_checkout=""
+
+  if [ "$mode" = "--release" ] || [ "$mode" = "-r" ] || [ "$mode" = "release" ]; then
+    selected_channel="release"
+    target_checkout="${target_ref:-}"
+  elif [ "$mode" = "--commit" ] || [ "$mode" = "-c" ] || [ "$mode" = "commit" ]; then
+    selected_channel="commit"
+    target_checkout="${target_ref:-$DEFAULT_BRANCH}"
+  else
+    # Interactive prompt if in terminal
+    if [ -t 0 ]; then
+      echo -e "  ${WHITE_BOLD}Choose Installation Channel:${NC}"
+      echo ""
+      echo -e "    ${WHITE_BOLD}1${NC} ${GRAY_DARK}│${NC} 🏷️  ${WHITE}Stable Release${NC} ${DIM}- Pinned GitHub Release (v1.0.0, recommended for production)${NC}"
+      echo -e "    ${WHITE_BOLD}2${NC} ${GRAY_DARK}│${NC} ⚡ ${WHITE}Latest Commit${NC}  ${DIM}- Cutting-edge main branch commits${NC}"
+      echo -e "    ${WHITE_BOLD}3${NC} ${GRAY_DARK}│${NC} 🎯 ${WHITE}Specific Ref${NC}   ${DIM}- Enter a specific tag, branch, or commit SHA${NC}"
+      echo ""
+      read -p "  Select channel [1-3, default: 1]: " -r CH_CHOICE
+      echo ""
+      case "$CH_CHOICE" in
+        2)
+          selected_channel="commit"
+          target_checkout="$DEFAULT_BRANCH"
+          ;;
+        3)
+          read -p "  Enter tag, branch name, or commit SHA: " -r CUSTOM_REF
+          if [ -n "$CUSTOM_REF" ]; then
+            target_checkout="$CUSTOM_REF"
+            if [[ "$CUSTOM_REF" =~ ^v[0-9] ]]; then
+              selected_channel="release"
+            else
+              selected_channel="commit"
+            fi
+          else
+            selected_channel="release"
+          fi
+          ;;
+        *)
+          selected_channel="release"
+          ;;
+      esac
+    else
+      # Non-interactive default to stable release
+      selected_channel="release"
+    fi
+  fi
+
+  # Resolve default target if not specified
+  if [ "$selected_channel" = "release" ] && [ -z "$target_checkout" ]; then
+    target_checkout=$(get_latest_release)
+  elif [ "$selected_channel" = "commit" ] && [ -z "$target_checkout" ]; then
+    target_checkout="$DEFAULT_BRANCH"
+  fi
+
+  print_step "Installation Channel: ${WHITE_BOLD}${selected_channel}${NC} (Target: ${GRAY_LIGHT}${target_checkout}${NC})"
+
+  # 3. Verify or Clone Repository
   print_header "Repository Setup"
   find_project_root
 
@@ -502,7 +687,7 @@ run_installer() {
       VITE_DIR="$TARGET_CLONE/vite-version"
       print_step "Using existing repository at: ${GRAY_LIGHT}$ROOT_DIR${NC}"
     else
-      print_step "Cloning InterDash into: ${GRAY_LIGHT}$TARGET_CLONE${NC}..."
+      print_step "Cloning InterDash from ${GRAY_LIGHT}$REPO_URL${NC}..."
       git clone "$REPO_URL" "$TARGET_CLONE"
       ROOT_DIR="$TARGET_CLONE"
       VITE_DIR="$TARGET_CLONE/vite-version"
@@ -515,7 +700,24 @@ run_installer() {
     print_step "Using existing project directory: ${GRAY_LIGHT}$VITE_DIR${NC}"
   fi
 
-  # 3. Setup Environment File (.env)
+  # Checkout target release or commit
+  cd "$ROOT_DIR"
+  git fetch --tags origin --quiet 2>/dev/null || true
+
+  if [ "$selected_channel" = "release" ]; then
+    print_step "Checking out release tag: ${WHITE_BOLD}${target_checkout}${NC}..."
+    git checkout "$target_checkout" --quiet 2>/dev/null || git checkout "tags/$target_checkout" --quiet
+    save_channel_state "release" "$target_checkout"
+  else
+    print_step "Checking out commit/branch: ${WHITE_BOLD}${target_checkout}${NC}..."
+    git checkout "$target_checkout" --quiet 2>/dev/null || git checkout -b "$target_checkout" "origin/$target_checkout" --quiet 2>/dev/null || true
+    git pull origin "$target_checkout" --quiet 2>/dev/null || true
+    local local_sha
+    local_sha=$(git rev-parse --short HEAD 2>/dev/null || echo "$target_checkout")
+    save_channel_state "commit" "$target_checkout"
+  fi
+
+  # 4. Setup Environment File (.env)
   print_header "Environment Setup"
   local env_file="$VITE_DIR/.env"
   local env_example="$VITE_DIR/.env.example"
@@ -546,7 +748,7 @@ EOF
     print_step "Using existing .env file"
   fi
 
-  # 4. Install Project Packages
+  # 5. Install Project Packages
   print_header "Installing Dependencies"
   cd "$VITE_DIR"
   print_step "Running $PKG_MGR install in $VITE_DIR..."
@@ -557,7 +759,7 @@ EOF
   fi
   print_success "Project dependencies installed successfully"
 
-  # 5. Compile Production Distribution
+  # 6. Compile Production Distribution
   print_header "Building Production Bundle"
   print_step "Compiling distribution bundle..."
   if [ "$PKG_MGR" = "pnpm" ]; then
@@ -567,10 +769,10 @@ EOF
   fi
   print_success "Production build completed"
 
-  # 6. Start / Daemonize with PM2
+  # 7. Start / Daemonize with PM2
   start_pm2
 
-  # 7. Completion Summary
+  # 8. Completion Summary
   local port_num="5173"
   if [ -f "$env_file" ]; then
     local p
@@ -583,8 +785,8 @@ EOF
   print_header "Installation Complete"
   echo -e "  ${WHITE_BOLD}InterDash is online and managed 24/7 by PM2!${NC}"
   echo ""
-  echo -e "  ${WHITE}Access URL:${NC}"
-  echo -e "    ${WHITE_BOLD}http://<your-server-ip>:${port_num}${NC}"
+  echo -e "  ${WHITE}Channel:${NC}     ${WHITE_BOLD}${selected_channel}${NC} (${GRAY_LIGHT}${target_checkout}${NC})"
+  echo -e "  ${WHITE}Access URL:${NC}  ${WHITE_BOLD}http://<your-server-ip>:${port_num}${NC}"
   echo ""
   echo -e "  ${WHITE}Configure Discord OAuth2 credentials:${NC}"
   echo -e "    ${GRAY_LIGHT}nano ${env_file}${NC}"
@@ -595,15 +797,15 @@ EOF
   echo -e "    ${GRAY_LIGHT}pm2 restart interdash${NC}  - Restart service"
   echo -e "    ${GRAY_LIGHT}pm2 stop interdash${NC}     - Stop service"
   echo ""
-  echo -e "  ${WHITE}To enable auto-start on server reboot:${NC}"
-  echo -e "    ${WHITE_BOLD}pm2 startup && pm2 save${NC}"
-  echo ""
 }
 
 # ------------------------------------------------------------------------------
-# Auto Updater
+# Auto Updater (Supports Release and Commit channels)
 # ------------------------------------------------------------------------------
 run_updater() {
+  local mode="${1:-}"
+  local target_ref="${2:-}"
+
   print_banner
   print_header "Automated Updater"
 
@@ -612,60 +814,91 @@ run_updater() {
   find_project_root
 
   if [ ! -d "$ROOT_DIR/.git" ]; then
-    print_warn "No existing Git repository found in $ROOT_DIR."
-    TARGET_CLONE="$PWD/InterDash"
-    if [ -d "$TARGET_CLONE/.git" ]; then
-      ROOT_DIR="$TARGET_CLONE"
-      VITE_DIR="$ROOT_DIR/vite-version"
-      print_step "Using repository at: ${GRAY_LIGHT}$ROOT_DIR${NC}"
-    else
-      print_step "Cloning InterDash from ${GRAY_LIGHT}$REPO_URL${NC} into: ${GRAY_LIGHT}$TARGET_CLONE${NC}..."
-      git clone "$REPO_URL" "$TARGET_CLONE"
-      ROOT_DIR="$TARGET_CLONE"
-      VITE_DIR="$ROOT_DIR/vite-version"
-    fi
+    print_error "No existing Git repository found in $ROOT_DIR."
+    exit 1
+  fi
+
+  detect_current_channel
+
+  local channel="$CURRENT_CHANNEL"
+  local target="$CURRENT_TARGET"
+
+  if [ "$mode" = "--release" ] || [ "$mode" = "-r" ] || [ "$mode" = "release" ]; then
+    channel="release"
+    target="${target_ref:-}"
+  elif [ "$mode" = "--commit" ] || [ "$mode" = "-c" ] || [ "$mode" = "commit" ]; then
+    channel="commit"
+    target="${target_ref:-$DEFAULT_BRANCH}"
   fi
 
   cd "$ROOT_DIR"
-  CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "$DEFAULT_BRANCH")
-  LOCAL_HASH=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
-  print_step "Branch: ${WHITE_BOLD}$CURRENT_BRANCH${NC} (local: ${GRAY_LIGHT}$LOCAL_HASH${NC})"
-  print_step "Checking remote changes from ${GRAY_LIGHT}$REPO_URL${NC}..."
+  # Stash local uncommitted changes
+  local stashed=0
+  if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+    print_warn "Stashing local changes..."
+    git stash push -m "inter-updater-$(date +%s)" --quiet
+    stashed=1
+  fi
 
-  git fetch origin "$CURRENT_BRANCH" --quiet
+  if [ "$channel" = "release" ]; then
+    print_step "Channel: ${WHITE_BOLD}Release${NC}"
+    print_step "Fetching latest releases from GitHub..."
+    git fetch --tags origin --quiet 2>/dev/null || true
 
-  REMOTE_HASH=$(git rev-parse --short "origin/$CURRENT_BRANCH" 2>/dev/null || echo "unknown")
+    local latest_rel
+    latest_rel=$(get_latest_release)
+    local target_rel="${target:-$latest_rel}"
+    local current_tag
+    current_tag=$(git describe --tags --exact-match 2>/dev/null || echo "$CURRENT_TARGET")
 
-  if [ "$LOCAL_HASH" = "$REMOTE_HASH" ]; then
-    print_success "InterDash is already on the latest version ($LOCAL_HASH)"
-    echo ""
-    if [ ! -t 0 ] || [ "${FORCE:-0}" = "1" ] || [ "${1:-}" = "-f" ] || [ "${2:-}" = "-f" ] || [ "${1:-}" = "--force" ] || [ "${2:-}" = "--force" ]; then
-      FORCE_REBUILD="y"
-    else
+    if [ "$current_tag" = "$target_rel" ] && [ -z "$target_ref" ]; then
+      print_success "InterDash is already on the latest release tag (${WHITE_BOLD}${target_rel}${NC})"
+      echo ""
       read -p "  Force reinstall dependencies and rebuild? (y/N): " -r FORCE_REBUILD
       if [[ ! $FORCE_REBUILD =~ ^[Yy]$ ]]; then
+        if [ "$stashed" -eq 1 ]; then git stash pop --quiet 2>/dev/null || true; fi
         restart_pm2
-        exit 0
+        return 0
       fi
+    else
+      print_step "Updating release: ${GRAY_LIGHT}${current_tag}${NC} → ${WHITE_BOLD}${target_rel}${NC}..."
+      git checkout "$target_rel" --quiet 2>/dev/null || git checkout "tags/$target_rel" --quiet
+      save_channel_state "release" "$target_rel"
+      print_success "Checked out release ${target_rel}"
     fi
   else
-    print_step "New update available: ${GRAY_MID}$LOCAL_HASH${NC} → ${WHITE_BOLD}$REMOTE_HASH${NC}"
-    
-    if ! git diff-index --quiet HEAD --; then
-      print_warn "Stashing local changes..."
-      git stash push -m "inter-updater-$(date +%s)" --quiet
-      STASHED=1
-    fi
+    local branch="${target:-$DEFAULT_BRANCH}"
+    print_step "Channel: ${WHITE_BOLD}Commit (Branch: $branch)${NC}"
+    print_step "Checking remote commits from GitHub..."
 
-    print_step "Pulling latest commits from GitHub..."
-    git pull origin "$CURRENT_BRANCH" --quiet
-    print_success "Updated repository to $REMOTE_HASH"
+    git fetch origin "$branch" --quiet 2>/dev/null || true
+    local local_hash
+    local_hash=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+    local remote_hash
+    remote_hash=$(git rev-parse --short "origin/$branch" 2>/dev/null || echo "unknown")
 
-    if [ "${STASHED:-0}" -eq 1 ]; then
-      print_step "Restoring stashed changes..."
-      git stash pop --quiet || print_warn "Merge conflicts may require manual check"
+    if [ "$local_hash" = "$remote_hash" ] && [ -z "$target_ref" ]; then
+      print_success "InterDash is already on the latest commit (${local_hash})"
+      echo ""
+      read -p "  Force reinstall dependencies and rebuild? (y/N): " -r FORCE_REBUILD
+      if [[ ! $FORCE_REBUILD =~ ^[Yy]$ ]]; then
+        if [ "$stashed" -eq 1 ]; then git stash pop --quiet 2>/dev/null || true; fi
+        restart_pm2
+        return 0
+      fi
+    else
+      print_step "Updating commits: ${GRAY_MID}${local_hash}${NC} → ${WHITE_BOLD}${remote_hash}${NC}"
+      git checkout "$branch" --quiet 2>/dev/null || true
+      git pull origin "$branch" --quiet 2>/dev/null || true
+      save_channel_state "commit" "$branch"
+      print_success "Updated to latest commit ${remote_hash}"
     fi
+  fi
+
+  if [ "$stashed" -eq 1 ]; then
+    print_step "Restoring stashed changes..."
+    git stash pop --quiet 2>/dev/null || print_warn "Merge conflicts may require manual resolution"
   fi
 
   # Refresh dependencies
@@ -689,28 +922,57 @@ run_updater() {
   fi
   print_success "Build complete"
 
-  # Reload PM2 service seamlessly
+  # Reload PM2 service
   print_header "Reloading PM2 Service"
   if command -v pm2 >/dev/null 2>&1 && pm2 list 2>/dev/null | grep -q "interdash"; then
-    print_step "Reloading InterDash service in PM2..."
     pm2 restart interdash >/dev/null 2>&1 || start_pm2
     print_success "PM2 service refreshed with latest build"
   else
     start_pm2
   fi
 
-  # Create global 'inter' command in PATH if writable
-  if [ -d "/usr/local/bin" ] && ([ -w "/usr/local/bin" ] || [ "$(id -u)" -eq 0 ]); then
-    ln -sf "$ROOT_DIR/inter" /usr/local/bin/inter 2>/dev/null || true
-    ln -sf "$ROOT_DIR/inter.sh" /usr/local/bin/inter.sh 2>/dev/null || true
+  print_header "Update Complete"
+  echo -e "  ${WHITE_BOLD}InterDash successfully updated!${NC}"
+  echo ""
+}
+
+# ------------------------------------------------------------------------------
+# Channel Switcher (Switch between Release ↔ Commit)
+# ------------------------------------------------------------------------------
+switch_channel() {
+  print_banner
+  print_header "Switch Distribution Channel"
+  detect_current_channel
+
+  local target_channel="${1:-}"
+  local target_ref="${2:-}"
+
+  if [ -z "$target_channel" ]; then
+    echo -e "  Current Channel: ${WHITE_BOLD}${CURRENT_CHANNEL}${NC} (${GRAY_LIGHT}${CURRENT_TARGET}${NC})"
+    echo ""
+    echo -e "    ${WHITE_BOLD}1${NC} ${GRAY_DARK}│${NC} 🏷️  ${WHITE}Switch to Stable Release Channel${NC} (e.g. v1.0.0)"
+    echo -e "    ${WHITE_BOLD}2${NC} ${GRAY_DARK}│${NC} ⚡ ${WHITE}Switch to Latest Commit Channel${NC} (main branch)"
+    echo ""
+    read -p "  Select target channel [1-2]: " -r SW_CHOICE
+    case "$SW_CHOICE" in
+      1) target_channel="release" ;;
+      2) target_channel="commit" ;;
+      *) print_warn "Operation cancelled."; return 0 ;;
+    esac
   fi
 
-  print_header "Update Complete"
-  echo -e "  ${WHITE_BOLD}InterDash successfully updated to ${REMOTE_HASH}!${NC}"
-  echo ""
-  echo -e "  ${WHITE}Check PM2 status:${NC} ${GRAY_LIGHT}pm2 status interdash${NC}"
-  echo -e "  ${WHITE}Check logs:${NC}       ${GRAY_LIGHT}pm2 logs interdash${NC}"
-  echo ""
+  if [ "$target_channel" = "release" ]; then
+    local rel_tag="${target_ref:-}"
+    if [ -z "$rel_tag" ]; then
+      rel_tag=$(get_latest_release)
+    fi
+    print_step "Switching channel to Release (${WHITE_BOLD}${rel_tag}${NC})..."
+    run_updater "--release" "$rel_tag"
+  else
+    local branch="${target_ref:-$DEFAULT_BRANCH}"
+    print_step "Switching channel to Commit (${WHITE_BOLD}${branch}${NC})..."
+    run_updater "--commit" "$branch"
+  fi
 }
 
 # ------------------------------------------------------------------------------
@@ -756,20 +1018,24 @@ run_build() {
 interactive_menu() {
   while true; do
     print_banner
+    detect_current_channel
+    echo -e "  ${GRAY_LIGHT}Channel:${NC} ${WHITE_BOLD}${CURRENT_CHANNEL}${NC} (${GRAY_LIGHT}${CURRENT_TARGET}${NC})"
+    echo ""
     echo -e "  ${WHITE_BOLD}Infrastructure Operations:${NC}"
     echo ""
-    echo -e "    ${WHITE_BOLD}1${NC} ${GRAY_DARK}│${NC} 📦 ${WHITE}Auto-Installer${NC}   ${DIM}- Provision Node/PM2, setup .env, build & start daemon${NC}"
-    echo -e "    ${WHITE_BOLD}2${NC} ${GRAY_DARK}│${NC} 🔄 ${WHITE}Auto-Updater${NC}     ${DIM}- Pull GitHub commits, refresh deps, rebuild & restart PM2${NC}"
-    echo -e "    ${WHITE_BOLD}3${NC} ${GRAY_DARK}│${NC} 🚀 ${WHITE}PM2 Start/Reload${NC} ${DIM}- Launch or restart InterDash background daemon${NC}"
-    echo -e "    ${WHITE_BOLD}4${NC} ${GRAY_DARK}│${NC} 🛑 ${WHITE}PM2 Stop${NC}         ${DIM}- Stop InterDash background daemon${NC}"
-    echo -e "    ${WHITE_BOLD}5${NC} ${GRAY_DARK}│${NC} 📜 ${WHITE}PM2 Logs${NC}         ${DIM}- View live streaming application logs${NC}"
-    echo -e "    ${WHITE_BOLD}6${NC} ${GRAY_DARK}│${NC} 🏗️  ${WHITE}Build Bundle${NC}     ${DIM}- Run full TypeScript compiler and production build${NC}"
-    echo -e "    ${WHITE_BOLD}7${NC} ${GRAY_DARK}│${NC} 🔍 ${WHITE}System Status${NC}    ${DIM}- Check PM2, Node, Git, and service health${NC}"
-    echo -e "    ${WHITE_BOLD}8${NC} ${GRAY_DARK}│${NC} 💻 ${WHITE}Vite Dev Mode${NC}    ${DIM}- Launch foreground dev server (hot-reload)${NC}"
+    echo -e "    ${WHITE_BOLD}1${NC} ${GRAY_DARK}│${NC} 📦 ${WHITE}Auto-Installer${NC}       ${DIM}- Install from Release (Stable) or Commit (Edge)${NC}"
+    echo -e "    ${WHITE_BOLD}2${NC} ${GRAY_DARK}│${NC} 🔄 ${WHITE}Auto-Updater${NC}         ${DIM}- Update from current channel (Release or Commit)${NC}"
+    echo -e "    ${WHITE_BOLD}3${NC} ${GRAY_DARK}│${NC} 🔀 ${WHITE}Switch Channel${NC}       ${DIM}- Switch between Release ↔ Commit channels${NC}"
+    echo -e "    ${WHITE_BOLD}4${NC} ${GRAY_DARK}│${NC} 🚀 ${WHITE}PM2 Start/Reload${NC}     ${DIM}- Launch or restart InterDash background daemon${NC}"
+    echo -e "    ${WHITE_BOLD}5${NC} ${GRAY_DARK}│${NC} 🛑 ${WHITE}PM2 Stop${NC}             ${DIM}- Stop InterDash background daemon${NC}"
+    echo -e "    ${WHITE_BOLD}6${NC} ${GRAY_DARK}│${NC} 📜 ${WHITE}PM2 Logs${NC}             ${DIM}- View live streaming application logs${NC}"
+    echo -e "    ${WHITE_BOLD}7${NC} ${GRAY_DARK}│${NC} 🏗️  ${WHITE}Build Bundle${NC}         ${DIM}- Run full TypeScript compiler and production build${NC}"
+    echo -e "    ${WHITE_BOLD}8${NC} ${GRAY_DARK}│${NC} 🔍 ${WHITE}System Status${NC}        ${DIM}- Check channel, version, PM2, Node, Git health${NC}"
+    echo -e "    ${WHITE_BOLD}9${NC} ${GRAY_DARK}│${NC} 💻 ${WHITE}Vite Dev Mode${NC}        ${DIM}- Launch foreground dev server (hot-reload)${NC}"
     echo -e "    ${WHITE_BOLD}0${NC} ${GRAY_DARK}│${NC} ✕  ${WHITE}Exit${NC}"
     echo ""
     echo -e "${GRAY_DARK}  ─────────────────────────────────────────────────────────────${NC}"
-    read -p "  Select an option [0-8]: " -r OPTION
+    read -p "  Select an option [0-9]: " -r OPTION
     echo ""
 
     case "$OPTION" in
@@ -782,25 +1048,29 @@ interactive_menu() {
         read -p "  Press Enter to return to menu..."
         ;;
       3)
-        start_pm2
+        switch_channel
         read -p "  Press Enter to return to menu..."
         ;;
       4)
-        stop_pm2
+        start_pm2
         read -p "  Press Enter to return to menu..."
         ;;
       5)
-        logs_pm2
+        stop_pm2
+        read -p "  Press Enter to return to menu..."
         ;;
       6)
+        logs_pm2
+        ;;
+      7)
         run_build
         read -p "  Press Enter to return to menu..."
         ;;
-      7)
+      8)
         status_pm2
         read -p "  Press Enter to return to menu..."
         ;;
-      8)
+      9)
         run_dev
         ;;
       0|q|Q)
@@ -828,10 +1098,16 @@ fi
 
 case "${1:-}" in
   install|--install|-i)
-    run_installer
+    run_installer "${2:-}" "${3:-}"
     ;;
   update|--update|-u)
-    run_updater
+    run_updater "${2:-}" "${3:-}"
+    ;;
+  switch|switch-channel|--switch)
+    switch_channel "${2:-}" "${3:-}"
+    ;;
+  channel|version|--version|-v)
+    status_pm2
     ;;
   start|--start|-s)
     start_pm2
@@ -864,16 +1140,20 @@ case "${1:-}" in
     ;;
   help|--help|-h)
     print_banner
-    echo -e "  ${WHITE_BOLD}Usage:${NC} ./inter.sh [command]"
+    echo -e "  ${WHITE_BOLD}Usage:${NC} ./inter.sh [command] [options]"
     echo ""
     echo -e "  ${WHITE_BOLD}Commands:${NC}"
-    echo -e "    ${WHITE}install,   --install,   -i${NC}  Run automated installation & start with PM2"
-    echo -e "    ${WHITE}update,    --update,    -u${NC}  Pull latest changes from GitHub & reload PM2"
+    echo -e "    ${WHITE}install,   --install,   -i  [--release [tag] | --commit [ref]]${NC}"
+    echo -e "                                Run installer from GitHub release or commit"
+    echo -e "    ${WHITE}update,    --update,    -u  [--release [tag] | --commit [ref]]${NC}"
+    echo -e "                                Update repository from release or commit channel"
+    echo -e "    ${WHITE}switch,    --switch         [release|commit] [tag_or_ref]${NC}"
+    echo -e "                                Switch between Release and Commit channels"
+    echo -e "    ${WHITE}status,    channel,     -v${NC}  Show PM2 daemon, active channel, & git status"
     echo -e "    ${WHITE}start,     --start,     -s${NC}  Launch or reload InterDash under PM2"
     echo -e "    ${WHITE}stop,      --stop${NC}          Stop InterDash PM2 daemon"
     echo -e "    ${WHITE}restart,   --restart,   -r${NC}  Restart InterDash PM2 daemon"
     echo -e "    ${WHITE}logs,      --logs,      -l${NC}  Stream real-time PM2 application logs"
-    echo -e "    ${WHITE}status${NC}                  Show PM2 daemon and service status"
     echo -e "    ${WHITE}dev,       --dev,       -d${NC}  Start interactive Vite dev server (0.0.0.0:5173)"
     echo -e "    ${WHITE}build,     --build,     -b${NC}  Compile production distribution"
     echo -e "    ${WHITE}patch-pve, --patch-pve${NC}    Apply Proxmox termproxy API Token authentication patch"
@@ -890,3 +1170,4 @@ case "${1:-}" in
     exit 1
     ;;
 esac
+

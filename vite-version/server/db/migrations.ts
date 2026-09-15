@@ -1009,6 +1009,70 @@ exit 0
       }
     },
   },
+  {
+    version: 21,
+    name: "vps_plans_and_deployment_orders",
+    up: (db: Database) => {
+      // 1. VPS Plans table
+      db.run(`
+        CREATE TABLE IF NOT EXISTS vps_plans (
+          id                  TEXT PRIMARY KEY,
+          name                TEXT NOT NULL,
+          description         TEXT,
+          cpu_cores           INTEGER NOT NULL CHECK(cpu_cores >= 1),
+          memory_mb           INTEGER NOT NULL CHECK(memory_mb >= 256),
+          disk_gb             INTEGER NOT NULL CHECK(disk_gb >= 5),
+          swap_mb             INTEGER NOT NULL DEFAULT 512 CHECK(swap_mb >= 0),
+          coin_price          INTEGER NOT NULL CHECK(coin_price > 0),
+          network_bridge      TEXT NOT NULL DEFAULT 'vmbr0',
+          enabled             INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+          display_order       INTEGER NOT NULL DEFAULT 0,
+          created_by_user_id  TEXT REFERENCES users(id) ON DELETE SET NULL,
+          created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_vps_plans_enabled ON vps_plans(enabled);
+        CREATE INDEX IF NOT EXISTS idx_vps_plans_order ON vps_plans(display_order ASC, created_at DESC);
+      `);
+
+      // 2. Deployment Orders durable economic record
+      db.run(`
+        CREATE TABLE IF NOT EXISTS deployment_orders (
+          id                      TEXT PRIMARY KEY,
+          user_id                 TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+          plan_id                 TEXT REFERENCES vps_plans(id) ON DELETE SET NULL,
+          plan_snapshot_json      TEXT NOT NULL,
+          vps_name                TEXT NOT NULL,
+          vps_description         TEXT,
+          os_template             TEXT NOT NULL,
+          charged_coins           INTEGER NOT NULL CHECK(charged_coins >= 0),
+          charge_transaction_id   TEXT REFERENCES coin_transactions(id),
+          refund_transaction_id   TEXT REFERENCES coin_transactions(id),
+          provisioning_job_id     TEXT REFERENCES provisioning_jobs(id),
+          vps_id                  TEXT REFERENCES vps(id),
+          status                  TEXT NOT NULL CHECK(status IN ('pending', 'charged', 'provisioning', 'completed', 'failed', 'refunded', 'recovery_required', 'cancelled')),
+          idempotency_key         TEXT UNIQUE,
+          error_message           TEXT,
+          created_at              TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_dep_orders_user ON deployment_orders(user_id);
+        CREATE INDEX IF NOT EXISTS idx_dep_orders_status ON deployment_orders(status);
+        CREATE INDEX IF NOT EXISTS idx_dep_orders_idempotency ON deployment_orders(idempotency_key);
+      `);
+
+      // 3. Update vps table with plan snapshot references
+      try {
+        db.run("ALTER TABLE vps ADD COLUMN plan_id TEXT REFERENCES vps_plans(id) ON DELETE SET NULL;");
+      } catch {}
+      try {
+        db.run("ALTER TABLE vps ADD COLUMN plan_snapshot_json TEXT;");
+      } catch {}
+      try {
+        db.run("ALTER TABLE provisioning_jobs ADD COLUMN deployment_order_id TEXT;");
+      } catch {}
+    },
+  },
 ];
 
 /**

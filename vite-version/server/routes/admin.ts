@@ -26,6 +26,7 @@ import { SCOPE_REGISTRY } from "../services/api-scopes.js";
 import { StartupScriptService } from "../services/startup-script.js";
 import { AntiMinerService } from "../services/anti-miner.js";
 import { CoinService, CoinError } from "../services/coin.js";
+import { PlanService, PlanError } from "../services/vps-plans.js";
 
 const router = Router();
 
@@ -1612,7 +1613,165 @@ router.post("/anti-miner/scan", async (req: Request, res: Response) => {
     res.status(err.statusCode || 500).json({
       error: err.message || "Failed to execute anti-miner scan.",
     });
+// ============================================================================
+// VPS PLANS MANAGEMENT (ADMIN ONLY)
+// ============================================================================
+
+// GET /api/admin/plans — List all VPS plans
+router.get("/plans", (_req: Request, res: Response) => {
+  try {
+    const plans = PlanService.getAllPlans();
+    res.json({ plans });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to list plans." });
+  }
+});
+
+// GET /api/admin/plans/bridges — Discover available network bridges from nodes
+router.get("/plans/bridges", async (_req: Request, res: Response) => {
+  try {
+    const nodes = queryAll<any>(
+      `SELECT id, name, hostname, api_url, port, node_name, default_bridge
+       FROM proxmox_nodes
+       WHERE enabled = 1 AND (status IS NULL OR status != 'disabled')`
+    );
+
+    const bridgeSet = new Set<string>();
+    // Always include vmbr0 as standard Proxmox default
+    bridgeSet.add("vmbr0");
+
+    for (const nodeRow of nodes) {
+      if (nodeRow.default_bridge) bridgeSet.add(nodeRow.default_bridge);
+      const nodeConfig = ProvisioningService.getNodeConfig(nodeRow.id);
+      if (nodeConfig) {
+        try {
+          const bridges = await ProxmoxService.getNetworkBridges(nodeConfig);
+          for (const b of bridges) {
+            if (b.iface) bridgeSet.add(b.iface);
+          }
+        } catch {}
+      }
+    }
+
+    res.json({ bridges: Array.from(bridgeSet).sort() });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to discover network bridges." });
+  }
+});
+
+// POST /api/admin/plans — Create a new VPS deployment plan
+router.post("/plans", (req: Request, res: Response) => {
+  try {
+    const plan = PlanService.createPlan(req.body, req.user!.id);
+    res.status(201).json({
+      success: true,
+      plan,
+      message: `VPS Plan '${plan.name}' created successfully.`,
+    });
+  } catch (err: any) {
+    res.status(err.statusCode || 400).json({ error: err.message || "Failed to create plan." });
+  }
+});
+
+// GET /api/admin/plans/:id — Get a specific plan
+router.get("/plans/:id", (req: Request, res: Response) => {
+  try {
+    const plan = PlanService.getPlanById(req.params.id);
+    if (!plan) {
+      res.status(404).json({ error: "Plan not found." });
+      return;
+    }
+    res.json({ plan });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to retrieve plan." });
+  }
+});
+
+// PATCH /api/admin/plans/:id — Update a plan
+router.patch("/plans/:id", (req: Request, res: Response) => {
+  try {
+    const updated = PlanService.updatePlan(req.params.id, req.body, req.user!.id);
+    res.json({
+      success: true,
+      plan: updated,
+      message: "Plan updated successfully. Changes apply to future deployments.",
+    });
+  } catch (err: any) {
+    res.status(err.statusCode || 400).json({ error: err.message || "Failed to update plan." });
+  }
+});
+
+// POST /api/admin/plans/:id/enable — Enable plan
+router.post("/plans/:id/enable", (req: Request, res: Response) => {
+  try {
+    const plan = PlanService.togglePlanStatus(req.params.id, true, req.user!.id);
+    res.json({ success: true, plan, message: `Plan '${plan.name}' enabled.` });
+  } catch (err: any) {
+    res.status(err.statusCode || 400).json({ error: err.message || "Failed to enable plan." });
+  }
+});
+
+// POST /api/admin/plans/:id/disable — Disable plan
+router.post("/plans/:id/disable", (req: Request, res: Response) => {
+  try {
+    const plan = PlanService.togglePlanStatus(req.params.id, false, req.user!.id);
+    res.json({ success: true, plan, message: `Plan '${plan.name}' disabled.` });
+  } catch (err: any) {
+    res.status(err.statusCode || 400).json({ error: err.message || "Failed to disable plan." });
+  }
+});
+
+// DELETE /api/admin/plans/:id — Delete or archive plan
+router.delete("/plans/:id", (req: Request, res: Response) => {
+  try {
+    const result = PlanService.deletePlan(req.params.id, req.user!.id);
+    if (result.disabledInstead) {
+      res.json({
+        success: true,
+        disabledInstead: true,
+        message: "Plan has historical deployments so it was disabled/archived to preserve ledger integrity.",
+      });
+    } else {
+      res.json({ success: true, message: "Plan deleted successfully." });
+    }
+  } catch (err: any) {
+    res.status(err.statusCode || 400).json({ error: err.message || "Failed to delete plan." });
+  }
+});
+
+// GET /api/admin/deployments — List user deployment orders for admin audit/oversight
+router.get("/deployments", (req: Request, res: Response) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string, 10) || 30));
+    const offset = (page - 1) * limit;
+
+    const total = queryOne<{ count: number }>("SELECT COUNT(*) as count FROM deployment_orders")?.count || 0;
+
+    const orders = queryAll<any>(
+      `SELECT d.*, u.username as user_username, u.global_name as user_global_name,
+              p.name as plan_current_name
+       FROM deployment_orders d
+       LEFT JOIN users u ON d.user_id = u.id
+       LEFT JOIN vps_plans p ON d.plan_id = p.id
+       ORDER BY d.created_at DESC
+       LIMIT ? OFFSET ?`,
+      [limit, offset]
+    );
+
+    res.json({
+      orders,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to list deployment orders." });
   }
 });
 
 export default router;
+

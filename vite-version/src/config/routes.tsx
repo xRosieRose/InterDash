@@ -11,6 +11,7 @@ const ProductTourDemo = lazy(() => import("@/components/ui/product-tour-demo"))
 // Compute
 const Instances = lazy(() => import("@/app/instances/page"))
 const InstanceDetail = lazy(() => import("@/app/instances/detail/page"))
+const Deploy = lazy(() => import("@/app/deploy/page"))
 const Analytics = lazy(() => import("@/app/analytics/page"))
 
 // Operations
@@ -23,6 +24,7 @@ const AdminNodes = lazy(() => import("@/app/admin/nodes/page"))
 const AdminSettings = lazy(() => import("@/app/admin/settings/page"))
 const AdminVpsCreate = lazy(() => import("@/app/admin/vps/create/page"))
 const AdminVpsDeployments = lazy(() => import("@/app/admin/vps/deployments/page"))
+const AdminPlans = lazy(() => import("@/app/admin/plans/page"))
 
 // Auth pages
 const SignIn = lazy(() => import("@/app/auth/sign-in/page"))
@@ -84,6 +86,10 @@ export const routes: RouteConfig[] = [
         element: <InstanceDetail />,
       },
       {
+        path: "/deploy",
+        element: <Deploy />,
+      },
+      {
         path: "/analytics",
         element: <Analytics />,
       },
@@ -136,6 +142,14 @@ export const routes: RouteConfig[] = [
         element: (
           <ProtectedRoute requireAdmin>
             <AdminVpsCreate />
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: "/admin/plans",
+        element: (
+          <ProtectedRoute requireAdmin>
+            <AdminPlans />
           </ProtectedRoute>
         ),
       },

@@ -36,6 +36,7 @@ import { VpsOperationsService } from "./services/vps-operations.js";
 import { VpsExpiryService } from "./services/vps-expiry.js";
 import { ApiKeyService } from "./services/api-key.js";
 import { AntiMinerService } from "./services/anti-miner.js";
+import { DeploymentService } from "./services/deployment.js";
 import v1Routes from "./routes/v1/index.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -337,6 +338,11 @@ export async function main() {
   // Reconcile expired VPS states on startup
   await VpsExpiryService.reconcileExpiredVps().catch((err) => {
     console.error("[VPS-EXPIRY] Startup reconciliation error:", err);
+  });
+
+  // Reconcile in-flight user coin deployment orders across server restarts
+  await DeploymentService.reconcileInterruptedDeployments().catch((err) => {
+    console.error("[DEPLOYMENT] Startup reconciliation error:", err);
   });
 
   // Session Cleanup (every 15 minutes)

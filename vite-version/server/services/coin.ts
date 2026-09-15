@@ -65,6 +65,28 @@ export interface GrantCoinsParams {
   metadata?: Record<string, any> | null;
 }
 
+export interface DebitCoinsParams {
+  userId: string;
+  amount: number;
+  reason: string;
+  description?: string | null;
+  referenceType?: string | null;
+  referenceId?: string | null;
+  idempotencyKey?: string | null;
+  metadata?: Record<string, any> | null;
+}
+
+export interface RefundCoinsParams {
+  userId: string;
+  amount: number;
+  reason: string;
+  description?: string | null;
+  referenceType?: string | null;
+  referenceId?: string | null;
+  idempotencyKey?: string | null;
+  metadata?: Record<string, any> | null;
+}
+
 export interface CoinTransactionQuery {
   page?: number;
   pageSize?: number;
@@ -433,24 +455,384 @@ export class CoinService {
   }
 
   /**
-   * Future Capability Stub: Debit coins from a user balance.
-   * Explicitly forbidden in this foundational phase.
+   * Atomically debit coins from a user account for deployment charges or authorized deductions.
+   * Enforces strictly positive amount, non-negative balance, immutable ledger write, and idempotency.
    */
-  static debitCoins(_params: { userId: string; amount: number; reason: string }): never {
-    throw new CoinError(
-      "Coin spending and deductions are not enabled in this phase of InterDash",
-      "COIN_OPERATION_FORBIDDEN",
-      403
+  static debitCoins(params: DebitCoinsParams): {
+    transaction: CoinTransaction;
+    account: CoinAccount;
+    isCached?: boolean;
+  } {
+    const {
+      userId,
+      amount,
+      reason,
+      description,
+      referenceType,
+      referenceId,
+      idempotencyKey,
+      metadata,
+    } = params;
+
+    // 1. Validate userId
+    if (!userId || typeof userId !== "string") {
+      throw new CoinError("User ID is required", "COIN_USER_NOT_FOUND", 400);
+    }
+
+    const user = queryOne<{ id: string; username: string }>(
+      "SELECT id, username FROM users WHERE id = ?",
+      [userId]
     );
+    if (!user) {
+      throw new CoinError("Target user does not exist", "COIN_USER_NOT_FOUND", 404);
+    }
+
+    // 2. Validate amount: positive safe integer
+    if (
+      typeof amount !== "number" ||
+      !Number.isSafeInteger(amount) ||
+      amount <= 0
+    ) {
+      throw new CoinError(
+        "Coin debit amount must be a positive whole integer",
+        "INVALID_COIN_AMOUNT",
+        400
+      );
+    }
+
+    if (amount > MAX_SINGLE_COIN_AMOUNT) {
+      throw new CoinError(
+        `Coin amount exceeds the maximum allowable single transaction of ${MAX_SINGLE_COIN_AMOUNT.toLocaleString()} coins`,
+        "COIN_AMOUNT_TOO_LARGE",
+        400
+      );
+    }
+
+    // 3. Validate reason
+    const trimmedReason = (reason || "").trim();
+    if (!trimmedReason) {
+      throw new CoinError("A debit reason is required", "INVALID_COIN_REASON", 400);
+    }
+    const trimmedDescription = description ? description.trim().substring(0, MAX_DESCRIPTION_LENGTH) : null;
+
+    // 4. Idempotency check
+    const cleanIdempotencyKey = idempotencyKey ? idempotencyKey.trim() : null;
+    if (cleanIdempotencyKey) {
+      const existingTx = queryOne<CoinTransaction>(
+        "SELECT * FROM coin_transactions WHERE idempotency_key = ?",
+        [cleanIdempotencyKey]
+      );
+
+      if (existingTx) {
+        if (
+          existingTx.user_id === userId &&
+          Math.abs(existingTx.amount) === amount &&
+          existingTx.type === "deployment_charge"
+        ) {
+          const currentAccount = this.getOrCreateAccount(userId);
+          return {
+            transaction: existingTx,
+            account: currentAccount,
+            isCached: true,
+          };
+        }
+
+        throw new CoinError(
+          "Idempotency key has already been used for a different transaction request",
+          "COIN_IDEMPOTENCY_CONFLICT",
+          409
+        );
+      }
+    }
+
+    // Also check if reference already charged
+    if (referenceType && referenceId) {
+      const existingRefTx = queryOne<CoinTransaction>(
+        "SELECT * FROM coin_transactions WHERE reference_type = ? AND reference_id = ? AND type = 'deployment_charge' LIMIT 1",
+        [referenceType, referenceId]
+      );
+      if (existingRefTx) {
+        const currentAccount = this.getOrCreateAccount(userId);
+        return {
+          transaction: existingRefTx,
+          account: currentAccount,
+          isCached: true,
+        };
+      }
+    }
+
+    // 5. Atomic debit mutation
+    return transaction(() => {
+      const currentAccount = this.getOrCreateAccount(userId);
+      const balanceBefore = currentAccount.balance;
+
+      if (balanceBefore < amount) {
+        const err = new CoinError(
+          `Insufficient coins. Required: ${amount}, Available: ${balanceBefore}.`,
+          "INSUFFICIENT_COINS",
+          400
+        );
+        (err as any).currentBalance = balanceBefore;
+        (err as any).requiredCoins = amount;
+        throw err;
+      }
+
+      const balanceAfter = balanceBefore - amount;
+
+      // Atomic update with strict guard: balance >= amount
+      execute(
+        `UPDATE coin_accounts
+         SET balance = balance - ?, updated_at = datetime('now')
+         WHERE user_id = ? AND balance >= ?`,
+        [amount, userId, amount]
+      );
+
+      const updatedAccount = queryOne<CoinAccount>(
+        "SELECT id, user_id, balance, created_at, updated_at FROM coin_accounts WHERE user_id = ?",
+        [userId]
+      );
+
+      if (!updatedAccount || updatedAccount.balance !== balanceAfter) {
+        throw new CoinError("Failed to debit coin account atomically", "COIN_INTEGRITY_ERROR", 500);
+      }
+
+      const txId = uuidv4();
+      const metadataStr = metadata ? JSON.stringify(metadata) : null;
+
+      // Negative amount for debit in ledger
+      execute(
+        `INSERT INTO coin_transactions (
+           id, user_id, type, amount, balance_before, balance_after,
+           reason, description, reference_type, reference_id,
+           idempotency_key, created_by_user_id, metadata, created_at
+         ) VALUES (?, ?, 'deployment_charge', ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, datetime('now'))`,
+        [
+          txId,
+          userId,
+          -amount,
+          balanceBefore,
+          balanceAfter,
+          trimmedReason,
+          trimmedDescription,
+          referenceType || null,
+          referenceId || null,
+          cleanIdempotencyKey,
+          metadataStr,
+        ]
+      );
+
+      const createdTx = queryOne<CoinTransaction>(
+        "SELECT * FROM coin_transactions WHERE id = ?",
+        [txId]
+      );
+
+      if (!createdTx) {
+        throw new CoinError("Failed to record debit transaction in ledger", "COIN_LEDGER_WRITE_FAILED", 500);
+      }
+
+      // Audit log
+      execute(
+        `INSERT INTO audit_logs (user_id, event_type, metadata, created_at)
+         VALUES (?, 'coin_debit', ?, datetime('now'))`,
+        [
+          userId,
+          JSON.stringify({
+            target_user_id: userId,
+            target_username: user.username,
+            amount: -amount,
+            reason: trimmedReason,
+            balance_before: balanceBefore,
+            balance_after: balanceAfter,
+            transaction_id: txId,
+            reference_type: referenceType || null,
+            reference_id: referenceId || null,
+            idempotency_key: cleanIdempotencyKey,
+          }),
+        ]
+      );
+
+      return {
+        transaction: createdTx,
+        account: updatedAccount,
+        isCached: false,
+      };
+    });
   }
 
   /**
-   * Future Capability Stub: Generic credit (non-admin).
-   * Explicitly forbidden in this foundational phase.
+   * Compensating refund for failed deployments or reversed debits.
+   * Atomically credits coins back, records immutable 'refund' transaction, and enforces refund idempotency.
+   */
+  static refundCoins(params: RefundCoinsParams): {
+    transaction: CoinTransaction;
+    account: CoinAccount;
+    isCached?: boolean;
+  } {
+    const {
+      userId,
+      amount,
+      reason,
+      description,
+      referenceType,
+      referenceId,
+      idempotencyKey,
+      metadata,
+    } = params;
+
+    // 1. Validate userId
+    if (!userId || typeof userId !== "string") {
+      throw new CoinError("User ID is required", "COIN_USER_NOT_FOUND", 400);
+    }
+
+    const user = queryOne<{ id: string; username: string }>(
+      "SELECT id, username FROM users WHERE id = ?",
+      [userId]
+    );
+    if (!user) {
+      throw new CoinError("Target user does not exist", "COIN_USER_NOT_FOUND", 404);
+    }
+
+    // 2. Validate amount: positive safe integer
+    if (
+      typeof amount !== "number" ||
+      !Number.isSafeInteger(amount) ||
+      amount <= 0
+    ) {
+      throw new CoinError(
+        "Refund amount must be a positive whole integer",
+        "INVALID_COIN_AMOUNT",
+        400
+      );
+    }
+
+    // 3. Idempotency check: key or reference check
+    const cleanIdempotencyKey = idempotencyKey ? idempotencyKey.trim() : null;
+    if (cleanIdempotencyKey) {
+      const existingTx = queryOne<CoinTransaction>(
+        "SELECT * FROM coin_transactions WHERE idempotency_key = ?",
+        [cleanIdempotencyKey]
+      );
+
+      if (existingTx) {
+        const currentAccount = this.getOrCreateAccount(userId);
+        return {
+          transaction: existingTx,
+          account: currentAccount,
+          isCached: true,
+        };
+      }
+    }
+
+    // Check if reference already refunded!
+    if (referenceType && referenceId) {
+      const existingRefund = queryOne<CoinTransaction>(
+        "SELECT * FROM coin_transactions WHERE reference_type = ? AND reference_id = ? AND type = 'refund' LIMIT 1",
+        [referenceType, referenceId]
+      );
+      if (existingRefund) {
+        const currentAccount = this.getOrCreateAccount(userId);
+        return {
+          transaction: existingRefund,
+          account: currentAccount,
+          isCached: true,
+        };
+      }
+    }
+
+    const trimmedReason = (reason || "Deployment failure refund").trim();
+    const trimmedDescription = description ? description.trim().substring(0, MAX_DESCRIPTION_LENGTH) : null;
+
+    // 4. Atomic refund mutation
+    return transaction(() => {
+      const currentAccount = this.getOrCreateAccount(userId);
+      const balanceBefore = currentAccount.balance;
+      const balanceAfter = balanceBefore + amount;
+
+      execute(
+        `UPDATE coin_accounts
+         SET balance = balance + ?, updated_at = datetime('now')
+         WHERE user_id = ?`,
+        [amount, userId]
+      );
+
+      const updatedAccount = queryOne<CoinAccount>(
+        "SELECT id, user_id, balance, created_at, updated_at FROM coin_accounts WHERE user_id = ?",
+        [userId]
+      );
+
+      if (!updatedAccount || updatedAccount.balance !== balanceAfter) {
+        throw new CoinError("Failed to update account balance for refund", "COIN_INTEGRITY_ERROR", 500);
+      }
+
+      const txId = uuidv4();
+      const metadataStr = metadata ? JSON.stringify(metadata) : null;
+
+      // Positive amount for refund in ledger
+      execute(
+        `INSERT INTO coin_transactions (
+           id, user_id, type, amount, balance_before, balance_after,
+           reason, description, reference_type, reference_id,
+           idempotency_key, created_by_user_id, metadata, created_at
+         ) VALUES (?, ?, 'refund', ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, datetime('now'))`,
+        [
+          txId,
+          userId,
+          amount,
+          balanceBefore,
+          balanceAfter,
+          trimmedReason,
+          trimmedDescription,
+          referenceType || null,
+          referenceId || null,
+          cleanIdempotencyKey,
+          metadataStr,
+        ]
+      );
+
+      const createdTx = queryOne<CoinTransaction>(
+        "SELECT * FROM coin_transactions WHERE id = ?",
+        [txId]
+      );
+
+      if (!createdTx) {
+        throw new CoinError("Failed to write refund transaction into ledger", "COIN_LEDGER_WRITE_FAILED", 500);
+      }
+
+      // Audit log
+      execute(
+        `INSERT INTO audit_logs (user_id, event_type, metadata, created_at)
+         VALUES (?, 'coin_refund', ?, datetime('now'))`,
+        [
+          userId,
+          JSON.stringify({
+            target_user_id: userId,
+            target_username: user.username,
+            amount: amount,
+            reason: trimmedReason,
+            balance_before: balanceBefore,
+            balance_after: balanceAfter,
+            transaction_id: txId,
+            reference_type: referenceType || null,
+            reference_id: referenceId || null,
+            idempotency_key: cleanIdempotencyKey,
+          }),
+        ]
+      );
+
+      return {
+        transaction: createdTx,
+        account: updatedAccount,
+        isCached: false,
+      };
+    });
+  }
+
+  /**
+   * Stub for generic credit operations (reserved for non-admin promotional systems).
    */
   static creditCoins(_params: { userId: string; amount: number; reason: string }): never {
     throw new CoinError(
-      "Automated coin crediting is not enabled in this phase of InterDash",
+      "Generic coin crediting is not enabled. Use admin grants or deployment refunds.",
       "COIN_OPERATION_FORBIDDEN",
       403
     );

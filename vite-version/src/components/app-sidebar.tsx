@@ -13,6 +13,8 @@ import {
   Key,
   Terminal,
   ShieldAlert,
+  Rocket,
+  Coins,
 } from "lucide-react"
 import { Link } from "react-router-dom"
 import { Logo } from "@/components/logo"
@@ -64,6 +66,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
           icon: Server,
         },
         {
+          title: "Deploy VPS",
+          url: "/deploy",
+          icon: Rocket,
+        },
+        {
           title: "Analytics",
           url: "/analytics",
           icon: Activity,
@@ -96,6 +103,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
           title: "Create VPS",
           url: "/admin/vps/create",
           icon: PlusCircle,
+        },
+        {
+          title: "VPS Plans",
+          url: "/admin/plans",
+          icon: Coins,
         },
         {
           title: "Users",
