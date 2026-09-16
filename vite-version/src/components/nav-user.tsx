@@ -1,5 +1,4 @@
-"use client"
-
+import * as React from "react"
 import {
   EllipsisVertical,
   LogOut,
@@ -8,9 +7,11 @@ import {
   LifeBuoy,
   Settings,
   Coins,
+  Send,
 } from "lucide-react"
 import { Link } from "react-router-dom"
 import { useAuth } from "@/contexts/auth-context"
+import { TransferCoinsDialog } from "@/components/vps/transfer-coins-dialog"
 
 import {
   DropdownMenu,
@@ -41,7 +42,8 @@ export function NavUser({
   }
 }) {
   const { isMobile } = useSidebar()
-  const { logout } = useAuth()
+  const { logout, refreshUser } = useAuth()
+  const [transferOpen, setTransferOpen] = React.useState(false)
 
   return (
     <SidebarMenu>
@@ -149,6 +151,15 @@ export function NavUser({
                   </Link>
                 </DropdownMenuItem>
               )}
+              {user.coins !== undefined && (
+                <DropdownMenuItem
+                  onClick={() => setTransferOpen(true)}
+                  className="cursor-pointer text-amber-400 focus:text-amber-300 focus:bg-amber-500/10"
+                >
+                  <Send className="size-4" />
+                  Transfer Coins
+                </DropdownMenuItem>
+              )}
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
             <DropdownMenuItem
@@ -161,6 +172,13 @@ export function NavUser({
           </DropdownMenuContent>
         </DropdownMenu>
       </SidebarMenuItem>
+
+      <TransferCoinsDialog
+        open={transferOpen}
+        onOpenChange={setTransferOpen}
+        currentBalance={user.coins ?? 0}
+        onSuccess={() => refreshUser()}
+      />
     </SidebarMenu>
   )
 }

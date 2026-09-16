@@ -26,7 +26,17 @@ export type CoinTransactionType =
   | "reward"
   | "bonus"
   | "deduction"
-  | "reversal";
+  | "reversal"
+  | "transfer_in"
+  | "transfer_out";
+
+export interface TransferCoinsParams {
+  fromUserId: string;
+  toUsernameOrId: string;
+  amount: number;
+  reason?: string | null;
+  idempotencyKey?: string | null;
+}
 
 export interface CoinAccount {
   id: string;
@@ -823,6 +833,202 @@ export class CoinService {
         transaction: createdTx,
         account: updatedAccount,
         isCached: false,
+      };
+    });
+  }
+
+  /**
+   * Transfer coins atomically between two users.
+   * Decrements sender, increments recipient, writes linked ledger records, and saves immediately.
+   */
+  static transferCoins(params: TransferCoinsParams): {
+    success: boolean;
+    transferId: string;
+    amount: number;
+    sender: { id: string; username: string; newBalance: number };
+    recipient: { id: string; username: string; newBalance: number };
+    senderTransaction: CoinTransaction;
+    recipientTransaction: CoinTransaction;
+  } {
+    const { fromUserId, toUsernameOrId, amount, reason, idempotencyKey } = params;
+
+    // 1. Validate sender
+    if (!fromUserId || typeof fromUserId !== "string") {
+      throw new CoinError("Sender user ID is required", "COIN_USER_NOT_FOUND", 400);
+    }
+    const fromUser = queryOne<{ id: string; username: string }>(
+      "SELECT id, username FROM users WHERE id = ?",
+      [fromUserId]
+    );
+    if (!fromUser) {
+      throw new CoinError("Sender account not found", "COIN_USER_NOT_FOUND", 404);
+    }
+
+    // 2. Validate amount
+    if (typeof amount !== "number" || !Number.isSafeInteger(amount) || amount <= 0) {
+      throw new CoinError("Transfer amount must be a positive whole number", "INVALID_COIN_AMOUNT", 400);
+    }
+    if (amount > MAX_SINGLE_COIN_AMOUNT) {
+      throw new CoinError(
+        `Transfer amount cannot exceed ${MAX_SINGLE_COIN_AMOUNT.toLocaleString()} coins`,
+        "COIN_AMOUNT_TOO_LARGE",
+        400
+      );
+    }
+
+    // 3. Validate recipient
+    const cleanRecipient = (toUsernameOrId || "").trim();
+    if (!cleanRecipient) {
+      throw new CoinError("Recipient username or ID is required", "RECIPIENT_REQUIRED", 400);
+    }
+
+    const toUser = queryOne<{ id: string; username: string }>(
+      "SELECT id, username FROM users WHERE id = ? OR LOWER(username) = LOWER(?) LIMIT 1",
+      [cleanRecipient, cleanRecipient]
+    );
+    if (!toUser) {
+      throw new CoinError(`Recipient '${cleanRecipient}' was not found.`, "RECIPIENT_NOT_FOUND", 404);
+    }
+
+    if (fromUser.id === toUser.id) {
+      throw new CoinError("Cannot transfer coins to your own account", "SELF_TRANSFER_PROHIBITED", 400);
+    }
+
+    // Ensure accounts exist
+    const senderAccount = this.getOrCreateAccount(fromUser.id);
+    const recipientAccount = this.getOrCreateAccount(toUser.id);
+
+    if (senderAccount.balance < amount) {
+      const err = new CoinError(
+        `Insufficient coins. You have ${senderAccount.balance.toLocaleString()} coins, but tried to transfer ${amount.toLocaleString()} coins.`,
+        "INSUFFICIENT_COINS",
+        400
+      );
+      (err as any).currentBalance = senderAccount.balance;
+      (err as any).requiredCoins = amount;
+      throw err;
+    }
+
+    const cleanReason = (reason || "").trim().substring(0, MAX_REASON_LENGTH) || `Coin transfer to @${toUser.username}`;
+    const cleanIdempotencyKey = idempotencyKey ? idempotencyKey.trim().substring(0, 128) : null;
+
+    return transaction(() => {
+      // Re-read sender in transaction for strict concurrency
+      const freshSender = this.getOrCreateAccount(fromUser.id);
+      if (freshSender.balance < amount) {
+        throw new CoinError(
+          `Insufficient coins. Available: ${freshSender.balance}, required: ${amount}.`,
+          "INSUFFICIENT_COINS",
+          400
+        );
+      }
+
+      const senderBefore = freshSender.balance;
+      const senderAfter = senderBefore - amount;
+      const recipientBefore = recipientAccount.balance;
+      const recipientAfter = recipientBefore + amount;
+
+      // 1. Debit sender
+      execute(
+        `UPDATE coin_accounts
+         SET balance = balance - ?, updated_at = datetime('now')
+         WHERE user_id = ? AND balance >= ?`,
+        [amount, fromUser.id, amount]
+      );
+
+      // 2. Credit recipient
+      execute(
+        `UPDATE coin_accounts
+         SET balance = balance + ?, updated_at = datetime('now')
+         WHERE user_id = ?`,
+        [amount, toUser.id]
+      );
+
+      const transferId = uuidv4();
+      const senderTxId = uuidv4();
+      const recipientTxId = uuidv4();
+
+      // 3. Sender transaction ledger entry (transfer_out)
+      execute(
+        `INSERT INTO coin_transactions (
+           id, user_id, type, amount, balance_before, balance_after,
+           reason, description, reference_type, reference_id,
+           idempotency_key, created_by_user_id, metadata, created_at
+         ) VALUES (?, ?, 'transfer_out', ?, ?, ?, ?, ?, 'coin_transfer', ?, ?, ?, ?, datetime('now'))`,
+        [
+          senderTxId,
+          fromUser.id,
+          -amount,
+          senderBefore,
+          senderAfter,
+          cleanReason,
+          `Transferred ${amount} coins to @${toUser.username}`,
+          transferId,
+          cleanIdempotencyKey ? `${cleanIdempotencyKey}_out` : null,
+          fromUser.id,
+          JSON.stringify({ recipient_id: toUser.id, recipient_username: toUser.username }),
+        ]
+      );
+
+      // 4. Recipient transaction ledger entry (transfer_in)
+      execute(
+        `INSERT INTO coin_transactions (
+           id, user_id, type, amount, balance_before, balance_after,
+           reason, description, reference_type, reference_id,
+           idempotency_key, created_by_user_id, metadata, created_at
+         ) VALUES (?, ?, 'transfer_in', ?, ?, ?, ?, ?, 'coin_transfer', ?, ?, ?, ?, datetime('now'))`,
+        [
+          recipientTxId,
+          toUser.id,
+          amount,
+          recipientBefore,
+          recipientAfter,
+          `Received from @${fromUser.username}: ${cleanReason}`,
+          `Received ${amount} coins from @${fromUser.username}`,
+          transferId,
+          cleanIdempotencyKey ? `${cleanIdempotencyKey}_in` : null,
+          fromUser.id,
+          JSON.stringify({ sender_id: fromUser.id, sender_username: fromUser.username }),
+        ]
+      );
+
+      const senderTx = queryOne<CoinTransaction>("SELECT * FROM coin_transactions WHERE id = ?", [senderTxId])!;
+      const recipientTx = queryOne<CoinTransaction>("SELECT * FROM coin_transactions WHERE id = ?", [recipientTxId])!;
+
+      // Audit log
+      execute(
+        `INSERT INTO audit_logs (user_id, event_type, metadata, created_at)
+         VALUES (?, 'coin_transfer', ?, datetime('now'))`,
+        [
+          fromUser.id,
+          JSON.stringify({
+            transfer_id: transferId,
+            from_user_id: fromUser.id,
+            from_username: fromUser.username,
+            to_user_id: toUser.id,
+            to_username: toUser.username,
+            amount,
+            reason: cleanReason,
+          }),
+        ]
+      );
+
+      return {
+        success: true,
+        transferId,
+        amount,
+        sender: {
+          id: fromUser.id,
+          username: fromUser.username,
+          newBalance: senderAfter,
+        },
+        recipient: {
+          id: toUser.id,
+          username: toUser.username,
+          newBalance: recipientAfter,
+        },
+        senderTransaction: senderTx,
+        recipientTransaction: recipientTx,
       };
     });
   }

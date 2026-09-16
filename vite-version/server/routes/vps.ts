@@ -15,6 +15,7 @@ import { ProvisioningService } from "../services/provisioning.js";
 import { VpsExpiryService } from "../services/vps-expiry.js";
 import { PlanService } from "../services/vps-plans.js";
 import { DeploymentService } from "../services/deployment.js";
+import { CoinService, CoinError } from "../services/coin.js";
 
 const router = Router();
 
@@ -641,6 +642,51 @@ router.get("/deployments/:id", (req: Request, res: Response) => {
     res.json({ deployment: status });
   } catch (err: any) {
     res.status(err.statusCode || 500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// POST /api/vps/coins/transfer — User-to-User Coin Transfer
+// ============================================================================
+router.post("/coins/transfer", (req: Request, res: Response) => {
+  if (!req.user) {
+    res.status(401).json({ error: "Authentication required." });
+    return;
+  }
+
+  const { recipient, amount, reason } = req.body;
+  if (!recipient || typeof recipient !== "string") {
+    res.status(400).json({ error: "Recipient username or ID is required." });
+    return;
+  }
+
+  const parsedAmount = Math.floor(Number(amount));
+  if (isNaN(parsedAmount) || parsedAmount <= 0) {
+    res.status(400).json({ error: "Transfer amount must be a positive whole number." });
+    return;
+  }
+
+  try {
+    const result = CoinService.transferCoins({
+      fromUserId: req.user.id,
+      toUsernameOrId: recipient.trim(),
+      amount: parsedAmount,
+      reason: typeof reason === "string" ? reason.trim() : undefined,
+    });
+
+    res.json({
+      success: true,
+      message: `Transferred ${parsedAmount.toLocaleString()} coins to @${result.recipient.username}!`,
+      transferId: result.transferId,
+      balance: result.sender.newBalance,
+      recipient: result.recipient,
+    });
+  } catch (err: any) {
+    if (err instanceof CoinError) {
+      res.status(err.statusCode).json({ error: err.message, code: err.code });
+      return;
+    }
+    res.status(500).json({ error: err.message || "Failed to process transfer." });
   }
 });
 

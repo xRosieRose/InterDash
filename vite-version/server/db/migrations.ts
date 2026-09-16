@@ -1073,6 +1073,70 @@ exit 0
       } catch {}
     },
   },
+  {
+    version: 22,
+    name: "expand_coin_transactions_check_for_transfers",
+    up: (db: Database) => {
+      // Re-create coin_transactions table with expanded CHECK constraint to allow 'transfer_in' and 'transfer_out'
+      db.run(`
+        CREATE TABLE IF NOT EXISTS coin_transactions_new (
+          id                  TEXT PRIMARY KEY,
+          user_id             TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+          type                TEXT NOT NULL CHECK(type IN ('admin_grant','admin_adjustment','deployment_charge','refund','reward','bonus','deduction','reversal','transfer_in','transfer_out')),
+          amount              INTEGER NOT NULL CHECK(amount != 0),
+          balance_before      INTEGER NOT NULL CHECK(balance_before >= 0),
+          balance_after       INTEGER NOT NULL CHECK(balance_after >= 0),
+          reason              TEXT NOT NULL,
+          description         TEXT,
+          reference_type      TEXT,
+          reference_id        TEXT,
+          idempotency_key     TEXT UNIQUE,
+          created_by_user_id  TEXT REFERENCES users(id) ON DELETE SET NULL,
+          metadata            TEXT,
+          created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO coin_transactions_new SELECT * FROM coin_transactions;
+        DROP TABLE coin_transactions;
+        ALTER TABLE coin_transactions_new RENAME TO coin_transactions;
+        CREATE INDEX IF NOT EXISTS idx_coin_tx_user_id ON coin_transactions(user_id);
+        CREATE INDEX IF NOT EXISTS idx_coin_tx_type ON coin_transactions(type);
+        CREATE INDEX IF NOT EXISTS idx_coin_tx_created_at ON coin_transactions(created_at);
+        CREATE INDEX IF NOT EXISTS idx_coin_tx_idempotency ON coin_transactions(idempotency_key);
+      `);
+    },
+  },
+  {
+    version: 22,
+    name: "expand_coin_transactions_check_for_transfers",
+    up: (db: Database) => {
+      // Re-create coin_transactions table with expanded CHECK constraint to allow 'transfer_in' and 'transfer_out'
+      db.run(`
+        CREATE TABLE IF NOT EXISTS coin_transactions_new (
+          id                  TEXT PRIMARY KEY,
+          user_id             TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+          type                TEXT NOT NULL CHECK(type IN ('admin_grant','admin_adjustment','deployment_charge','refund','reward','bonus','deduction','reversal','transfer_in','transfer_out')),
+          amount              INTEGER NOT NULL CHECK(amount != 0),
+          balance_before      INTEGER NOT NULL CHECK(balance_before >= 0),
+          balance_after       INTEGER NOT NULL CHECK(balance_after >= 0),
+          reason              TEXT NOT NULL,
+          description         TEXT,
+          reference_type      TEXT,
+          reference_id        TEXT,
+          idempotency_key     TEXT UNIQUE,
+          created_by_user_id  TEXT REFERENCES users(id) ON DELETE SET NULL,
+          metadata            TEXT,
+          created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO coin_transactions_new SELECT * FROM coin_transactions;
+        DROP TABLE coin_transactions;
+        ALTER TABLE coin_transactions_new RENAME TO coin_transactions;
+        CREATE INDEX IF NOT EXISTS idx_coin_tx_user_id ON coin_transactions(user_id);
+        CREATE INDEX IF NOT EXISTS idx_coin_tx_type ON coin_transactions(type);
+        CREATE INDEX IF NOT EXISTS idx_coin_tx_created_at ON coin_transactions(created_at);
+        CREATE INDEX IF NOT EXISTS idx_coin_tx_idempotency ON coin_transactions(idempotency_key);
+      `);
+    },
+  },
 ];
 
 /**

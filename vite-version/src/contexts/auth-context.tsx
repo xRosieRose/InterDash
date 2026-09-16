@@ -101,6 +101,52 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
+  // Real-time polling & window-focus listener for instantaneous coin balance updates
+  React.useEffect(() => {
+    if (!user) return
+
+    // Poll every 4 seconds in the background
+    const interval = setInterval(() => {
+      fetch("/api/auth/me", { credentials: "same-origin" })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data) {
+            setUser((prev) => {
+              if (!prev) return data
+              if (
+                prev.coin_balance !== data.coin_balance ||
+                prev.role !== data.role ||
+                prev.status !== data.status
+              ) {
+                return data
+              }
+              return prev
+            })
+          }
+        })
+        .catch(() => {})
+    }, 4000)
+
+    // Immediate refresh on tab focus / window visibility
+    const handleFocus = () => {
+      refreshUser()
+    }
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        refreshUser()
+      }
+    }
+
+    window.addEventListener("focus", handleFocus)
+    document.addEventListener("visibilitychange", handleVisibility)
+
+    return () => {
+      clearInterval(interval)
+      window.removeEventListener("focus", handleFocus)
+      document.removeEventListener("visibilitychange", handleVisibility)
+    }
+  }, [user?.id, refreshUser])
+
   /**
    * Initiate Discord login.
    * Redirects to the server-side OAuth handler, which handles the

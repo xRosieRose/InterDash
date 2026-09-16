@@ -23,11 +23,13 @@ import {
   CheckCircle2,
   XCircle,
   Clock,
+  Send,
 } from "lucide-react"
 import { Link } from "react-router-dom"
 import { BaseLayout } from "@/components/layouts/base-layout"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { TransferCoinsDialog } from "@/components/vps/transfer-coins-dialog"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
@@ -129,13 +131,21 @@ function formatRam(mb: number): string {
 type DeployStep = "plan" | "configure" | "confirm"
 
 export default function DeployPage() {
-  const { refreshUser } = useAuth()
+  const { user, refreshUser } = useAuth()
 
   // Data state
   const [plans, setPlans] = React.useState<VpsPlan[]>([])
   const [templates, setTemplates] = React.useState<OsTemplate[]>([])
   const [coinBalance, setCoinBalance] = React.useState(0)
   const [recentDeployments, setRecentDeployments] = React.useState<DeploymentOrder[]>([])
+  const [transferOpen, setTransferOpen] = React.useState(false)
+
+  // Synchronize coin balance with auth context in real-time
+  React.useEffect(() => {
+    if (user?.coin_balance !== undefined) {
+      setCoinBalance(user.coin_balance)
+    }
+  }, [user?.coin_balance])
 
   // Loading
   const [loadingPlans, setLoadingPlans] = React.useState(true)
@@ -239,9 +249,19 @@ export default function DeployPage() {
     setDeploying(true)
 
     try {
+      const csrfRes = await fetch("/api/auth/csrf")
+      let csrfToken = ""
+      if (csrfRes.ok) {
+        const csrfData = await csrfRes.json()
+        csrfToken = csrfData.token
+      }
+
       const res = await fetch("/api/vps/deploy", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
+        },
         credentials: "same-origin",
         body: JSON.stringify({
           planId: selectedPlan.id,
@@ -413,9 +433,20 @@ export default function DeployPage() {
               <Coins className="h-4 w-4 text-amber-500" />
               <span className="text-sm font-medium">Your Balance</span>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="text-lg font-bold tabular-nums">{coinBalance.toLocaleString()}</span>
-              <span className="text-sm text-muted-foreground">coins</span>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1.5 font-mono text-lg font-bold text-amber-400">
+                <span>{coinBalance.toLocaleString()}</span>
+                <span className="text-sm text-muted-foreground font-normal">coins</span>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setTransferOpen(true)}
+                className="h-8 border-amber-500/30 text-amber-400 hover:bg-amber-500/10 hover:text-amber-300"
+              >
+                <Send className="h-3.5 w-3.5 mr-1.5" />
+                Transfer Coins
+              </Button>
             </div>
           </div>
         </div>
@@ -886,6 +917,14 @@ export default function DeployPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Transfer Coins Dialog */}
+      <TransferCoinsDialog
+        open={transferOpen}
+        onOpenChange={setTransferOpen}
+        currentBalance={coinBalance}
+        onSuccess={() => refreshUser()}
+      />
     </BaseLayout>
   )
 }

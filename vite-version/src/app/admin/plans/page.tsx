@@ -133,9 +133,21 @@ export default function AdminPlansPage() {
     setDialogOpen(true)
   }
 
+  const getCsrfToken = async (): Promise<string> => {
+    try {
+      const res = await fetch("/api/auth/csrf")
+      if (res.ok) {
+        const data = await res.json()
+        return data.token || ""
+      }
+    } catch {}
+    return ""
+  }
+
   const handleSave = async () => {
     setSaving(true)
     try {
+      const csrfToken = await getCsrfToken()
       const body = {
         name: formName,
         description: formDescription || null,
@@ -156,7 +168,10 @@ export default function AdminPlansPage() {
 
       const res = await fetch(url, {
         method,
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
+        },
         credentials: "same-origin",
         body: JSON.stringify(body),
       })
@@ -178,9 +193,13 @@ export default function AdminPlansPage() {
 
   const handleToggle = async (plan: VpsPlan) => {
     try {
+      const csrfToken = await getCsrfToken()
       const endpoint = plan.enabled === 1 ? "disable" : "enable"
       const res = await fetch(`/api/admin/plans/${plan.id}/${endpoint}`, {
         method: "POST",
+        headers: {
+          ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
+        },
         credentials: "same-origin",
       })
       const data = await res.json()
@@ -198,8 +217,12 @@ export default function AdminPlansPage() {
   const handleDelete = async () => {
     if (!deletingPlan) return
     try {
+      const csrfToken = await getCsrfToken()
       const res = await fetch(`/api/admin/plans/${deletingPlan.id}`, {
         method: "DELETE",
+        headers: {
+          ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
+        },
         credentials: "same-origin",
       })
       const data = await res.json()
