@@ -530,9 +530,14 @@ get_available_releases() {
   find_project_root
   if [ -d "$ROOT_DIR/.git" ]; then
     git -C "$ROOT_DIR" fetch --tags origin --quiet 2>/dev/null || true
-    git -C "$ROOT_DIR" tag -l "v*" --sort=-v:refname 2>/dev/null || git -C "$ROOT_DIR" tag -l --sort=-v:refname 2>/dev/null
+    local tags
+    tags=$(git -C "$ROOT_DIR" tag -l "v*" --sort=-v:refname 2>/dev/null || true)
+    if [ -z "$tags" ]; then
+      tags=$(git -C "$ROOT_DIR" tag -l --sort=-v:refname 2>/dev/null || true)
+    fi
+    echo "$tags"
   else
-    git ls-remote --tags "$REPO_URL" 2>/dev/null | awk -F'/' '{print $3}' | grep -E '^v[0-9]' | sort -V -r || true
+    git ls-remote --tags "$REPO_URL" 2>/dev/null | awk -F'/' '{print $3}' | grep -E '^v?[0-9]' | sed 's/\^{}//' | sort -u -V -r || true
   fi
 }
 
@@ -952,11 +957,13 @@ switch_channel() {
     echo ""
     echo -e "    ${WHITE_BOLD}1${NC} ${GRAY_DARK}│${NC} 🏷️  ${WHITE}Switch to Stable Release Channel${NC} (e.g. v1.0.0)"
     echo -e "    ${WHITE_BOLD}2${NC} ${GRAY_DARK}│${NC} ⚡ ${WHITE}Switch to Latest Commit Channel${NC} (main branch)"
+    echo -e "    ${WHITE_BOLD}3${NC} ${GRAY_DARK}│${NC} ⏪ ${WHITE}Downgrade / Pick Specific Release${NC}"
     echo ""
-    read -p "  Select target channel [1-2]: " -r SW_CHOICE
+    read -p "  Select target channel [1-3]: " -r SW_CHOICE
     case "$SW_CHOICE" in
       1) target_channel="release" ;;
       2) target_channel="commit" ;;
+      3) run_downgrade; return 0 ;;
       *) print_warn "Operation cancelled."; return 0 ;;
     esac
   fi
@@ -973,6 +980,174 @@ switch_channel() {
     print_step "Switching channel to Commit (${WHITE_BOLD}${branch}${NC})..."
     run_updater "--commit" "$branch"
   fi
+}
+
+# ------------------------------------------------------------------------------
+# Release Downgrade Manager (Roll back to a specific release tag)
+# ------------------------------------------------------------------------------
+run_downgrade() {
+  local target_tag="${1:-}"
+
+  print_banner
+  print_header "Downgrade Release"
+
+  install_dependencies
+  verify_system
+  find_project_root
+
+  if [ ! -d "$ROOT_DIR/.git" ]; then
+    print_error "No existing Git repository found in $ROOT_DIR."
+    exit 1
+  fi
+
+  detect_current_channel
+
+  cd "$ROOT_DIR"
+  print_step "Fetching all release tags from GitHub..."
+  git fetch --tags origin --quiet 2>/dev/null || true
+
+  local current_tag
+  current_tag=$(git describe --tags --exact-match 2>/dev/null || echo "$CURRENT_TARGET")
+
+  # If target_tag is not provided, prompt the user interactively
+  if [ -z "$target_tag" ]; then
+    local releases=()
+    while IFS= read -r rel; do
+      [ -n "$rel" ] && releases+=("$rel")
+    done < <(get_available_releases | sed '/^$/d' | sort -u -V -r)
+
+    local rel_count=${#releases[@]}
+
+    if [ "$rel_count" -eq 0 ]; then
+      print_error "No release tags found in the repository."
+      echo -e "  ${GRAY_LIGHT}You can check available releases on GitHub: https://github.com/xRosieRose/InterDash/releases${NC}"
+      return 1
+    fi
+
+    echo -e "  ${GRAY_LIGHT}Current Version:${NC}  ${WHITE_BOLD}${current_tag}${NC} (Channel: ${CURRENT_CHANNEL})"
+    echo ""
+    echo -e "  ${WHITE_BOLD}Available Releases:${NC}"
+    echo ""
+
+    local i=1
+    for rel in "${releases[@]}"; do
+      if [ "$rel" = "$current_tag" ]; then
+        echo -e "    ${WHITE_BOLD}${i}${NC} ${GRAY_DARK}│${NC} ${WHITE_BOLD}${rel}${NC} ${GRAY_MID}(currently installed)${NC}"
+      else
+        echo -e "    ${WHITE_BOLD}${i}${NC} ${GRAY_DARK}│${NC} ${WHITE}${rel}${NC}"
+      fi
+      i=$((i + 1))
+    done
+
+    echo ""
+    echo -e "  ${GRAY_MID}Enter a number [1-${rel_count}] or enter a specific release tag (e.g. v1.0.0), or 'q' to cancel:${NC}"
+    read -p "  Select target release: " -r USER_CHOICE
+    echo ""
+
+    if [ -z "$USER_CHOICE" ] || [ "$USER_CHOICE" = "q" ] || [ "$USER_CHOICE" = "Q" ]; then
+      print_warn "Downgrade cancelled."
+      return 0
+    fi
+
+    if [[ "$USER_CHOICE" =~ ^[0-9]+$ ]] && [ "$USER_CHOICE" -ge 1 ] && [ "$USER_CHOICE" -le "$rel_count" ]; then
+      target_tag="${releases[$((USER_CHOICE - 1))]}"
+    else
+      target_tag="$USER_CHOICE"
+    fi
+  fi
+
+  # Normalize tag name (e.g. if someone typed 1.0.0, check if v1.0.0 exists)
+  if ! git rev-parse -q --verify "refs/tags/$target_tag" >/dev/null 2>&1; then
+    if git rev-parse -q --verify "refs/tags/v$target_tag" >/dev/null 2>&1; then
+      target_tag="v$target_tag"
+    else
+      # Try fetching this tag specifically from origin
+      git fetch origin "refs/tags/$target_tag:refs/tags/$target_tag" --quiet 2>/dev/null || true
+      if ! git rev-parse -q --verify "refs/tags/$target_tag" >/dev/null 2>&1; then
+        print_error "Release tag '${target_tag}' does not exist."
+        echo -e "  ${GRAY_LIGHT}Available tags:${NC} $(get_available_releases | tr '\n' ' ')"
+        return 1
+      fi
+    fi
+  fi
+
+  # Check if already on this tag
+  if [ "$current_tag" = "$target_tag" ]; then
+    print_warn "InterDash is already running release ${WHITE_BOLD}${target_tag}${NC}."
+    echo ""
+    read -p "  Force reinstall dependencies and rebuild? (y/N): " -r FORCE_REBUILD
+    if [[ ! $FORCE_REBUILD =~ ^[Yy]$ ]]; then
+      return 0
+    fi
+  else
+    # Confirmation prompt with warning about downgrade risks
+    echo -e "  ${WHITE_BOLD}Target Release:${NC}   ${WHITE_BOLD}${target_tag}${NC}"
+    echo -e "  ${WHITE_BOLD}Current Version:${NC}  ${GRAY_LIGHT}${current_tag}${NC}"
+    echo ""
+    echo -e "  ${GRAY_MID}⚠️  Warning: Downgrading to an earlier version will check out historical code.${NC}"
+    echo -e "  ${GRAY_MID}   Ensure your database and environment settings are compatible.${NC}"
+    echo ""
+    if [ -t 0 ]; then
+      read -p "  Proceed with downgrade to ${target_tag}? (y/N): " -r CONFIRM_DOWNGRADE
+      if [[ ! $CONFIRM_DOWNGRADE =~ ^[Yy]$ ]]; then
+        print_warn "Downgrade cancelled by user."
+        return 0
+      fi
+    fi
+  fi
+
+  # Stash local uncommitted changes if any
+  local stashed=0
+  if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+    print_warn "Stashing local uncommitted changes..."
+    git stash push -m "inter-downgrade-$(date +%s)" --quiet
+    stashed=1
+  fi
+
+  print_step "Checking out release tag ${WHITE_BOLD}${target_tag}${NC}..."
+  git checkout "$target_tag" --quiet 2>/dev/null || git checkout "tags/$target_tag" --quiet
+
+  save_channel_state "release" "$target_tag"
+  print_success "Successfully checked out release ${target_tag}"
+
+  if [ "$stashed" -eq 1 ]; then
+    print_step "Restoring stashed changes..."
+    git stash pop --quiet 2>/dev/null || print_warn "Merge conflicts may require manual resolution"
+  fi
+
+  # Refresh dependencies
+  print_header "Refreshing Dependencies"
+  cd "$VITE_DIR"
+  print_step "Running $PKG_MGR install for release $target_tag..."
+  if [ "$PKG_MGR" = "pnpm" ]; then
+    pnpm install
+  else
+    npm install --legacy-peer-deps
+  fi
+  print_success "Dependencies updated"
+
+  # Rebuild
+  print_header "Rebuilding Production Bundle"
+  print_step "Compiling distribution..."
+  if [ "$PKG_MGR" = "pnpm" ]; then
+    pnpm run build
+  else
+    npm run build
+  fi
+  print_success "Build complete"
+
+  # Reload PM2 service
+  print_header "Reloading PM2 Service"
+  if command -v pm2 >/dev/null 2>&1 && pm2 list 2>/dev/null | grep -q "interdash"; then
+    pm2 restart interdash >/dev/null 2>&1 || start_pm2
+    print_success "PM2 service refreshed on release $target_tag"
+  else
+    start_pm2
+  fi
+
+  print_header "Downgrade Complete"
+  echo -e "  ${WHITE_BOLD}InterDash successfully downgraded to ${WHITE_BOLD}${target_tag}${NC}!"
+  echo ""
 }
 
 # ------------------------------------------------------------------------------
@@ -1026,16 +1201,17 @@ interactive_menu() {
     echo -e "    ${WHITE_BOLD}1${NC} ${GRAY_DARK}│${NC} 📦 ${WHITE}Auto-Installer${NC}       ${DIM}- Install from Release (Stable) or Commit (Edge)${NC}"
     echo -e "    ${WHITE_BOLD}2${NC} ${GRAY_DARK}│${NC} 🔄 ${WHITE}Auto-Updater${NC}         ${DIM}- Update from current channel (Release or Commit)${NC}"
     echo -e "    ${WHITE_BOLD}3${NC} ${GRAY_DARK}│${NC} 🔀 ${WHITE}Switch Channel${NC}       ${DIM}- Switch between Release ↔ Commit channels${NC}"
-    echo -e "    ${WHITE_BOLD}4${NC} ${GRAY_DARK}│${NC} 🚀 ${WHITE}PM2 Start/Reload${NC}     ${DIM}- Launch or restart InterDash background daemon${NC}"
-    echo -e "    ${WHITE_BOLD}5${NC} ${GRAY_DARK}│${NC} 🛑 ${WHITE}PM2 Stop${NC}             ${DIM}- Stop InterDash background daemon${NC}"
-    echo -e "    ${WHITE_BOLD}6${NC} ${GRAY_DARK}│${NC} 📜 ${WHITE}PM2 Logs${NC}             ${DIM}- View live streaming application logs${NC}"
-    echo -e "    ${WHITE_BOLD}7${NC} ${GRAY_DARK}│${NC} 🏗️  ${WHITE}Build Bundle${NC}         ${DIM}- Run full TypeScript compiler and production build${NC}"
-    echo -e "    ${WHITE_BOLD}8${NC} ${GRAY_DARK}│${NC} 🔍 ${WHITE}System Status${NC}        ${DIM}- Check channel, version, PM2, Node, Git health${NC}"
-    echo -e "    ${WHITE_BOLD}9${NC} ${GRAY_DARK}│${NC} 💻 ${WHITE}Vite Dev Mode${NC}        ${DIM}- Launch foreground dev server (hot-reload)${NC}"
+    echo -e "    ${WHITE_BOLD}4${NC} ${GRAY_DARK}│${NC} ⏪ ${WHITE}Downgrade Release${NC}    ${DIM}- Roll back to a specific release tag${NC}"
+    echo -e "    ${WHITE_BOLD}5${NC} ${GRAY_DARK}│${NC} 🚀 ${WHITE}PM2 Start/Reload${NC}     ${DIM}- Launch or restart InterDash background daemon${NC}"
+    echo -e "    ${WHITE_BOLD}6${NC} ${GRAY_DARK}│${NC} 🛑 ${WHITE}PM2 Stop${NC}             ${DIM}- Stop InterDash background daemon${NC}"
+    echo -e "    ${WHITE_BOLD}7${NC} ${GRAY_DARK}│${NC} 📜 ${WHITE}PM2 Logs${NC}             ${DIM}- View live streaming application logs${NC}"
+    echo -e "    ${WHITE_BOLD}8${NC} ${GRAY_DARK}│${NC} 🏗️  ${WHITE}Build Bundle${NC}         ${DIM}- Run full TypeScript compiler and production build${NC}"
+    echo -e "    ${WHITE_BOLD}9${NC} ${GRAY_DARK}│${NC} 🔍 ${WHITE}System Status${NC}        ${DIM}- Check channel, version, PM2, Node, Git health${NC}"
+    echo -e "   ${WHITE_BOLD}10${NC} ${GRAY_DARK}│${NC} 💻 ${WHITE}Vite Dev Mode${NC}        ${DIM}- Launch foreground dev server (hot-reload)${NC}"
     echo -e "    ${WHITE_BOLD}0${NC} ${GRAY_DARK}│${NC} ✕  ${WHITE}Exit${NC}"
     echo ""
     echo -e "${GRAY_DARK}  ─────────────────────────────────────────────────────────────${NC}"
-    read -p "  Select an option [0-9]: " -r OPTION
+    read -p "  Select an option [0-10]: " -r OPTION
     echo ""
 
     case "$OPTION" in
@@ -1051,26 +1227,30 @@ interactive_menu() {
         switch_channel
         read -p "  Press Enter to return to menu..."
         ;;
-      4)
-        start_pm2
+      4|d|D|downgrade)
+        run_downgrade
         read -p "  Press Enter to return to menu..."
         ;;
       5)
-        stop_pm2
+        start_pm2
         read -p "  Press Enter to return to menu..."
         ;;
       6)
-        logs_pm2
+        stop_pm2
+        read -p "  Press Enter to return to menu..."
         ;;
       7)
+        logs_pm2
+        ;;
+      8)
         run_build
         read -p "  Press Enter to return to menu..."
         ;;
-      8)
+      9)
         status_pm2
         read -p "  Press Enter to return to menu..."
         ;;
-      9)
+      10)
         run_dev
         ;;
       0|q|Q)
@@ -1102,6 +1282,9 @@ case "${1:-}" in
     ;;
   update|--update|-u)
     run_updater "${2:-}" "${3:-}"
+    ;;
+  downgrade|--downgrade)
+    run_downgrade "${2:-}"
     ;;
   switch|switch-channel|--switch)
     switch_channel "${2:-}" "${3:-}"
@@ -1147,6 +1330,8 @@ case "${1:-}" in
     echo -e "                                Run installer from GitHub release or commit"
     echo -e "    ${WHITE}update,    --update,    -u  [--release [tag] | --commit [ref]]${NC}"
     echo -e "                                Update repository from release or commit channel"
+    echo -e "    ${WHITE}downgrade, --downgrade      [tag]${NC}"
+    echo -e "                                Roll back / downgrade to a specific release tag"
     echo -e "    ${WHITE}switch,    --switch         [release|commit] [tag_or_ref]${NC}"
     echo -e "                                Switch between Release and Commit channels"
     echo -e "    ${WHITE}status,    channel,     -v${NC}  Show PM2 daemon, active channel, & git status"
