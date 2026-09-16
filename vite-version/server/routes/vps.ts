@@ -99,6 +99,238 @@ router.get("/", (req: Request, res: Response) => {
 });
 
 // ============================================================================
+// GET /api/vps/plans — Public Plan Marketplace (Enabled Plans Only)
+// Must be registered BEFORE /:id to prevent Express capturing "plans" as an :id
+// ============================================================================
+router.get("/plans", (req: Request, res: Response) => {
+  if (!req.user) {
+    res.status(401).json({ error: "Authentication required." });
+    return;
+  }
+
+  try {
+    const plans = PlanService.getEnabledPlans();
+    const balance = queryOne<{ balance: number }>(
+      "SELECT balance FROM coin_accounts WHERE user_id = ?",
+      [req.user.id]
+    )?.balance || 0;
+
+    res.json({ plans, coinBalance: balance });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to load plans." });
+  }
+});
+
+// ============================================================================
+// GET /api/vps/plans/templates — Template Discovery For Deployment
+// ============================================================================
+router.get("/plans/templates", async (req: Request, res: Response) => {
+  if (!req.user) {
+    res.status(401).json({ error: "Authentication required." });
+    return;
+  }
+
+  try {
+    // Collect templates from all enabled nodes
+    const nodes = queryAll<any>(
+      `SELECT id FROM proxmox_nodes WHERE enabled = 1 AND (status IS NULL OR status NOT IN ('disabled','draining','deleting','offline'))`
+    );
+
+    const templateMap = new Map<string, any>();
+    for (const row of nodes) {
+      const nodeConfig = ProvisioningService.getNodeConfig(row.id);
+      if (!nodeConfig) continue;
+
+      try {
+        const verification = await ProxmoxService.verifyNode(nodeConfig, false);
+        for (const t of verification.templates || []) {
+          if (!templateMap.has(t.volid)) {
+            templateMap.set(t.volid, {
+              volid: t.volid,
+              filename: t.filename,
+              osFamily: t.osFamily,
+              version: t.version,
+              architecture: t.architecture,
+              sizeBytes: t.sizeBytes,
+            });
+          }
+        }
+      } catch {}
+    }
+
+    res.json({ templates: Array.from(templateMap.values()) });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to discover templates." });
+  }
+});
+
+// ============================================================================
+// POST /api/vps/deploy — User-Initiated Coin-Funded Deployment
+// ============================================================================
+router.post("/deploy", async (req: Request, res: Response) => {
+  if (!req.user) {
+    res.status(401).json({ error: "Authentication required." });
+    return;
+  }
+
+  const { planId, name, description, osTemplate, idempotencyKey } = req.body;
+
+  if (!planId || typeof planId !== "string") {
+    res.status(400).json({ error: "Plan ID is required." });
+    return;
+  }
+  if (!name || typeof name !== "string" || name.trim().length < 2) {
+    res.status(400).json({ error: "VPS name must be at least 2 characters." });
+    return;
+  }
+  if (!osTemplate || typeof osTemplate !== "string") {
+    res.status(400).json({ error: "Operating system template is required." });
+    return;
+  }
+
+  try {
+    const result = await DeploymentService.deployFromPlan({
+      userId: req.user.id,
+      planId,
+      name: name.trim(),
+      description: description || undefined,
+      osTemplate: osTemplate.trim(),
+      idempotencyKey: idempotencyKey || undefined,
+    });
+
+    const statusCode = result.isDuplicate ? 200 : 202;
+    res.status(statusCode).json({
+      success: true,
+      deployment: result,
+      message: result.isDuplicate
+        ? "Duplicate deployment request — returning existing order."
+        : `Deployment initiated! ${result.chargedCoins} coins charged for plan '${result.planName}'.`,
+    });
+  } catch (err: any) {
+    const status = err.statusCode || 500;
+    res.status(status).json({
+      error: err.message || "Deployment failed.",
+      code: err.code || "DEPLOYMENT_ERROR",
+      currentBalance: (err as any).currentBalance,
+      requiredCoins: (err as any).requiredCoins,
+    });
+  }
+});
+
+// ============================================================================
+// GET /api/vps/deployments — List User's Deployment Orders
+// ============================================================================
+router.get("/deployments", (req: Request, res: Response) => {
+  if (!req.user) {
+    res.status(401).json({ error: "Authentication required." });
+    return;
+  }
+
+  try {
+    const orders = queryAll<any>(
+      `SELECT d.id, d.status, d.charged_coins, d.vps_name, d.vps_description,
+              d.os_template, d.plan_snapshot_json, d.vps_id, d.provisioning_job_id,
+              d.error_message, d.created_at, d.updated_at
+       FROM deployment_orders d
+       WHERE d.user_id = ?
+       ORDER BY d.created_at DESC
+       LIMIT 50`,
+      [req.user.id]
+    );
+
+    const mapped = orders.map((o: any) => {
+      const snapshot = JSON.parse(o.plan_snapshot_json || "{}");
+      return {
+        id: o.id,
+        status: o.status,
+        chargedCoins: o.charged_coins,
+        vpsName: o.vps_name,
+        vpsDescription: o.vps_description,
+        osTemplate: o.os_template,
+        plan: snapshot,
+        vpsId: o.vps_id,
+        provisioningJobId: o.provisioning_job_id,
+        errorMessage: o.error_message,
+        createdAt: o.created_at,
+        updatedAt: o.updated_at,
+      };
+    });
+
+    res.json({ deployments: mapped });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to list deployments." });
+  }
+});
+
+// ============================================================================
+// GET /api/vps/deployments/:id — Track Deployment Order Status
+// ============================================================================
+router.get("/deployments/:id", (req: Request, res: Response) => {
+  if (!req.user) {
+    res.status(401).json({ error: "Authentication required." });
+    return;
+  }
+
+  try {
+    const isAdmin = req.user.role === "admin";
+    const status = DeploymentService.getDeploymentStatus(req.params.id, req.user.id, isAdmin);
+    if (!status) {
+      res.status(404).json({ error: "Deployment order not found." });
+      return;
+    }
+
+    res.json({ deployment: status });
+  } catch (err: any) {
+    res.status(err.statusCode || 500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// POST /api/vps/coins/transfer — User-to-User Coin Transfer
+// ============================================================================
+router.post("/coins/transfer", (req: Request, res: Response) => {
+  if (!req.user) {
+    res.status(401).json({ error: "Authentication required." });
+    return;
+  }
+
+  const { recipient, amount, reason } = req.body;
+  if (!recipient || typeof recipient !== "string") {
+    res.status(400).json({ error: "Recipient username or ID is required." });
+    return;
+  }
+
+  const parsedAmount = Math.floor(Number(amount));
+  if (isNaN(parsedAmount) || parsedAmount <= 0) {
+    res.status(400).json({ error: "Transfer amount must be a positive whole number." });
+    return;
+  }
+
+  try {
+    const result = CoinService.transferCoins({
+      fromUserId: req.user.id,
+      toUsernameOrId: recipient.trim(),
+      amount: parsedAmount,
+      reason: typeof reason === "string" ? reason.trim() : undefined,
+    });
+
+    res.json({
+      success: true,
+      message: `Transferred ${parsedAmount.toLocaleString()} coins to @${result.recipient.username}!`,
+      transferId: result.transferId,
+      balance: result.sender.newBalance,
+      recipient: result.recipient,
+    });
+  } catch (err: any) {
+    if (err instanceof CoinError) {
+      res.status(err.statusCode).json({ error: err.message, code: err.code });
+      return;
+    }
+    res.status(500).json({ error: err.message || "Failed to process transfer." });
+  }
+});
+
+// ============================================================================
 // GET /api/vps/:id — Get a specific VPS instance (ownership check)
 // ============================================================================
 router.get("/:id", (req: Request, res: Response) => {
@@ -456,237 +688,6 @@ router.get("/:id/console/diagnostic", async (req: Request, res: Response) => {
     }
   } catch (err: any) {
     res.status(err.statusCode || 500).json({ error: err.message });
-  }
-});
-
-// ============================================================================
-// GET /api/vps/plans — Public Plan Marketplace (Enabled Plans Only)
-// ============================================================================
-router.get("/plans", (req: Request, res: Response) => {
-  if (!req.user) {
-    res.status(401).json({ error: "Authentication required." });
-    return;
-  }
-
-  try {
-    const plans = PlanService.getEnabledPlans();
-    const balance = queryOne<{ balance: number }>(
-      "SELECT balance FROM coin_accounts WHERE user_id = ?",
-      [req.user.id]
-    )?.balance || 0;
-
-    res.json({ plans, coinBalance: balance });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to load plans." });
-  }
-});
-
-// ============================================================================
-// GET /api/vps/plans/templates — Template Discovery For Deployment
-// ============================================================================
-router.get("/plans/templates", async (req: Request, res: Response) => {
-  if (!req.user) {
-    res.status(401).json({ error: "Authentication required." });
-    return;
-  }
-
-  try {
-    // Collect templates from all enabled nodes
-    const nodes = queryAll<any>(
-      `SELECT id FROM proxmox_nodes WHERE enabled = 1 AND (status IS NULL OR status NOT IN ('disabled','draining','deleting','offline'))`
-    );
-
-    const templateMap = new Map<string, any>();
-    for (const row of nodes) {
-      const nodeConfig = ProvisioningService.getNodeConfig(row.id);
-      if (!nodeConfig) continue;
-
-      try {
-        const verification = await ProxmoxService.verifyNode(nodeConfig, false);
-        for (const t of verification.templates || []) {
-          if (!templateMap.has(t.volid)) {
-            templateMap.set(t.volid, {
-              volid: t.volid,
-              filename: t.filename,
-              osFamily: t.osFamily,
-              version: t.version,
-              architecture: t.architecture,
-              sizeBytes: t.sizeBytes,
-            });
-          }
-        }
-      } catch {}
-    }
-
-    res.json({ templates: Array.from(templateMap.values()) });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to discover templates." });
-  }
-});
-
-// ============================================================================
-// POST /api/vps/deploy — User-Initiated Coin-Funded Deployment
-// ============================================================================
-router.post("/deploy", async (req: Request, res: Response) => {
-  if (!req.user) {
-    res.status(401).json({ error: "Authentication required." });
-    return;
-  }
-
-  const { planId, name, description, osTemplate, idempotencyKey } = req.body;
-
-  if (!planId || typeof planId !== "string") {
-    res.status(400).json({ error: "Plan ID is required." });
-    return;
-  }
-  if (!name || typeof name !== "string" || name.trim().length < 2) {
-    res.status(400).json({ error: "VPS name must be at least 2 characters." });
-    return;
-  }
-  if (!osTemplate || typeof osTemplate !== "string") {
-    res.status(400).json({ error: "Operating system template is required." });
-    return;
-  }
-
-  try {
-    const result = await DeploymentService.deployFromPlan({
-      userId: req.user.id,
-      planId,
-      name: name.trim(),
-      description: description || undefined,
-      osTemplate: osTemplate.trim(),
-      idempotencyKey: idempotencyKey || undefined,
-    });
-
-    const statusCode = result.isDuplicate ? 200 : 202;
-    res.status(statusCode).json({
-      success: true,
-      deployment: result,
-      message: result.isDuplicate
-        ? "Duplicate deployment request — returning existing order."
-        : `Deployment initiated! ${result.chargedCoins} coins charged for plan '${result.planName}'.`,
-    });
-  } catch (err: any) {
-    const status = err.statusCode || 500;
-    res.status(status).json({
-      error: err.message || "Deployment failed.",
-      code: err.code || "DEPLOYMENT_ERROR",
-      currentBalance: (err as any).currentBalance,
-      requiredCoins: (err as any).requiredCoins,
-    });
-  }
-});
-
-// ============================================================================
-// GET /api/vps/deployments — List User's Deployment Orders
-// ============================================================================
-router.get("/deployments", (req: Request, res: Response) => {
-  if (!req.user) {
-    res.status(401).json({ error: "Authentication required." });
-    return;
-  }
-
-  try {
-    const orders = queryAll<any>(
-      `SELECT d.id, d.status, d.charged_coins, d.vps_name, d.vps_description,
-              d.os_template, d.plan_snapshot_json, d.vps_id, d.provisioning_job_id,
-              d.error_message, d.created_at, d.updated_at
-       FROM deployment_orders d
-       WHERE d.user_id = ?
-       ORDER BY d.created_at DESC
-       LIMIT 50`,
-      [req.user.id]
-    );
-
-    const mapped = orders.map((o: any) => {
-      const snapshot = JSON.parse(o.plan_snapshot_json || "{}");
-      return {
-        id: o.id,
-        status: o.status,
-        chargedCoins: o.charged_coins,
-        vpsName: o.vps_name,
-        vpsDescription: o.vps_description,
-        osTemplate: o.os_template,
-        plan: snapshot,
-        vpsId: o.vps_id,
-        provisioningJobId: o.provisioning_job_id,
-        errorMessage: o.error_message,
-        createdAt: o.created_at,
-        updatedAt: o.updated_at,
-      };
-    });
-
-    res.json({ deployments: mapped });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message || "Failed to list deployments." });
-  }
-});
-
-// ============================================================================
-// GET /api/vps/deployments/:id — Track Deployment Order Status
-// ============================================================================
-router.get("/deployments/:id", (req: Request, res: Response) => {
-  if (!req.user) {
-    res.status(401).json({ error: "Authentication required." });
-    return;
-  }
-
-  try {
-    const isAdmin = req.user.role === "admin";
-    const status = DeploymentService.getDeploymentStatus(req.params.id, req.user.id, isAdmin);
-    if (!status) {
-      res.status(404).json({ error: "Deployment order not found." });
-      return;
-    }
-
-    res.json({ deployment: status });
-  } catch (err: any) {
-    res.status(err.statusCode || 500).json({ error: err.message });
-  }
-});
-
-// ============================================================================
-// POST /api/vps/coins/transfer — User-to-User Coin Transfer
-// ============================================================================
-router.post("/coins/transfer", (req: Request, res: Response) => {
-  if (!req.user) {
-    res.status(401).json({ error: "Authentication required." });
-    return;
-  }
-
-  const { recipient, amount, reason } = req.body;
-  if (!recipient || typeof recipient !== "string") {
-    res.status(400).json({ error: "Recipient username or ID is required." });
-    return;
-  }
-
-  const parsedAmount = Math.floor(Number(amount));
-  if (isNaN(parsedAmount) || parsedAmount <= 0) {
-    res.status(400).json({ error: "Transfer amount must be a positive whole number." });
-    return;
-  }
-
-  try {
-    const result = CoinService.transferCoins({
-      fromUserId: req.user.id,
-      toUsernameOrId: recipient.trim(),
-      amount: parsedAmount,
-      reason: typeof reason === "string" ? reason.trim() : undefined,
-    });
-
-    res.json({
-      success: true,
-      message: `Transferred ${parsedAmount.toLocaleString()} coins to @${result.recipient.username}!`,
-      transferId: result.transferId,
-      balance: result.sender.newBalance,
-      recipient: result.recipient,
-    });
-  } catch (err: any) {
-    if (err instanceof CoinError) {
-      res.status(err.statusCode).json({ error: err.message, code: err.code });
-      return;
-    }
-    res.status(500).json({ error: err.message || "Failed to process transfer." });
   }
 });
 
