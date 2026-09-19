@@ -2047,6 +2047,26 @@ export class ProxmoxService {
         const buf = typeof data === "string" ? Buffer.from(data) : (data as Buffer);
         const text = buf.toString("utf8");
 
+        // The container console is sitting at an interactive login prompt
+        // (no logged-in shell), so piping to chpasswd cannot work.
+        // Fail fast with actionable guidance instead of timing out.
+        if (!done && !chpasswdSent && /(^|[\r\n])[^:\r\n]{0,64}login:\s*$|password:\s*$/i.test(text)) {
+          done = true;
+          clearTimeout(timeout);
+          try {
+            ws.close();
+          } catch {}
+          reject(
+            new Error(
+              `Container ${vmid} console is at an interactive login prompt (no root shell), so the password cannot be set via console. ` +
+                `On PVE 8+ there is no API to set an LXC root password on a running container. ` +
+                `Fix on the PVE host: pct exec ${vmid} -- bash -c "echo 'root:NEWPASS' | chpasswd" (plus 'passwd -u root' if the account is locked). ` +
+                `Root passwords must be set at deploy time (Deploy page) or via pct exec.`
+            )
+          );
+          return;
+        }
+
         if (!handshakeDone) {
           const parsed = parseTermproxyResponse(buf);
           if (parsed.ready) {
@@ -2072,14 +2092,16 @@ export class ProxmoxService {
               }
             }, 300);
             // If there is remaining data after OK, also check it
+            // (line-based: ignore the echoed command line itself)
             if (parsed.remaining) {
               const remText = parsed.remaining.toString("utf8");
-              if (remText.includes("__INTERDASH_PW_OK__")) {
+              const remLine = remText.split(/\r\n|\n|\r/).find((l) => !l.includes("chpasswd") && (l.includes("__INTERDASH_PW_OK__") || l.includes("__INTERDASH_PW_FAIL__")));
+              if (remLine && remLine.includes("__INTERDASH_PW_OK__")) {
                 done = true;
                 clearTimeout(timeout);
                 ws.close();
                 resolve();
-              } else if (remText.includes("__INTERDASH_PW_FAIL__")) {
+              } else if (remLine && remLine.includes("__INTERDASH_PW_FAIL__")) {
                 done = true;
                 clearTimeout(timeout);
                 ws.close();
@@ -2110,13 +2132,18 @@ export class ProxmoxService {
           }
         }
 
-        // After handshake, look for our success/fail markers
-        if (text.includes("__INTERDASH_PW_OK__")) {
+        // After handshake, look for our success/fail markers.
+        // NOTE: the terminal echoes our own command line back, which itself
+        // contains both marker strings — so only treat a marker as a result
+        // when it appears on a line that is NOT the echoed command input.
+        const lines = text.split(/\r\n|\n|\r/);
+        const resultLine = lines.find((l) => !l.includes("chpasswd") && (l.includes("__INTERDASH_PW_OK__") || l.includes("__INTERDASH_PW_FAIL__")));
+        if (resultLine && resultLine.includes("__INTERDASH_PW_OK__")) {
           done = true;
           clearTimeout(timeout);
           ws.close();
           resolve();
-        } else if (text.includes("__INTERDASH_PW_FAIL__")) {
+        } else if (resultLine && resultLine.includes("__INTERDASH_PW_FAIL__")) {
           done = true;
           clearTimeout(timeout);
           ws.close();
