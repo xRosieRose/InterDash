@@ -2022,8 +2022,13 @@ export class ProxmoxService {
         reject(new Error("Password change via console timed out (termproxy). Verify container is running and termproxy patch is applied."));
       }, 15000);
 
-      const ws = new WebSocket(wsUrl, {
+      const ws = new WebSocket(wsUrl, ["binary"], {
         rejectUnauthorized: !node.allowInsecureTls,
+        headers: {
+          Authorization: `PVEAPIToken=${node.authTokenId}=${node.authTokenSecret}`,
+          "User-Agent": "InterDash-Password/1.0",
+        },
+        handshakeTimeout: 15000,
       } as any);
 
       let handshakeDone = false;
