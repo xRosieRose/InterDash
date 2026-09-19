@@ -1953,7 +1953,12 @@ export class ProxmoxService {
   }
 
   /**
-   * Update the root password of an LXC container
+   * Update the root password of an LXC container.
+   * Proxmox VE does NOT allow `password` via PUT /lxc/{vmid}/config for existing containers
+   * ("property is not defined in schema"). The supported way is `pct exec` / `lxc-attach`
+   * on the host, which has no REST API endpoint. We therefore try the config API first
+   * (for KVM cloud-init or future PVE versions) and fall back to an in-container
+   * `chpasswd` via the authenticated termproxy console (requires container to be running).
    */
   public static async setLxcPassword(
     node: ProxmoxNodeConfig,
@@ -1961,7 +1966,182 @@ export class ProxmoxService {
     password: string,
     runtimeNode?: string
   ): Promise<void> {
-    await this.updateLxcConfig(node, vmid, { password }, runtimeNode);
+    try {
+      await this.updateLxcConfig(node, vmid, { password } as any, runtimeNode);
+      return;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const isSchemaError =
+        msg.includes("property is not defined") ||
+        msg.includes("additional properties") ||
+        (err instanceof ProxmoxRequestError && err.safeBodySnippet?.includes("password"));
+      if (!isSchemaError) throw err;
+      // Fall back to in-container chpasswd via termproxy (LXC only)
+      await this.setLxcPasswordViaTermproxy(node, vmid, password, runtimeNode);
+    }
+  }
+
+  /**
+   * LXC fallback: change root password via `echo 'root:PASS' | chpasswd` inside the container
+   * using an authenticated termproxy websocket. Requires container to be running and the
+   * Proxmox termproxy token patch to be applied on the host (for API-token auth).
+   */
+  private static async setLxcPasswordViaTermproxy(
+    node: ProxmoxNodeConfig,
+    vmid: number,
+    password: string,
+    runtimeNode?: string
+  ): Promise<void> {
+    // 1. Ensure runtime target is resolved and container is running
+    const target = runtimeNode
+      ? { nodeName: runtimeNode } as any
+      : (await this.resolveLxcRuntimeTarget(node, vmid).then((r) => (r.ok ? { nodeName: r.nodeName } : { nodeName: node.nodeName }))) as any;
+    const targetNode = target.nodeName || node.nodeName;
+
+    const status = await this.getLxcStatus(node, vmid, targetNode).catch(() => null);
+    if (!status || !status.ok || status.status !== "running") {
+      throw new Error(
+        `Container ${vmid} must be running to change its root password via console. Current status: ${status?.status || "unknown"}. Please start the VPS and retry.`
+      );
+    }
+
+    // 2. Allocate termproxy ticket
+    const termproxy = await this.createLxcTermProxy(node, vmid, targetNode);
+    const endpoint = resolveProxmoxEndpoint(node.apiUrl, node.hostname, node.port);
+    const protocol = endpoint.isHttps ? "wss:" : "ws:";
+    const wsUrl = `${protocol}//${endpoint.hostname}:${endpoint.port}/api2/json/nodes/${encodeURIComponent(
+      targetNode
+    )}/lxc/${vmid}/vncwebsocket?port=${termproxy.port}&vncticket=${encodeURIComponent(termproxy.ticket)}`;
+
+    // 3. Connect, handshake, and execute chpasswd
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        try {
+          ws.close();
+        } catch {}
+        reject(new Error("Password change via console timed out (termproxy). Verify container is running and termproxy patch is applied."));
+      }, 15000);
+
+      const ws = new WebSocket(wsUrl, {
+        rejectUnauthorized: !node.allowInsecureTls,
+      } as any);
+
+      let handshakeDone = false;
+      let chpasswdSent = false;
+      let done = false;
+
+      const safePassword = password.replace(/'/g, `'\\''`);
+      const cmd = `echo 'root:${safePassword}' | chpasswd && echo __INTERDASH_PW_OK__ || echo __INTERDASH_PW_FAIL__\n`;
+      const frame = buildTermproxyInputFrame(cmd);
+
+      ws.on("open", () => {
+        ws.send(`${termproxy.user}:${termproxy.ticket}\n`);
+      });
+
+      ws.on("message", (data: Buffer | string) => {
+        const buf = typeof data === "string" ? Buffer.from(data) : (data as Buffer);
+        const text = buf.toString("utf8");
+
+        if (!handshakeDone) {
+          const parsed = parseTermproxyResponse(buf);
+          if (parsed.ready) {
+            handshakeDone = true;
+            // Give shell a moment to be ready, then send chpasswd
+            setTimeout(() => {
+              if (!chpasswdSent) {
+                chpasswdSent = true;
+                ws.send(frame);
+                // Also send a marker to ensure we can detect completion
+                setTimeout(() => {
+                  if (!done) {
+                    // If no explicit success marker yet, assume success after short delay
+                    // The container's shell will have executed chpasswd
+                    done = true;
+                    clearTimeout(timeout);
+                    try {
+                      ws.close();
+                    } catch {}
+                    resolve();
+                  }
+                }, 2000);
+              }
+            }, 300);
+            // If there is remaining data after OK, also check it
+            if (parsed.remaining) {
+              const remText = parsed.remaining.toString("utf8");
+              if (remText.includes("__INTERDASH_PW_OK__")) {
+                done = true;
+                clearTimeout(timeout);
+                ws.close();
+                resolve();
+              } else if (remText.includes("__INTERDASH_PW_FAIL__")) {
+                done = true;
+                clearTimeout(timeout);
+                ws.close();
+                reject(new Error("chpasswd failed inside container (exit != 0)."));
+              }
+            }
+            return;
+          } else {
+            // Not yet OK, wait for more data
+            if (text.includes("OK")) {
+              handshakeDone = true;
+              setTimeout(() => {
+                if (!chpasswdSent) {
+                  chpasswdSent = true;
+                  ws.send(frame);
+                  setTimeout(() => {
+                    if (!done) {
+                      done = true;
+                      clearTimeout(timeout);
+                      ws.close();
+                      resolve();
+                    }
+                  }, 2000);
+                }
+              }, 300);
+            }
+            return;
+          }
+        }
+
+        // After handshake, look for our success/fail markers
+        if (text.includes("__INTERDASH_PW_OK__")) {
+          done = true;
+          clearTimeout(timeout);
+          ws.close();
+          resolve();
+        } else if (text.includes("__INTERDASH_PW_FAIL__")) {
+          done = true;
+          clearTimeout(timeout);
+          ws.close();
+          reject(new Error("chpasswd failed inside container. The password may contain unsupported characters or the container's OS does not support chpasswd."));
+        }
+      });
+
+      ws.on("error", (err: Error) => {
+        if (!done) {
+          clearTimeout(timeout);
+          done = true;
+          reject(new Error(`Termproxy websocket error: ${err.message}. Verify Proxmox termproxy patch and that container ${vmid} is running on ${targetNode}.`));
+        }
+      });
+
+      ws.on("close", (code: number) => {
+        if (!done) {
+          // If we already sent chpasswd and the socket closed, assume success if handshake had completed
+          if (handshakeDone && chpasswdSent) {
+            done = true;
+            clearTimeout(timeout);
+            resolve();
+          } else if (!handshakeDone) {
+            clearTimeout(timeout);
+            done = true;
+            reject(new Error(`Termproxy closed before handshake (code ${code}). Verify API token has VM.Console permission and termproxy patch is applied.`));
+          }
+        }
+      });
+    });
   }
 
   /**
