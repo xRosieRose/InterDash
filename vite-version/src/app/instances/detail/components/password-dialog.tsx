@@ -32,10 +32,12 @@ export function PasswordDialog({
   const [showPassword, setShowPassword] = React.useState(false)
   const [isResettingPassword, setIsResettingPassword] = React.useState(false)
   const [pollStatus, setPollStatus] = React.useState<string | null>(null)
+  const [errorMsg, setErrorMsg] = React.useState<string | null>(null)
 
   React.useEffect(() => {
     if (!open) {
       setPollStatus(null)
+      setErrorMsg(null)
       setIsResettingPassword(false)
     }
   }, [open])
@@ -60,30 +62,33 @@ export function PasswordDialog({
     for (let i = 0; i < 16; i++) p += chars[arr[i] % chars.length]
     setNewPassword(p)
     setShowPassword(true)
+    setErrorMsg(null)
   }
 
   const pollOperation = async (operationId: string): Promise<void> => {
     const maxAttempts = 30
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       await new Promise((r) => setTimeout(r, 1200))
+      let op: any = null
       try {
         const res = await fetch(`/api/vps/${vpsId}/operations/${operationId}`, {
           credentials: "same-origin",
         })
         if (!res.ok) continue
         const data = await res.json()
-        const op = (data.operation || data) as any
+        op = (data.operation || data) as any
         if (!op || !op.status) continue
-        setPollStatus(op.status)
-        if (op.status === "completed") return
-        if (op.status === "failed" || op.status === "recovery_required") {
-          const msg = op.error || op.error_message || op.errorMessage || "Password reset failed on hypervisor."
-          throw new Error(msg)
-        }
-      } catch (e) {
-        if (e instanceof Error && (e.message.includes("Password reset failed") || e.message.includes("hypervisor") || e.message.includes("Permission") || e.message.includes("locked"))) throw e
-        // ignore transient poll errors
+      } catch {
+        // transient network error — retry
+        continue
       }
+      setPollStatus(op.status)
+      if (op.status === "completed") return
+      if (op.status === "failed" || op.status === "recovery_required") {
+        const msg = op.error || op.error_message || op.errorMessage || "Password reset failed on hypervisor."
+        throw new Error(msg)
+      }
+      // still running/queued — continue loop
     }
     throw new Error("Password reset timed out waiting for hypervisor confirmation.")
   }
@@ -101,6 +106,7 @@ export function PasswordDialog({
 
     setIsResettingPassword(true)
     setPollStatus("queued")
+    setErrorMsg(null)
     try {
       const csrf = await getCsrfHeader()
       const res = await fetch(`/api/vps/${vpsId}/password`, {
@@ -116,10 +122,8 @@ export function PasswordDialog({
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || "Failed to reset password.")
 
-      // 202 Accepted with async operation — poll until hypervisor confirms
       if (data.operationId) {
         setPollStatus(data.status || "running")
-        // Optimistically show initiating toast then wait for completion
         await pollOperation(data.operationId)
       }
 
@@ -127,11 +131,13 @@ export function PasswordDialog({
       onOpenChange(false)
       setNewPassword("")
       setPollStatus(null)
+      setErrorMsg(null)
       onSuccess()
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
-      toast.error(msg)
+      setErrorMsg(msg)
       setPollStatus(null)
+      toast.error(msg)
     } finally {
       setIsResettingPassword(false)
     }
@@ -169,7 +175,10 @@ export function PasswordDialog({
                 type={showPassword ? "text" : "password"}
                 placeholder="Minimum 8 characters"
                 value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
+                onChange={(e) => {
+                  setNewPassword(e.target.value)
+                  if (errorMsg) setErrorMsg(null)
+                }}
                 className="pr-10 font-mono text-sm"
                 disabled={isResettingPassword}
               />
@@ -195,10 +204,17 @@ export function PasswordDialog({
                 </span>
               </div>
             )}
+            {errorMsg && (
+              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                {errorMsg}
+              </div>
+            )}
           </div>
-          <p className="text-xs text-muted-foreground">
-            Password must be 8–128 characters. It is transmitted once to the hypervisor and never logged.
-          </p>
+          {!errorMsg && (
+            <p className="text-xs text-muted-foreground">
+              Password must be 8–128 characters. It is transmitted once to the hypervisor and never logged.
+            </p>
+          )}
         </div>
 
         <DialogFooter>
