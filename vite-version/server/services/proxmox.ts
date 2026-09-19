@@ -2123,7 +2123,22 @@ export class ProxmoxService {
         if (!done) {
           clearTimeout(timeout);
           done = true;
-          reject(new Error(`Termproxy websocket error: ${err.message}. Verify Proxmox termproxy patch and that container ${vmid} is running on ${targetNode}.`));
+          const msg = err.message || String(err);
+          if (msg.includes("502")) {
+            reject(
+              new Error(
+                `Termproxy websocket failed with 502 Bad Gateway for container ${vmid} on ${targetNode}. This usually means the Proxmox API is behind a reverse proxy/Cloudflare Tunnel that does not proxy websockets, the node's API URL in InterDash is set to a proxied domain instead of https://<pve-ip>:8006, the host firewall blocks the ephemeral termproxy port (${termproxy.port}), or the termproxy token patch is not applied. Fix: 1) Set node's API URL to direct PVE host (e.g. https://10.0.0.5:8006) with Allow Self-Signed TLS if needed, 2) On the PVE host run: curl -fsSL https://raw.githubusercontent.com/xRosieRose/InterDash/main/scripts/patch-pve-termproxy.sh | bash, 3) Ensure container ${vmid} is running (pct status ${vmid}), then retry. Manual workaround on PVE host: pct exec ${vmid} -- bash -c "echo 'root:NEWPASS' | chpasswd". Original: ${msg}`
+              )
+            );
+          } else if (msg.includes("401") || msg.includes("403")) {
+            reject(
+              new Error(
+                `Termproxy authentication failed for ${vmid} on ${targetNode} (${msg}). Verify the API token has VM.Console and Sys.Console on /vms/${vmid} and that Privilege Separation is disabled in Datacenter > API Tokens. Patch required: https://github.com/xRosieRose/InterDash/blob/main/scripts/patch-pve-termproxy.sh`
+              )
+            );
+          } else {
+            reject(new Error(`Termproxy websocket error: ${msg}. Verify Proxmox termproxy patch and that container ${vmid} is running on ${targetNode} (pct status ${vmid}).`));
+          }
         }
       });
 
