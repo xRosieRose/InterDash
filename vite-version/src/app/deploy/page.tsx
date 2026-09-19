@@ -248,11 +248,14 @@ export default function DeployPage() {
     setConfirmOpen(false)
     setDeploying(true)
     try {
-      const csrfRes = await fetch("/api/auth/csrf")
-      let csrfToken = ""
-      if (csrfRes.ok) {
-        const d = await csrfRes.json()
-        csrfToken = d.token
+      const match = typeof document !== "undefined" ? document.cookie.match(/(?:^|;\s*)interdash_csrf=([^;]*)/) : null
+      let csrfToken = match && match[1] ? decodeURIComponent(match[1]) : ""
+      if (!csrfToken) {
+        const csrfRes = await fetch("/api/auth/csrf", { credentials: "same-origin" })
+        if (csrfRes.ok) {
+          const d = await csrfRes.json()
+          csrfToken = d.token
+        }
       }
       const res = await fetch("/api/vps/deploy", {
         method: "POST",

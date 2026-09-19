@@ -45,8 +45,10 @@ export function ReinstallDialog({
   >([])
 
   const getCsrfHeader = async (): Promise<Record<string, string>> => {
+    const match = typeof document !== "undefined" ? document.cookie.match(/(?:^|;\s*)interdash_csrf=([^;]*)/) : null
+    if (match && match[1]) return { "x-csrf-token": decodeURIComponent(match[1]) }
     try {
-      const res = await fetch("/api/auth/csrf")
+      const res = await fetch("/api/auth/csrf", { credentials: "same-origin" })
       if (res.ok) {
         const data = await res.json()
         if (data.token) return { "x-csrf-token": String(data.token) }
@@ -60,7 +62,7 @@ export function ReinstallDialog({
 
     async function loadTemplates() {
       try {
-        const res = await fetch(`/api/vps/${vps.id}/templates`)
+        const res = await fetch(`/api/vps/${vps.id}/reinstall/capabilities`, { credentials: "same-origin" })
         if (res.ok) {
           const data = await res.json()
           setAvailableTemplates(data.templates || [])
@@ -97,15 +99,16 @@ export function ReinstallDialog({
       const csrf = await getCsrfHeader()
       const res = await fetch(`/api/vps/${vps.id}/reinstall`, {
         method: "POST",
+        credentials: "same-origin",
         headers: {
           "Content-Type": "application/json",
           ...csrf,
         },
         body: JSON.stringify({
-          osTemplate: reinstallTemplate,
+          template: reinstallTemplate,
           confirmHostname: confirmHostnameInput.trim(),
-          password: reinstallPassword.trim() || undefined,
-          sshPublicKey: reinstallSshKey.trim() || undefined,
+          rootPassword: reinstallPassword.trim() || undefined,
+          sshKey: reinstallSshKey.trim() || undefined,
         }),
       })
 

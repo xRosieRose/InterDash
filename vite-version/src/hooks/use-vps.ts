@@ -44,7 +44,7 @@ export async function prefetchVps(id: string): Promise<VpsRecord | null> {
 
   const promise = (async () => {
     try {
-      const res = await fetch(`/api/vps/${id}`)
+      const res = await fetch(`/api/vps/${id}`, { credentials: "same-origin" })
       if (res.ok) {
         const data = await res.json()
         if (data.instance) {
@@ -99,7 +99,7 @@ export function useVps(id: string | undefined, initialData?: VpsRecord | null) {
       if (!id) return
       try {
         if (showToast) setIsRefreshing(true)
-        const res = await fetch(`/api/vps/${id}`)
+        const res = await fetch(`/api/vps/${id}`, { credentials: "same-origin" })
         if (!res.ok) {
           if (res.status === 403) throw new Error("Access denied. You do not own this instance.")
           if (res.status === 404) throw new Error("VPS instance not found.")

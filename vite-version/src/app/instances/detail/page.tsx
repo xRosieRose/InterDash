@@ -80,7 +80,7 @@ export default function InstanceDetailPage() {
       const match = typeof document !== "undefined" ? document.cookie.match(/(?:^|;\s*)interdash_csrf=([^;]*)/) : null
       let csrfToken = match && match[1] ? decodeURIComponent(match[1]) : ""
       if (!csrfToken) {
-        const csrfRes = await fetch("/api/auth/csrf")
+        const csrfRes = await fetch("/api/auth/csrf", { credentials: "same-origin" })
         if (csrfRes.ok) {
           const c = await csrfRes.json()
           csrfToken = c.token
@@ -88,6 +88,7 @@ export default function InstanceDetailPage() {
       }
       const res = await fetch(`/api/vps/${id}/power`, {
         method: "POST",
+        credentials: "same-origin",
         headers: {
           "Content-Type": "application/json",
           ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),

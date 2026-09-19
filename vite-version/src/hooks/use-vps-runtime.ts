@@ -28,7 +28,7 @@ export function useVpsRuntime(id: string | undefined, initialStatus?: string) {
       if (!id) return
       try {
         const url = force ? `/api/vps/${id}/status?force=true` : `/api/vps/${id}/status`
-        const res = await fetch(url)
+        const res = await fetch(url, { credentials: "same-origin" })
         if (res.ok) {
           const data = await res.json()
           setRuntime({

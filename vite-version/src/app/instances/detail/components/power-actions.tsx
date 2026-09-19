@@ -50,7 +50,7 @@ export function PowerActions({
     }
     // 2. Fallback if cookie not yet populated
     try {
-      const res = await fetch("/api/auth/csrf")
+      const res = await fetch("/api/auth/csrf", { credentials: "same-origin" })
       if (res.ok) {
         const data = await res.json()
         if (data.token) return { "x-csrf-token": String(data.token) }
@@ -65,6 +65,7 @@ export function PowerActions({
       const csrfHeaders = await getCsrfHeader()
       const res = await fetch(`/api/vps/${vps.id}/power`, {
         method: "POST",
+        credentials: "same-origin",
         headers: {
           "Content-Type": "application/json",
           ...csrfHeaders,

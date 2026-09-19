@@ -161,7 +161,7 @@ export default function InstancesPage() {
 
     try {
       if (showToast) setIsRefreshing(true)
-      const res = await fetch("/api/vps", { signal: controller.signal })
+      const res = await fetch("/api/vps", { signal: controller.signal, credentials: "same-origin" })
       if (!res.ok) {
         throw new Error("Unable to retrieve infrastructure data.")
       }

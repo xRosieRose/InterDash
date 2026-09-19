@@ -42,8 +42,10 @@ export function DeleteDialog({
   } | null>(null)
 
   const getCsrfHeader = async (): Promise<Record<string, string>> => {
+    const match = typeof document !== "undefined" ? document.cookie.match(/(?:^|;\s*)interdash_csrf=([^;]*)/) : null
+    if (match && match[1]) return { "x-csrf-token": decodeURIComponent(match[1]) }
     try {
-      const res = await fetch("/api/auth/csrf")
+      const res = await fetch("/api/auth/csrf", { credentials: "same-origin" })
       if (res.ok) {
         const data = await res.json()
         if (data.token) return { "x-csrf-token": String(data.token) }
@@ -56,7 +58,7 @@ export function DeleteDialog({
     (operationId: string) => {
       const pollInterval = setInterval(async () => {
         try {
-          const res = await fetch(`/api/vps/${vps.id}/operations/${operationId}`)
+          const res = await fetch(`/api/vps/${vps.id}/operations/${operationId}`, { credentials: "same-origin" })
           if (!res.ok) return
           const data = await res.json()
           const op = data.operation
@@ -97,6 +99,7 @@ export function DeleteDialog({
       const csrf = await getCsrfHeader()
       const res = await fetch(`/api/vps/${vps.id}`, {
         method: "DELETE",
+        credentials: "same-origin",
         headers: {
           "Content-Type": "application/json",
           ...csrf,

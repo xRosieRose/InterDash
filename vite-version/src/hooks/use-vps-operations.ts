@@ -28,7 +28,7 @@ export function useVpsOperations(id: string | undefined) {
       if (!id) return
       try {
         setIsLoadingOps(true)
-        const res = await fetch(`/api/vps/${id}/operations`)
+        const res = await fetch(`/api/vps/${id}/operations`, { credentials: "same-origin" })
         if (res.ok) {
           const data = await res.json()
           setOperations(data.operations || [])

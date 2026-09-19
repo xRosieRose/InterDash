@@ -63,7 +63,7 @@ export function ConsoleTab({ vps, isStopped, onStartVps }: ConsoleTabProps) {
   const fetchConsoleDiagnostic = React.useCallback(async () => {
     setIsLoadingDiagnostics(true)
     try {
-      const res = await fetch(`/api/vps/${vps.id}/console/diagnostic`)
+      const res = await fetch(`/api/vps/${vps.id}/console/diagnostic`, { credentials: "same-origin" })
       if (res.ok) {
         const data = await res.json()
         setConsoleDiagnostic(data.diagnostic || data)
