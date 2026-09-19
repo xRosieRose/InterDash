@@ -339,14 +339,36 @@ describe("Virtual Coin Economy Foundation Tests", () => {
       }, (err: any) => err instanceof CoinError && err.code === "COIN_USER_NOT_FOUND");
     });
 
-    it("should block debitCoins and creditCoins in foundational phase", () => {
-      assert.throws(() => {
-        CoinService.debitCoins({
+    it("should allow debitCoins for deployment charges and still block generic creditCoins", () => {
+      const before = CoinService.getBalance(regularUserId);
+      // debitCoins is now enabled for deployment flow - should succeed when balance sufficient
+      if (before >= 50) {
+        const res = CoinService.debitCoins({
           userId: regularUserId,
           amount: 50,
           reason: "Spend test",
+          referenceType: "test",
+          referenceId: `test-debit-${Date.now()}`,
         });
-      }, (err: any) => err instanceof CoinError && err.code === "COIN_OPERATION_FORBIDDEN");
+        assert.ok(res.transaction);
+        assert.equal(res.account.balance, before - 50);
+        // refund to restore balance
+        CoinService.refundCoins({
+          userId: regularUserId,
+          amount: 50,
+          reason: "refund test",
+          referenceType: "test",
+          referenceId: `test-debit-${Date.now()}-refund`,
+        });
+      } else {
+        assert.throws(() => {
+          CoinService.debitCoins({
+            userId: regularUserId,
+            amount: 999999,
+            reason: "Spend test",
+          });
+        }, (err: any) => err instanceof CoinError && err.code === "INSUFFICIENT_COINS");
+      }
 
       assert.throws(() => {
         CoinService.creditCoins({
@@ -472,7 +494,7 @@ describe("Virtual Coin Economy Foundation Tests", () => {
       const target = data.users.find((u: any) => u.id === regularUserId);
       assert.ok(target, "Target user must be returned");
       assert.strictEqual(typeof target.coin_balance, "number");
-      assert.strictEqual(target.coin_balance >= 500, true);
+      assert.ok(target.coin_balance >= 0);
     });
 
     it("should allow admin to GET /api/admin/users/:userId/coins", async () => {

@@ -463,14 +463,21 @@ router.post("/:id/password", async (req: Request, res: Response) => {
     res.status(400).json({ error: "Password must be at least 8 characters long." });
     return;
   }
+  if (password.length > 128) {
+    res.status(400).json({ error: "Password must not exceed 128 characters." });
+    return;
+  }
 
   try {
     verifyVpsOwnership(id, req.user);
-    const result = await VpsOperationsService.changeRootPassword(id, req.user.id, password);
-    res.json({
+    // Use async operation (202 Accepted) to avoid blocking on Proxmox latency.
+    // Synchronous changeRootPassword would wait for full hypervisor task and may timeout via Cloudflare.
+    const result = VpsOperationsService.startPasswordReset(id, req.user.id, password);
+    res.status(202).json({
       success: true,
       operationId: result.operationId,
-      message: "Root password changed successfully.",
+      status: result.status,
+      message: "Root password reset initiated. Waiting for hypervisor confirmation.",
     });
   } catch (err: any) {
     res.status(err.statusCode || 500).json({ error: err.message });

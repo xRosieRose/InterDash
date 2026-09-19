@@ -518,7 +518,7 @@ describe("VPS Real Management & Lifecycle Integration Tests", () => {
       },
       body: JSON.stringify({ password: "SuperSecretPassword123!" }),
     });
-    assert.equal(res.status, 200);
+    assert.ok(res.status === 200 || res.status === 202);
     const data = await res.json();
     assert.equal(data.success, true);
     assert.equal(data.password, undefined); // Password never returned in response

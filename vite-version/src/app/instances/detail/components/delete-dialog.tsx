@@ -61,9 +61,16 @@ export function DeleteDialog({
           const res = await fetch(`/api/vps/${vps.id}/operations/${operationId}`, { credentials: "same-origin" })
           if (!res.ok) return
           const data = await res.json()
-          const op = data.operation
-          if (op) {
-            setDeleteOperation(op)
+          const op = (data.operation || data) as any
+          if (op && op.status) {
+            // Normalize shape: server returns { operationId, status, currentStep, error } flat
+            const normalized = {
+              id: op.operationId || op.id,
+              status: op.status,
+              current_step: op.currentStep || op.current_step,
+              error: op.error || op.error_message,
+            }
+            setDeleteOperation(normalized as any)
             if (op.status === "completed") {
               clearInterval(pollInterval)
               setIsDeleting(false)
@@ -72,7 +79,7 @@ export function DeleteDialog({
             } else if (op.status === "failed") {
               clearInterval(pollInterval)
               setIsDeleting(false)
-              toast.error(op.error || "VPS deletion failed on hypervisor.")
+              toast.error(op.error || op.error_message || "VPS deletion failed on hypervisor.")
             } else if (op.status === "recovery_required") {
               clearInterval(pollInterval)
               setIsDeleting(false)
