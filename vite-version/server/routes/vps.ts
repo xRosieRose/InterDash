@@ -173,7 +173,7 @@ router.post("/deploy", async (req: Request, res: Response) => {
     return;
   }
 
-  const { planId, name, description, osTemplate, idempotencyKey } = req.body;
+  const { planId, name, description, osTemplate, rootPassword, idempotencyKey } = req.body;
 
   if (!planId || typeof planId !== "string") {
     res.status(400).json({ error: "Plan ID is required." });
@@ -187,6 +187,14 @@ router.post("/deploy", async (req: Request, res: Response) => {
     res.status(400).json({ error: "Operating system template is required." });
     return;
   }
+  if (rootPassword !== undefined && rootPassword !== null && typeof rootPassword !== "string") {
+    res.status(400).json({ error: "Root password must be a string." });
+    return;
+  }
+  if (typeof rootPassword === "string" && rootPassword.trim().length > 0 && rootPassword.trim().length < 8) {
+    res.status(400).json({ error: "Root password must be at least 8 characters." });
+    return;
+  }
 
   try {
     const result = await DeploymentService.deployFromPlan({
@@ -195,6 +203,7 @@ router.post("/deploy", async (req: Request, res: Response) => {
       name: name.trim(),
       description: description || undefined,
       osTemplate: osTemplate.trim(),
+      rootPassword: typeof rootPassword === "string" ? rootPassword : undefined,
       idempotencyKey: idempotencyKey || undefined,
     });
 

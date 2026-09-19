@@ -4,20 +4,18 @@ import * as React from "react"
 import {
   Rocket,
   Cpu,
-  MemoryStick,
   HardDrive,
   Coins,
-  Network,
   Check,
   Loader2,
   AlertCircle,
   ArrowLeft,
   ArrowRight,
   Server,
-  Monitor,
-  Sparkles,
-  Shield,
-  Zap,
+  KeyRound,
+  Eye,
+  EyeOff,
+  Copy,
   RefreshCw,
   ChevronRight,
   CheckCircle2,
@@ -59,7 +57,6 @@ import {
 import { useAuth } from "@/contexts/auth-context"
 import { toast } from "sonner"
 
-// Types
 interface VpsPlan {
   id: string
   name: string
@@ -97,27 +94,28 @@ interface DeploymentOrder {
   updatedAt: string
 }
 
-// OS family icon/color mapping
-const OS_FAMILIES: Record<string, { label: string; color: string; emoji: string }> = {
-  ubuntu: { label: "Ubuntu", color: "#E95420", emoji: "🟠" },
-  debian: { label: "Debian", color: "#A80030", emoji: "🔴" },
-  centos: { label: "CentOS", color: "#932178", emoji: "🟣" },
-  rocky: { label: "Rocky Linux", color: "#10B981", emoji: "🟢" },
-  alma: { label: "AlmaLinux", color: "#0F4880", emoji: "🔵" },
-  alpine: { label: "Alpine", color: "#0D597F", emoji: "🏔️" },
-  fedora: { label: "Fedora", color: "#51A2DA", emoji: "🔵" },
-  arch: { label: "Arch Linux", color: "#1793D1", emoji: "🔷" },
-  opensuse: { label: "openSUSE", color: "#73BA25", emoji: "🟢" },
-  unknown: { label: "Linux", color: "#6B7280", emoji: "🐧" },
+const OS_LABELS: Record<string, string> = {
+  ubuntu: "Ubuntu",
+  debian: "Debian",
+  centos: "CentOS",
+  rocky: "Rocky Linux",
+  alma: "AlmaLinux",
+  almalinux: "AlmaLinux",
+  alpine: "Alpine",
+  fedora: "Fedora",
+  arch: "Arch Linux",
+  archlinux: "Arch Linux",
+  opensuse: "openSUSE",
+  unknown: "Linux",
 }
 
-function getOsInfo(template: OsTemplate) {
-  const family = (template.osFamily || "unknown").toLowerCase()
-  return OS_FAMILIES[family] || OS_FAMILIES.unknown
+function getOsLabel(t: OsTemplate) {
+  const f = (t.osFamily || "unknown").toLowerCase()
+  return OS_LABELS[f] || OS_LABELS.unknown
 }
 
 function formatBytes(bytes: number): string {
-  if (!bytes) return "0 B"
+  if (!bytes) return "—"
   const sizes = ["B", "KB", "MB", "GB"]
   const i = Math.floor(Math.log(bytes) / Math.log(1024))
   return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${sizes[i]}`
@@ -127,45 +125,37 @@ function formatRam(mb: number): string {
   return mb >= 1024 ? `${(mb / 1024).toFixed(mb % 1024 === 0 ? 0 : 1)} GB` : `${mb} MB`
 }
 
-// Step enum
 type DeployStep = "plan" | "configure" | "confirm"
 
 export default function DeployPage() {
   const { user, refreshUser } = useAuth()
 
-  // Data state
   const [plans, setPlans] = React.useState<VpsPlan[]>([])
   const [templates, setTemplates] = React.useState<OsTemplate[]>([])
   const [coinBalance, setCoinBalance] = React.useState(0)
   const [recentDeployments, setRecentDeployments] = React.useState<DeploymentOrder[]>([])
   const [transferOpen, setTransferOpen] = React.useState(false)
 
-  // Synchronize coin balance with auth context in real-time
   React.useEffect(() => {
-    if (user?.coin_balance !== undefined) {
-      setCoinBalance(user.coin_balance)
-    }
+    if (user?.coin_balance !== undefined) setCoinBalance(user.coin_balance)
   }, [user?.coin_balance])
 
-  // Loading
   const [loadingPlans, setLoadingPlans] = React.useState(true)
   const [loadingTemplates, setLoadingTemplates] = React.useState(true)
   const [deploying, setDeploying] = React.useState(false)
 
-  // Wizard state
   const [step, setStep] = React.useState<DeployStep>("plan")
   const [selectedPlan, setSelectedPlan] = React.useState<VpsPlan | null>(null)
   const [vpsName, setVpsName] = React.useState("")
   const [vpsDescription, setVpsDescription] = React.useState("")
   const [selectedTemplate, setSelectedTemplate] = React.useState("")
+  const [rootPassword, setRootPassword] = React.useState("")
+  const [showPassword, setShowPassword] = React.useState(false)
 
-  // Confirmation dialog
   const [confirmOpen, setConfirmOpen] = React.useState(false)
-
-  // Deployment result
   const [deployResult, setDeployResult] = React.useState<any>(null)
+  const [copied, setCopied] = React.useState(false)
 
-  // Fetch plans and balance
   React.useEffect(() => {
     async function fetchPlans() {
       try {
@@ -175,13 +165,12 @@ export default function DeployPage() {
           setPlans(data.plans || [])
           setCoinBalance(data.coinBalance || 0)
         }
-      } catch (err) {
-        toast.error("Failed to load deployment plans.")
+      } catch {
+        toast.error("Failed to load plans.")
       } finally {
         setLoadingPlans(false)
       }
     }
-
     async function fetchTemplates() {
       try {
         const res = await fetch("/api/vps/plans/templates", { credentials: "same-origin" })
@@ -190,12 +179,11 @@ export default function DeployPage() {
           setTemplates(data.templates || [])
         }
       } catch {
-        // Template loading is non-critical on plan selection step
+        // non-critical
       } finally {
         setLoadingTemplates(false)
       }
     }
-
     async function fetchDeployments() {
       try {
         const res = await fetch("/api/vps/deployments", { credentials: "same-origin" })
@@ -205,57 +193,67 @@ export default function DeployPage() {
         }
       } catch {}
     }
-
     fetchPlans()
     fetchTemplates()
     fetchDeployments()
   }, [])
 
-  // Select plan handler
   const handleSelectPlan = (plan: VpsPlan) => {
     setSelectedPlan(plan)
     setStep("configure")
     window.scrollTo({ top: 0, behavior: "smooth" })
   }
 
-  // Back handler
   const handleBack = () => {
-    if (step === "configure") {
-      setStep("plan")
-    } else if (step === "confirm") {
-      setStep("configure")
-    }
+    if (step === "configure") setStep("plan")
+    else if (step === "confirm") setStep("configure")
     window.scrollTo({ top: 0, behavior: "smooth" })
   }
 
-  // Proceed to confirm
+  const generatePassword = () => {
+    const chars = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%_-"
+    let p = ""
+    const arr = crypto.getRandomValues(new Uint32Array(16))
+    for (let i = 0; i < 16; i++) p += chars[arr[i] % chars.length]
+    setRootPassword(p)
+    setShowPassword(true)
+  }
+
+  const passwordError =
+    rootPassword.length > 0 && rootPassword.length < 8 ? "Minimum 8 characters." : null
+
   const handleProceedToConfirm = () => {
     if (!vpsName.trim() || vpsName.trim().length < 2) {
-      toast.error("VPS name must be at least 2 characters.")
+      toast.error("Server name must be at least 2 characters.")
+      return
+    }
+    if (vpsName.trim().length > 64) {
+      toast.error("Server name must not exceed 64 characters.")
       return
     }
     if (!selectedTemplate) {
       toast.error("Please select an operating system.")
       return
     }
+    if (passwordError) {
+      toast.error(passwordError)
+      return
+    }
     setStep("confirm")
     window.scrollTo({ top: 0, behavior: "smooth" })
   }
 
-  // Deploy!
   const handleDeploy = async () => {
     if (!selectedPlan || !selectedTemplate || !vpsName.trim()) return
     setConfirmOpen(false)
     setDeploying(true)
-
     try {
       const csrfRes = await fetch("/api/auth/csrf")
       let csrfToken = ""
       if (csrfRes.ok) {
-        const csrfData = await csrfRes.json()
-        csrfToken = csrfData.token
+        const d = await csrfRes.json()
+        csrfToken = d.token
       }
-
       const res = await fetch("/api/vps/deploy", {
         method: "POST",
         headers: {
@@ -268,100 +266,139 @@ export default function DeployPage() {
           name: vpsName.trim(),
           description: vpsDescription.trim() || undefined,
           osTemplate: selectedTemplate,
+          rootPassword: rootPassword.trim() || undefined,
         }),
       })
-
       const data = await res.json()
-
       if (res.ok && data.success) {
         setDeployResult(data.deployment)
-        setCoinBalance((prev) => prev - (data.deployment?.chargedCoins || 0))
-        toast.success(data.message || "Deployment initiated!")
+        if (data.deployment?.chargedCoins) {
+          setCoinBalance((prev) => prev - (data.deployment.chargedCoins || 0))
+        }
+        toast.success(data.message || "Deployment initiated.")
         refreshUser()
       } else {
         toast.error(data.error || "Deployment failed.")
-        if (data.code === "INSUFFICIENT_COINS") {
-          setCoinBalance(data.currentBalance ?? coinBalance)
-        }
+        if (data.code === "INSUFFICIENT_COINS") setCoinBalance(data.currentBalance ?? coinBalance)
       }
-    } catch (err) {
+    } catch {
       toast.error("Network error — please try again.")
     } finally {
       setDeploying(false)
     }
   }
 
-  // Reset wizard
   const handleNewDeploy = () => {
     setSelectedPlan(null)
     setVpsName("")
     setVpsDescription("")
     setSelectedTemplate("")
+    setRootPassword("")
+    setShowPassword(false)
     setDeployResult(null)
+    setCopied(false)
     setStep("plan")
   }
 
-  // Deployment result screen
+  // Success state
   if (deployResult) {
+    const isGenerated = Boolean(deployResult.generatedPassword)
+    const shownPassword = deployResult.generatedPassword as string | undefined
     return (
-      <BaseLayout title="Deployment Initiated" description="Your VPS is being provisioned.">
+      <BaseLayout title="Deployment" description="Provisioning started.">
         <div className="px-4 lg:px-6 max-w-2xl mx-auto w-full">
-          <Card className="border-green-500/30 bg-gradient-to-br from-green-500/5 to-emerald-500/5">
-            <CardHeader className="text-center pb-2">
-              <div className="mx-auto w-16 h-16 rounded-full bg-green-500/10 flex items-center justify-center mb-4">
-                <Rocket className="h-8 w-8 text-green-500 animate-pulse" />
+          <Card className="border">
+            <CardHeader className="text-center pb-3">
+              <div className="mx-auto w-11 h-11 rounded-md border flex items-center justify-center mb-3">
+                <Check className="h-5 w-5" />
               </div>
-              <CardTitle className="text-xl">Deployment Submitted!</CardTitle>
-              <CardDescription>
-                Your VPS <span className="font-semibold text-foreground">"{deployResult.vpsName}"</span> is being provisioned using plan <span className="font-semibold text-foreground">{deployResult.planName}</span>.
+              <CardTitle className="text-lg">Deployment queued</CardTitle>
+              <CardDescription className="text-sm">
+                VPS <span className="font-medium text-foreground">"{deployResult.vpsName}"</span> is being created with plan{" "}
+                <span className="font-medium text-foreground">{deployResult.planName}</span>.
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3">
               <div className="grid grid-cols-2 gap-3 text-sm">
-                <div className="rounded-lg border p-3">
-                  <div className="text-muted-foreground text-xs mb-1">Order ID</div>
-                  <div className="font-mono text-xs break-all">{deployResult.deploymentId}</div>
+                <div className="rounded-md border px-3 py-2.5">
+                  <div className="text-xs text-muted-foreground mb-1">Order ID</div>
+                  <div className="font-mono text-xs break-all leading-tight">{deployResult.deploymentId}</div>
                 </div>
-                <div className="rounded-lg border p-3">
-                  <div className="text-muted-foreground text-xs mb-1">Status</div>
-                  <Badge variant="outline" className="bg-amber-500/10 text-amber-500 border-amber-500/30">
-                    <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                <div className="rounded-md border px-3 py-2.5">
+                  <div className="text-xs text-muted-foreground mb-1">Status</div>
+                  <Badge variant="outline" className="text-xs font-normal">
                     {deployResult.status}
                   </Badge>
                 </div>
-                <div className="rounded-lg border p-3">
-                  <div className="text-muted-foreground text-xs mb-1">Coins Charged</div>
-                  <div className="font-semibold flex items-center gap-1">
-                    <Coins className="h-3.5 w-3.5 text-amber-500" />
-                    {deployResult.chargedCoins.toLocaleString()}
+                <div className="rounded-md border px-3 py-2.5">
+                  <div className="text-xs text-muted-foreground mb-1">Charged</div>
+                  <div className="font-medium flex items-center gap-1.5">
+                    <Coins className="h-3.5 w-3.5" />
+                    {deployResult.chargedCoins.toLocaleString()} coins
                   </div>
                 </div>
-                <div className="rounded-lg border p-3">
-                  <div className="text-muted-foreground text-xs mb-1">Remaining Balance</div>
-                  <div className="font-semibold flex items-center gap-1">
-                    <Coins className="h-3.5 w-3.5 text-muted-foreground" />
-                    {coinBalance.toLocaleString()}
-                  </div>
+                <div className="rounded-md border px-3 py-2.5">
+                  <div className="text-xs text-muted-foreground mb-1">Balance</div>
+                  <div className="font-medium">{coinBalance.toLocaleString()} coins</div>
                 </div>
               </div>
 
-              <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-3">
-                <p className="text-sm text-blue-400">
-                  <Sparkles className="h-4 w-4 inline mr-1" />
-                  Provisioning typically takes 30–90 seconds. Your VPS will appear in <Link to="/instances" className="underline font-medium">Instances</Link> when ready.
-                  If provisioning fails, your coins are automatically refunded.
+              {isGenerated && shownPassword && (
+                <div className="rounded-md border p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium flex items-center gap-1.5">
+                      <KeyRound className="h-3.5 w-3.5" /> Root password — copy now (shown once)
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      onClick={() => {
+                        navigator.clipboard.writeText(shownPassword)
+                        setCopied(true)
+                        toast.success("Password copied.")
+                        setTimeout(() => setCopied(false), 2000)
+                      }}
+                    >
+                      {copied ? <Check className="h-3 w-3 mr-1" /> : <Copy className="h-3 w-3 mr-1" />}
+                      {copied ? "Copied" : "Copy"}
+                    </Button>
+                  </div>
+                  <code className="block font-mono text-xs bg-muted px-3 py-2 rounded border break-all select-all">
+                    {shownPassword}
+                  </code>
+                  <p className="text-xs text-muted-foreground">
+                    This password was auto-generated because the field was left empty. It will not be shown again.
+                  </p>
+                </div>
+              )}
+
+              {!isGenerated && rootPassword && (
+                <div className="rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground">
+                    Root password was set as provided. Use it to log in via console or SSH once the VPS is running.
+                  </p>
+                </div>
+              )}
+
+              <div className="rounded-md border bg-muted/30 px-3 py-2.5">
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Provisioning usually takes 30–90 seconds. Track progress in{" "}
+                  <Link to="/instances" className="underline underline-offset-2 font-medium text-foreground">
+                    Instances
+                  </Link>
+                  . Coins are refunded automatically if provisioning fails.
                 </p>
               </div>
             </CardContent>
-            <CardFooter className="flex gap-3 justify-center">
-              <Button variant="outline" onClick={handleNewDeploy}>
-                <Rocket className="h-4 w-4 mr-2" />
-                Deploy Another
+            <CardFooter className="flex gap-2 justify-center">
+              <Button variant="outline" onClick={handleNewDeploy} className="text-xs">
+                Deploy another
               </Button>
-              <Button asChild>
+              <Button asChild className="text-xs">
                 <Link to="/instances">
-                  <Server className="h-4 w-4 mr-2" />
-                  View Instances
+                  <Server className="h-3.5 w-3.5 mr-1.5" />
+                  View instances
                 </Link>
               </Button>
             </CardFooter>
@@ -371,217 +408,135 @@ export default function DeployPage() {
     )
   }
 
-  // Step indicator
-  const steps = [
-    { key: "plan", label: "Select Plan", icon: Sparkles },
-    { key: "configure", label: "Configure", icon: Monitor },
-    { key: "confirm", label: "Deploy", icon: Rocket },
-  ] as const
+  const steps: { key: DeployStep; label: string; num: number }[] = [
+    { key: "plan", label: "Select plan", num: 1 },
+    { key: "configure", label: "Configure", num: 2 },
+    { key: "confirm", label: "Review & deploy", num: 3 },
+  ]
+  const activeIndex = steps.findIndex((s) => s.key === step)
 
   return (
-    <BaseLayout title="Deploy VPS" description="Select a plan, configure your server, and deploy with coins.">
-      <div className="px-4 lg:px-6">
-        {/* Step Progress Bar */}
-        <div className="max-w-3xl mx-auto mb-8">
-          <div className="flex items-center justify-between relative">
-            {/* Background line */}
-            <div className="absolute top-5 left-0 right-0 h-0.5 bg-muted" />
-            <div
-              className="absolute top-5 left-0 h-0.5 bg-primary transition-all duration-500"
-              style={{
-                width: step === "plan" ? "0%" : step === "configure" ? "50%" : "100%",
-              }}
-            />
-
-            {steps.map((s) => {
-              const isCurrent = s.key === step
-              const isPast =
-                (s.key === "plan" && step !== "plan") ||
-                (s.key === "configure" && step === "confirm")
-              const Icon = s.icon
-
+    <BaseLayout title="Deploy VPS" description="Choose a plan, configure, and deploy.">
+      <div className="px-4 lg:px-6 max-w-6xl mx-auto">
+        {/* Top bar */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
+          <div className="flex items-center gap-2">
+            {steps.map((s, idx) => {
+              const isActive = idx === activeIndex
+              const isDone = idx < activeIndex
               return (
-                <div key={s.key} className="relative flex flex-col items-center z-10">
-                  <div
-                    className={`w-10 h-10 rounded-full flex items-center justify-center transition-all duration-300 ${
-                      isPast
-                        ? "bg-primary text-primary-foreground"
-                        : isCurrent
-                        ? "bg-primary text-primary-foreground ring-4 ring-primary/20"
-                        : "bg-muted text-muted-foreground"
-                    }`}
-                  >
-                    {isPast ? <Check className="h-5 w-5" /> : <Icon className="h-5 w-5" />}
+                <React.Fragment key={s.key}>
+                  <div className="flex items-center gap-2">
+                    <div
+                      className={`w-7 h-7 rounded-md border flex items-center justify-center text-xs font-medium ${
+                        isDone
+                          ? "bg-foreground text-background border-foreground"
+                          : isActive
+                            ? "bg-foreground text-background border-foreground"
+                            : "bg-background text-muted-foreground"
+                      }`}
+                    >
+                      {isDone ? <Check className="h-3.5 w-3.5" /> : s.num}
+                    </div>
+                    <span className={`text-xs font-medium ${isActive ? "text-foreground" : "text-muted-foreground"}`}>
+                      {s.label}
+                    </span>
                   </div>
-                  <span
-                    className={`mt-2 text-xs font-medium ${
-                      isCurrent ? "text-primary" : isPast ? "text-foreground" : "text-muted-foreground"
-                    }`}
-                  >
-                    {s.label}
-                  </span>
-                </div>
+                  {idx < steps.length - 1 && <div className="w-6 h-px bg-border mx-1 hidden sm:block" />}
+                </React.Fragment>
               )
             })}
           </div>
-        </div>
 
-        {/* Coin Balance Bar */}
-        <div className="max-w-5xl mx-auto mb-6">
-          <div className="flex items-center justify-between rounded-lg border bg-card/50 backdrop-blur px-4 py-2.5">
-            <div className="flex items-center gap-2">
-              <Coins className="h-4 w-4 text-amber-500" />
-              <span className="text-sm font-medium">Your Balance</span>
-            </div>
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-1.5 font-mono text-lg font-bold text-amber-400">
-                <span>{coinBalance.toLocaleString()}</span>
-                <span className="text-sm text-muted-foreground font-normal">coins</span>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setTransferOpen(true)}
-                className="h-8 border-amber-500/30 text-amber-400 hover:bg-amber-500/10 hover:text-amber-300"
-              >
-                <Send className="h-3.5 w-3.5 mr-1.5" />
-                Transfer Coins
-              </Button>
-            </div>
+          <div className="flex items-center gap-2 rounded-md border px-3 py-1.5 bg-card">
+            <Coins className="h-3.5 w-3.5 text-muted-foreground" />
+            <span className="text-xs text-muted-foreground">Balance</span>
+            <span className="text-sm font-mono font-medium">{coinBalance.toLocaleString()}</span>
+            <span className="text-xs text-muted-foreground">coins</span>
+            <span className="mx-1 h-4 w-px bg-border" />
+            <Button variant="ghost" size="sm" onClick={() => setTransferOpen(true)} className="h-7 px-2 text-xs">
+              <Send className="h-3 w-3 mr-1" /> Transfer
+            </Button>
           </div>
         </div>
 
-        {/* ==================== STEP 1: PLAN SELECTION ==================== */}
+        {/* Step 1: Plans */}
         {step === "plan" && (
-          <div className="max-w-5xl mx-auto">
+          <div>
             {loadingPlans ? (
-              <div className="flex flex-col items-center justify-center py-20 gap-3">
-                <Loader2 className="h-8 w-8 animate-spin text-primary" />
-                <p className="text-muted-foreground">Loading deployment plans...</p>
+              <div className="flex flex-col items-center justify-center py-16 gap-2">
+                <Loader2 className="h-5 w-5 animate-spin" />
+                <p className="text-sm text-muted-foreground">Loading plans…</p>
               </div>
             ) : plans.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-20 gap-3">
-                <AlertCircle className="h-12 w-12 text-muted-foreground" />
-                <h3 className="text-lg font-semibold">No Plans Available</h3>
-                <p className="text-muted-foreground text-center max-w-md">
-                  There are no deployment plans available at this time. Please contact an administrator to create plans.
+              <div className="flex flex-col items-center justify-center py-16 gap-2 text-center">
+                <AlertCircle className="h-8 w-8 text-muted-foreground" />
+                <h3 className="text-sm font-medium">No plans available</h3>
+                <p className="text-xs text-muted-foreground max-w-sm">
+                  No deployment plans have been created. Contact an administrator.
                 </p>
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {plans.map((plan, index) => {
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                {plans.map((plan) => {
                   const canAfford = coinBalance >= plan.coinPrice
-                  const isPopular = index === 1 && plans.length > 2
-
                   return (
                     <Card
                       key={plan.id}
-                      className={`relative overflow-hidden transition-all duration-300 hover:shadow-lg hover:shadow-primary/5 hover:-translate-y-1 cursor-pointer group ${
-                        isPopular ? "border-primary/50 ring-1 ring-primary/20" : "hover:border-primary/30"
-                      }`}
-                      onClick={() => canAfford && handleSelectPlan(plan)}
+                      className={`flex flex-col ${!canAfford ? "opacity-60" : "hover:border-foreground/30"} transition-colors`}
                     >
-                      {isPopular && (
-                        <div className="absolute top-0 right-0">
-                          <div className="bg-primary text-primary-foreground text-[10px] font-bold px-3 py-1 rounded-bl-lg uppercase tracking-wider">
-                            Popular
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Gradient accent bar */}
-                      <div className="h-1 w-full bg-gradient-to-r from-primary/60 via-primary to-primary/60" />
-
                       <CardHeader className="pb-3">
-                        <CardTitle className="text-lg flex items-center gap-2">
-                          <Server className="h-5 w-5 text-primary" />
-                          {plan.name}
-                        </CardTitle>
-                        {plan.description && (
-                          <CardDescription className="text-xs line-clamp-2">
-                            {plan.description}
-                          </CardDescription>
-                        )}
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <CardTitle className="text-sm font-medium truncate pr-2">{plan.name}</CardTitle>
+                            {plan.description && (
+                              <CardDescription className="text-xs mt-1 line-clamp-2 leading-relaxed">
+                                {plan.description}
+                              </CardDescription>
+                            )}
+                          </div>
+                          <Badge variant="outline" className="text-xs font-mono shrink-0">
+                            {plan.coinPrice.toLocaleString()} c
+                          </Badge>
+                        </div>
                       </CardHeader>
-
-                      <CardContent className="pb-3">
-                        {/* Resource Specs Grid */}
-                        <div className="grid grid-cols-2 gap-2.5 mb-4">
-                          <div className="flex items-center gap-2 rounded-md bg-muted/50 px-3 py-2">
-                            <Cpu className="h-4 w-4 text-blue-500 shrink-0" />
-                            <div>
-                              <div className="text-xs text-muted-foreground">CPU</div>
-                              <div className="text-sm font-semibold">{plan.cpuCores} {plan.cpuCores === 1 ? "Core" : "Cores"}</div>
-                            </div>
+                      <CardContent className="pb-3 flex-1">
+                        <div className="rounded-md border bg-muted/20 px-3 py-2.5 text-xs">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-muted-foreground flex items-center gap-1.5">
+                              <Cpu className="h-3 w-3" /> {plan.cpuCores} vCPU
+                            </span>
+                            <span className="text-muted-foreground">{formatRam(plan.memoryMb)}</span>
                           </div>
-                          <div className="flex items-center gap-2 rounded-md bg-muted/50 px-3 py-2">
-                            <MemoryStick className="h-4 w-4 text-purple-500 shrink-0" />
-                            <div>
-                              <div className="text-xs text-muted-foreground">RAM</div>
-                              <div className="text-sm font-semibold">{formatRam(plan.memoryMb)}</div>
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-2 rounded-md bg-muted/50 px-3 py-2">
-                            <HardDrive className="h-4 w-4 text-emerald-500 shrink-0" />
-                            <div>
-                              <div className="text-xs text-muted-foreground">Disk</div>
-                              <div className="text-sm font-semibold">{plan.diskGb} GB</div>
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-2 rounded-md bg-muted/50 px-3 py-2">
-                            <Network className="h-4 w-4 text-orange-500 shrink-0" />
-                            <div>
-                              <div className="text-xs text-muted-foreground">Network</div>
-                              <div className="text-sm font-semibold">{plan.networkBridge}</div>
-                            </div>
+                          <div className="h-px bg-border my-2" />
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-muted-foreground flex items-center gap-1.5">
+                              <HardDrive className="h-3 w-3" /> {plan.diskGb} GB Disk
+                            </span>
+                            <span className="text-muted-foreground">{plan.networkBridge}</span>
                           </div>
                         </div>
-
-                        {/* Features */}
-                        <div className="space-y-1.5">
-                          {[
-                            { icon: Shield, text: "DDoS Protection" },
-                            { icon: Zap, text: "Instant Provisioning" },
-                            { icon: RefreshCw, text: "Auto Failure Refund" },
-                          ].map(({ icon: FIcon, text }) => (
-                            <div key={text} className="flex items-center gap-2 text-xs text-muted-foreground">
-                              <FIcon className="h-3 w-3 text-green-500" />
-                              <span>{text}</span>
-                            </div>
-                          ))}
+                        <div className="mt-3 flex items-center gap-1 text-xs text-muted-foreground">
+                          <Check className="h-3 w-3" /> Instant provisioning
+                          <span className="mx-1">·</span> Auto-refund on failure
                         </div>
                       </CardContent>
-
                       <CardFooter className="pt-0">
-                        <div className="w-full">
-                          {/* Price */}
-                          <div className="flex items-center justify-center gap-1.5 mb-3">
-                            <Coins className="h-5 w-5 text-amber-500" />
-                            <span className="text-2xl font-bold">{plan.coinPrice.toLocaleString()}</span>
-                            <span className="text-sm text-muted-foreground">coins</span>
-                          </div>
-
-                          <Button
-                            className="w-full group-hover:bg-primary/90 transition-colors"
-                            disabled={!canAfford}
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              handleSelectPlan(plan)
-                            }}
-                          >
-                            {canAfford ? (
-                              <>
-                                Select Plan
-                                <ChevronRight className="h-4 w-4 ml-1" />
-                              </>
-                            ) : (
-                              <>
-                                <AlertCircle className="h-4 w-4 mr-1" />
-                                Insufficient Coins
-                              </>
-                            )}
-                          </Button>
-                        </div>
+                        <Button
+                          className="w-full text-xs h-8"
+                          variant={canAfford ? "default" : "outline"}
+                          disabled={!canAfford}
+                          onClick={() => handleSelectPlan(plan)}
+                        >
+                          {canAfford ? (
+                            <>
+                              Select
+                              <ChevronRight className="h-3.5 w-3.5 ml-1" />
+                            </>
+                          ) : (
+                            "Insufficient coins"
+                          )}
+                        </Button>
                       </CardFooter>
                     </Card>
                   )
@@ -589,38 +544,28 @@ export default function DeployPage() {
               </div>
             )}
 
-            {/* Recent Deployments */}
             {recentDeployments.length > 0 && (
-              <div className="mt-10">
-                <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-                  Recent Deployments
-                </h3>
-                <div className="space-y-2">
+              <div className="mt-8">
+                <h3 className="text-xs font-medium text-muted-foreground mb-2">Recent deployments</h3>
+                <div className="rounded-md border divide-y">
                   {recentDeployments.slice(0, 5).map((d) => (
-                    <div
-                      key={d.id}
-                      className="flex items-center justify-between rounded-lg border px-4 py-2.5 text-sm"
-                    >
-                      <div className="flex items-center gap-3">
+                    <div key={d.id} className="flex items-center justify-between px-3 py-2.5 text-xs">
+                      <div className="flex items-center gap-2 min-w-0">
                         <StatusIcon status={d.status} />
-                        <div>
-                          <span className="font-medium">{d.vpsName}</span>
-                          <span className="text-muted-foreground ml-2">
-                            {d.plan?.planName || "—"}
-                          </span>
-                        </div>
+                        <span className="font-medium truncate">{d.vpsName}</span>
+                        <span className="text-muted-foreground hidden sm:inline truncate">— {d.plan?.planName || d.osTemplate}</span>
                       </div>
-                      <div className="flex items-center gap-3">
-                        <Badge variant="outline" className="text-xs">
+                      <div className="flex items-center gap-2 shrink-0 ml-2">
+                        <Badge variant="outline" className="text-xs font-normal">
                           {d.status}
                         </Badge>
-                        <span className="text-xs text-muted-foreground">
+                        <span className="text-muted-foreground hidden md:inline">
                           {new Date(d.createdAt).toLocaleDateString()}
                         </span>
                         {d.vpsId && (
-                          <Button variant="ghost" size="sm" asChild>
+                          <Button variant="ghost" size="sm" asChild className="h-7 w-7 p-0">
                             <Link to={`/instances/${d.vpsId}`}>
-                              <ChevronRight className="h-4 w-4" />
+                              <ChevronRight className="h-3.5 w-3.5" />
                             </Link>
                           </Button>
                         )}
@@ -633,254 +578,261 @@ export default function DeployPage() {
           </div>
         )}
 
-        {/* ==================== STEP 2: CONFIGURE VPS ==================== */}
+        {/* Step 2: Configure */}
         {step === "configure" && selectedPlan && (
-          <div className="max-w-3xl mx-auto">
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              {/* Configuration Form */}
-              <div className="lg:col-span-2 space-y-5">
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-lg flex items-center gap-2">
-                      <Monitor className="h-5 w-5 text-primary" />
-                      Server Configuration
-                    </CardTitle>
-                    <CardDescription>
-                      Customize your VPS name, description, and operating system.
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-5">
-                    {/* VPS Name */}
-                    <div className="space-y-2">
-                      <Label htmlFor="vps-name">Server Name *</Label>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 max-w-5xl mx-auto">
+            <div className="lg:col-span-2">
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-sm font-medium flex items-center gap-2">
+                    <Server className="h-4 w-4" /> Server configuration
+                  </CardTitle>
+                  <CardDescription className="text-xs">
+                    Hostname, operating system, and root credentials.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="vps-name" className="text-xs">
+                        Server name <span className="text-destructive">*</span>
+                      </Label>
                       <Input
                         id="vps-name"
-                        placeholder="e.g. my-web-server"
+                        placeholder="my-web-server"
                         value={vpsName}
                         onChange={(e) => setVpsName(e.target.value)}
                         maxLength={64}
-                        className="font-mono"
+                        className="font-mono text-sm h-9"
                       />
-                      <p className="text-xs text-muted-foreground">
-                        2–64 characters. Used as hostname (auto-sanitized).
-                      </p>
+                      <p className="text-xs text-muted-foreground">2–64 chars. Sanitized as hostname.</p>
                     </div>
-
-                    {/* Description */}
-                    <div className="space-y-2">
-                      <Label htmlFor="vps-desc">Description (optional)</Label>
-                      <Textarea
-                        id="vps-desc"
-                        placeholder="What will this server be used for?"
-                        value={vpsDescription}
-                        onChange={(e) => setVpsDescription(e.target.value)}
-                        maxLength={500}
-                        rows={3}
-                      />
-                    </div>
-
-                    {/* OS Template */}
-                    <div className="space-y-2">
-                      <Label htmlFor="os-template">Operating System *</Label>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="os-template" className="text-xs">
+                        Operating system <span className="text-destructive">*</span>
+                      </Label>
                       {loadingTemplates ? (
-                        <div className="flex items-center gap-2 py-3 text-sm text-muted-foreground">
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          Discovering available templates...
+                        <div className="flex items-center gap-2 h-9 px-3 rounded-md border text-xs text-muted-foreground">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading templates…
                         </div>
                       ) : templates.length === 0 ? (
-                        <div className="flex items-center gap-2 py-3 text-sm text-amber-500">
-                          <AlertCircle className="h-4 w-4" />
-                          No OS templates available. Please contact an administrator.
+                        <div className="h-9 px-3 rounded-md border flex items-center gap-2 text-xs text-muted-foreground">
+                          <AlertCircle className="h-3.5 w-3.5" /> No templates available
                         </div>
                       ) : (
                         <Select value={selectedTemplate} onValueChange={setSelectedTemplate}>
-                          <SelectTrigger id="os-template" className="w-full">
-                            <SelectValue placeholder="Choose an operating system..." />
+                          <SelectTrigger id="os-template" className="h-9 text-xs">
+                            <SelectValue placeholder="Choose OS…" />
                           </SelectTrigger>
                           <SelectContent>
-                            {templates.map((t) => {
-                              const osInfo = getOsInfo(t)
-                              return (
-                                <SelectItem key={t.volid} value={t.volid}>
-                                  <span className="flex items-center gap-2">
-                                    <span>{osInfo.emoji}</span>
-                                    <span className="font-medium">{osInfo.label}</span>
-                                    {t.version && (
-                                      <span className="text-muted-foreground">{t.version}</span>
-                                    )}
-                                    <span className="text-muted-foreground text-xs">
-                                      ({t.architecture}, {formatBytes(t.sizeBytes)})
-                                    </span>
-                                  </span>
-                                </SelectItem>
-                              )
-                            })}
+                            {templates.map((t) => (
+                              <SelectItem key={t.volid} value={t.volid} className="text-xs">
+                                <span className="font-medium">{getOsLabel(t)}</span>
+                                {t.version && <span className="text-muted-foreground ml-1">{t.version}</span>}
+                                <span className="text-muted-foreground ml-1">
+                                  {t.architecture} · {formatBytes(t.sizeBytes)}
+                                </span>
+                              </SelectItem>
+                            ))}
                           </SelectContent>
                         </Select>
                       )}
                     </div>
-                  </CardContent>
-                </Card>
+                  </div>
 
-                {/* Navigation */}
-                <div className="flex justify-between">
-                  <Button variant="outline" onClick={handleBack}>
-                    <ArrowLeft className="h-4 w-4 mr-2" />
-                    Back to Plans
-                  </Button>
-                  <Button
-                    onClick={handleProceedToConfirm}
-                    disabled={!vpsName.trim() || vpsName.trim().length < 2 || !selectedTemplate}
-                  >
-                    Review & Deploy
-                    <ArrowRight className="h-4 w-4 ml-2" />
-                  </Button>
-                </div>
-              </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="vps-desc" className="text-xs">
+                      Description <span className="text-muted-foreground font-normal">(optional)</span>
+                    </Label>
+                    <Textarea
+                      id="vps-desc"
+                      placeholder="Purpose of this server"
+                      value={vpsDescription}
+                      onChange={(e) => setVpsDescription(e.target.value)}
+                      maxLength={500}
+                      rows={2}
+                      className="text-sm resize-none"
+                    />
+                  </div>
 
-              {/* Plan Summary Sidebar */}
-              <div>
-                <Card className="sticky top-6 border-primary/20">
-                  <CardHeader className="pb-3">
-                    <CardTitle className="text-sm font-semibold text-primary">
-                      Selected Plan
-                    </CardTitle>
-                    <CardDescription className="text-lg font-bold text-foreground">
-                      {selectedPlan.name}
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-3 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">CPU</span>
-                      <span className="font-medium">{selectedPlan.cpuCores} Cores</span>
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="root-password" className="text-xs flex items-center gap-1.5">
+                        <KeyRound className="h-3.5 w-3.5" /> Root password
+                        <span className="text-muted-foreground font-normal">(optional)</span>
+                      </Label>
+                      <Button type="button" variant="ghost" size="sm" onClick={generatePassword} className="h-7 text-xs px-2">
+                        <RefreshCw className="h-3 w-3 mr-1" /> Generate
+                      </Button>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">RAM</span>
-                      <span className="font-medium">{formatRam(selectedPlan.memoryMb)}</span>
+                    <div className="relative">
+                      <Input
+                        id="root-password"
+                        type={showPassword ? "text" : "password"}
+                        placeholder="Leave empty to auto-generate"
+                        value={rootPassword}
+                        onChange={(e) => setRootPassword(e.target.value)}
+                        className="pr-9 h-9 text-sm font-mono"
+                        aria-invalid={Boolean(passwordError)}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((v) => !v)}
+                        className="absolute right-0 top-0 h-9 w-9 inline-flex items-center justify-center text-muted-foreground hover:text-foreground"
+                        aria-label={showPassword ? "Hide password" : "Show password"}
+                      >
+                        {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Disk</span>
-                      <span className="font-medium">{selectedPlan.diskGb} GB</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Swap</span>
-                      <span className="font-medium">{formatRam(selectedPlan.swapMb)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Network</span>
-                      <span className="font-medium">{selectedPlan.networkBridge}</span>
-                    </div>
-
-                    <div className="border-t pt-3 mt-3">
-                      <div className="flex items-center justify-between">
-                        <span className="text-muted-foreground">Price</span>
-                        <span className="text-xl font-bold flex items-center gap-1.5">
-                          <Coins className="h-5 w-5 text-amber-500" />
-                          {selectedPlan.coinPrice.toLocaleString()}
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs text-muted-foreground">
+                        {passwordError ? (
+                          <span className="text-destructive">{passwordError}</span>
+                        ) : rootPassword.length === 0 ? (
+                          "Auto-generates a secure password if left empty (shown once)."
+                        ) : (
+                          "Min 8 characters. Stored only for provisioning."
+                        )}
+                      </p>
+                      {rootPassword.length > 0 && (
+                        <span className={`text-xs ${rootPassword.length >= 12 ? "text-foreground" : "text-muted-foreground"}`}>
+                          {rootPassword.length} chars
                         </span>
-                      </div>
-                      <div className="flex items-center justify-between mt-1">
-                        <span className="text-xs text-muted-foreground">After deploy</span>
-                        <span className="text-xs text-muted-foreground">
-                          {(coinBalance - selectedPlan.coinPrice).toLocaleString()} coins left
-                        </span>
-                      </div>
+                      )}
                     </div>
-                  </CardContent>
-                </Card>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <div className="flex justify-between mt-4">
+                <Button variant="outline" onClick={handleBack} className="text-xs h-8">
+                  <ArrowLeft className="h-3.5 w-3.5 mr-1.5" /> Back
+                </Button>
+                <Button
+                  onClick={handleProceedToConfirm}
+                  disabled={!vpsName.trim() || vpsName.trim().length < 2 || !selectedTemplate || Boolean(passwordError)}
+                  className="text-xs h-8"
+                >
+                  Continue <ArrowRight className="h-3.5 w-3.5 ml-1.5" />
+                </Button>
               </div>
+            </div>
+
+            <div>
+              <Card className="lg:sticky lg:top-6">
+                <CardHeader className="pb-3">
+                  <CardDescription className="text-xs">Selected plan</CardDescription>
+                  <CardTitle className="text-sm">{selectedPlan.name}</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2.5 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">CPU</span>
+                    <span className="font-medium">{selectedPlan.cpuCores} vCPU</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Memory</span>
+                    <span className="font-medium">{formatRam(selectedPlan.memoryMb)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Disk</span>
+                    <span className="font-medium">{selectedPlan.diskGb} GB</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Bridge</span>
+                    <span className="font-mono">{selectedPlan.networkBridge}</span>
+                  </div>
+                  <div className="h-px bg-border my-2" />
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">Price</span>
+                    <span className="font-medium flex items-center gap-1">
+                      <Coins className="h-3.5 w-3.5" />
+                      {selectedPlan.coinPrice.toLocaleString()} coins
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-muted-foreground">
+                    <span>After deployment</span>
+                    <span className="font-mono">{(coinBalance - selectedPlan.coinPrice).toLocaleString()} coins</span>
+                  </div>
+                  {coinBalance < selectedPlan.coinPrice && (
+                    <p className="text-xs text-destructive pt-2">Insufficient balance.</p>
+                  )}
+                </CardContent>
+              </Card>
             </div>
           </div>
         )}
 
-        {/* ==================== STEP 3: CONFIRM & DEPLOY ==================== */}
+        {/* Step 3: Confirm */}
         {step === "confirm" && selectedPlan && (
-          <div className="max-w-2xl mx-auto">
-            <Card className="border-primary/20">
-              <CardHeader className="text-center">
-                <div className="mx-auto w-14 h-14 rounded-full bg-primary/10 flex items-center justify-center mb-3">
-                  <Rocket className="h-7 w-7 text-primary" />
-                </div>
-                <CardTitle className="text-xl">Confirm Deployment</CardTitle>
-                <CardDescription>
-                  Review your configuration before deploying. Coins will be charged immediately.
-                </CardDescription>
+          <div className="max-w-xl mx-auto">
+            <Card>
+              <CardHeader className="pb-3 text-center">
+                <CardTitle className="text-sm">Review deployment</CardTitle>
+                <CardDescription className="text-xs">Check details before charging coins.</CardDescription>
               </CardHeader>
-              <CardContent className="space-y-4">
-                {/* Summary Table */}
-                <div className="rounded-lg border divide-y">
-                  <div className="flex justify-between px-4 py-2.5">
-                    <span className="text-sm text-muted-foreground">Plan</span>
-                    <span className="text-sm font-semibold">{selectedPlan.name}</span>
+              <CardContent className="space-y-3">
+                <div className="rounded-md border divide-y text-xs">
+                  <div className="flex justify-between px-3 py-2.5">
+                    <span className="text-muted-foreground">Plan</span>
+                    <span className="font-medium">{selectedPlan.name}</span>
                   </div>
-                  <div className="flex justify-between px-4 py-2.5">
-                    <span className="text-sm text-muted-foreground">Server Name</span>
-                    <span className="text-sm font-mono font-semibold">{vpsName}</span>
+                  <div className="flex justify-between px-3 py-2.5">
+                    <span className="text-muted-foreground">Server name</span>
+                    <span className="font-mono font-medium">{vpsName}</span>
                   </div>
                   {vpsDescription && (
-                    <div className="flex justify-between px-4 py-2.5">
-                      <span className="text-sm text-muted-foreground">Description</span>
-                      <span className="text-sm max-w-[200px] truncate">{vpsDescription}</span>
+                    <div className="flex justify-between px-3 py-2.5 gap-4">
+                      <span className="text-muted-foreground shrink-0">Description</span>
+                      <span className="truncate text-right max-w-[220px]">{vpsDescription}</span>
                     </div>
                   )}
-                  <div className="flex justify-between px-4 py-2.5">
-                    <span className="text-sm text-muted-foreground">OS Template</span>
-                    <span className="text-sm font-medium">
+                  <div className="flex justify-between px-3 py-2.5">
+                    <span className="text-muted-foreground">OS</span>
+                    <span className="font-medium">
                       {(() => {
-                        const t = templates.find((t) => t.volid === selectedTemplate)
+                        const t = templates.find((x) => x.volid === selectedTemplate)
                         if (!t) return selectedTemplate
-                        const info = getOsInfo(t)
-                        return `${info.emoji} ${info.label} ${t.version || ""}`
+                        return `${getOsLabel(t)} ${t.version || ""}`.trim()
                       })()}
                     </span>
                   </div>
-                  <div className="flex justify-between px-4 py-2.5">
-                    <span className="text-sm text-muted-foreground">Resources</span>
-                    <span className="text-sm font-medium">
-                      {selectedPlan.cpuCores} CPU · {formatRam(selectedPlan.memoryMb)} RAM · {selectedPlan.diskGb} GB Disk
+                  <div className="flex justify-between px-3 py-2.5">
+                    <span className="text-muted-foreground">Resources</span>
+                    <span>
+                      {selectedPlan.cpuCores} vCPU · {formatRam(selectedPlan.memoryMb)} · {selectedPlan.diskGb} GB
                     </span>
                   </div>
-                  <div className="flex justify-between px-4 py-2.5 bg-primary/5">
-                    <span className="text-sm font-medium">Total Cost</span>
-                    <span className="text-lg font-bold flex items-center gap-1.5">
-                      <Coins className="h-5 w-5 text-amber-500" />
+                  <div className="flex justify-between px-3 py-2.5">
+                    <span className="text-muted-foreground">Root password</span>
+                    <span className="font-medium">{rootPassword ? "Custom (provided)" : "Auto-generate"}</span>
+                  </div>
+                  <div className="flex justify-between px-3 py-2.5 bg-muted/30">
+                    <span className="font-medium">Total</span>
+                    <span className="font-medium flex items-center gap-1">
+                      <Coins className="h-3.5 w-3.5" />
                       {selectedPlan.coinPrice.toLocaleString()} coins
                     </span>
                   </div>
                 </div>
-
-                {/* Balance Warning */}
-                <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-sm">
-                  <div className="flex items-start gap-2">
-                    <Coins className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
-                    <div>
-                      <p className="font-medium text-amber-500">Coin Charge Notice</p>
-                      <p className="text-muted-foreground mt-0.5">
-                        <strong>{selectedPlan.coinPrice.toLocaleString()}</strong> coins will be debited from your balance of <strong>{coinBalance.toLocaleString()}</strong> coins. If provisioning fails, coins are automatically refunded.
-                      </p>
-                    </div>
-                  </div>
+                <div className="rounded-md border px-3 py-2.5">
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    <span className="font-medium text-foreground">{selectedPlan.coinPrice.toLocaleString()} coins</span> will be
+                    deducted from your balance ({coinBalance.toLocaleString()} coins). Refunded automatically if provisioning fails.
+                  </p>
                 </div>
               </CardContent>
-              <CardFooter className="flex gap-3">
-                <Button variant="outline" onClick={handleBack} className="flex-1" disabled={deploying}>
-                  <ArrowLeft className="h-4 w-4 mr-2" />
-                  Back
+              <CardFooter className="flex gap-2">
+                <Button variant="outline" onClick={handleBack} className="flex-1 text-xs h-8" disabled={deploying}>
+                  <ArrowLeft className="h-3.5 w-3.5 mr-1.5" /> Back
                 </Button>
-                <Button
-                  className="flex-1"
-                  onClick={() => setConfirmOpen(true)}
-                  disabled={deploying}
-                >
+                <Button className="flex-1 text-xs h-8" onClick={() => setConfirmOpen(true)} disabled={deploying}>
                   {deploying ? (
                     <>
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      Deploying...
+                      <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> Deploying…
                     </>
                   ) : (
                     <>
-                      <Rocket className="h-4 w-4 mr-2" />
-                      Deploy Now
+                      <Rocket className="h-3.5 w-3.5 mr-1.5" /> Deploy now
                     </>
                   )}
                 </Button>
@@ -890,62 +842,50 @@ export default function DeployPage() {
         )}
       </div>
 
-      {/* Final Confirmation Dialog */}
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Coins className="h-5 w-5 text-amber-500" />
-              Confirm Coin Charge
+            <DialogTitle className="text-sm flex items-center gap-2">
+              <Coins className="h-4 w-4" /> Confirm charge
             </DialogTitle>
-            <DialogDescription>
-              This will immediately debit <strong>{selectedPlan?.coinPrice.toLocaleString()} coins</strong> from your account and start provisioning your VPS.
+            <DialogDescription className="text-xs">
+              Debit <span className="font-medium text-foreground">{selectedPlan?.coinPrice.toLocaleString()} coins</span> and start
+              provisioning? {rootPassword ? "Your custom root password will be used." : "A secure password will be generated and shown once."}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmOpen(false)}>
+            <Button variant="outline" onClick={() => setConfirmOpen(false)} className="text-xs">
               Cancel
             </Button>
-            <Button onClick={handleDeploy} disabled={deploying}>
-              {deploying ? (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              ) : (
-                <Rocket className="h-4 w-4 mr-2" />
-              )}
-              Confirm & Deploy
+            <Button onClick={handleDeploy} disabled={deploying} className="text-xs">
+              {deploying ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5 mr-1.5" />}
+              Confirm & deploy
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Transfer Coins Dialog */}
-      <TransferCoinsDialog
-        open={transferOpen}
-        onOpenChange={setTransferOpen}
-        currentBalance={coinBalance}
-        onSuccess={() => refreshUser()}
-      />
+      <TransferCoinsDialog open={transferOpen} onOpenChange={setTransferOpen} currentBalance={coinBalance} onSuccess={() => refreshUser()} />
     </BaseLayout>
   )
 }
 
-// Helper component for deployment status icons
 function StatusIcon({ status }: { status: string }) {
   switch (status) {
     case "completed":
-      return <CheckCircle2 className="h-4 w-4 text-green-500" />
+      return <CheckCircle2 className="h-3.5 w-3.5 text-foreground" />
     case "provisioning":
     case "charged":
     case "pending":
-      return <Loader2 className="h-4 w-4 text-amber-500 animate-spin" />
+      return <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
     case "failed":
     case "recovery_required":
-      return <XCircle className="h-4 w-4 text-red-500" />
+      return <XCircle className="h-3.5 w-3.5 text-destructive" />
     case "refunded":
-      return <RefreshCw className="h-4 w-4 text-blue-500" />
+      return <RefreshCw className="h-3.5 w-3.5 text-muted-foreground" />
     case "cancelled":
-      return <XCircle className="h-4 w-4 text-muted-foreground" />
+      return <XCircle className="h-3.5 w-3.5 text-muted-foreground" />
     default:
-      return <Clock className="h-4 w-4 text-muted-foreground" />
+      return <Clock className="h-3.5 w-3.5 text-muted-foreground" />
   }
 }

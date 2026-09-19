@@ -10,6 +10,7 @@
  * 6. Cross-restart reconciliation
  */
 
+import crypto from "node:crypto";
 import { v4 as uuidv4 } from "uuid";
 import { queryOne, queryAll, execute, transaction } from "../db/index.js";
 import { CoinService, CoinError } from "./coin.js";
@@ -23,6 +24,7 @@ export interface UserDeploymentRequest {
   name: string;
   description?: string;
   osTemplate: string;
+  rootPassword?: string;
   idempotencyKey?: string;
 }
 
@@ -54,6 +56,7 @@ export interface DeploymentResult {
   vpsName: string;
   planName: string;
   isDuplicate?: boolean;
+  generatedPassword?: string;
 }
 
 export class DeploymentService {
@@ -61,7 +64,7 @@ export class DeploymentService {
    * Orchestrates a user-initiated, coin-funded VPS deployment.
    */
   static async deployFromPlan(req: UserDeploymentRequest): Promise<DeploymentResult> {
-    const { userId, planId, name, description, osTemplate, idempotencyKey } = req;
+    const { userId, planId, name, description, osTemplate, rootPassword, idempotencyKey } = req;
 
     // 1. Validate user
     if (!userId) {
@@ -139,7 +142,22 @@ export class DeploymentService {
       );
     }
 
-    // 6. Check authoritative coin balance
+    // 6. Validate root password (optional, but if supplied must be >= 8 chars)
+    let effectivePassword: string | undefined = rootPassword?.trim() || undefined;
+    let generatedPasswordFlag = false;
+    if (effectivePassword) {
+      if (effectivePassword.length < 8) {
+        throw new PlanError("Root password must be at least 8 characters long.", "INVALID_PASSWORD", 400);
+      }
+      if (effectivePassword.length > 128) {
+        throw new PlanError("Root password must not exceed 128 characters.", "INVALID_PASSWORD", 400);
+      }
+    } else {
+      effectivePassword = crypto.randomBytes(12).toString("base64url");
+      generatedPasswordFlag = true;
+    }
+
+    // 7. Check authoritative coin balance
     const currentBalance = CoinService.getBalance(userId);
     if (currentBalance < plan.coin_price) {
       const err = new CoinError(
@@ -152,7 +170,7 @@ export class DeploymentService {
       throw err;
     }
 
-    // 7. Create Plan Snapshot
+    // 8. Create Plan Snapshot
     const planSnapshot = {
       planId: plan.id,
       planName: plan.name,
@@ -243,6 +261,7 @@ export class DeploymentService {
         diskGb: plan.disk_gb,
         bridge: plan.network_bridge,
         startAfterCreate: true,
+        rootPassword: effectivePassword,
         idempotencyKey: cleanIdempotencyKey ? `prov_${cleanIdempotencyKey}` : `prov_${orderId}`,
       });
 
@@ -274,6 +293,7 @@ export class DeploymentService {
         chargedCoins: plan.coin_price,
         vpsName: trimmedName,
         planName: plan.name,
+        generatedPassword: generatedPasswordFlag ? effectivePassword : undefined,
       };
     } catch (provisioningErr: any) {
       console.error(`[DEPLOYMENT] Provisioning submit failed for order ${orderId}:`, provisioningErr);
